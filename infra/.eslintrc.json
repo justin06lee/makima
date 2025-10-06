@@ -1,0 +1,29 @@
+{
+  "env": { "es2022": true, "node": true },
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": { "sourceType": "module" },
+  "plugins": ["@typescript-eslint"],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended"
+  ],
+  "ignorePatterns": ["dist", "node_modules"],
+  "rules": {
+    "@typescript-eslint/consistent-type-imports": "warn",
+    "@typescript-eslint/no-unused-vars": [
+      "warn",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["test/**/*.ts", "**/*.test.ts"],
+      "globals": {
+        "vi": "readonly",
+        "describe": "readonly",
+        "it": "readonly",
+        "expect": "readonly"
+      }
+    }
+  ]
+}
