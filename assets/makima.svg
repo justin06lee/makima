@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600" role="img" aria-label="makima">
+  <!-- The architecture, stated as a picture: every node is leashed to the
+       control plane (gold, dashed — the chains), but the traffic between them
+       never passes through it (crimson, solid — direct peer paths). The centre
+       decides who may speak to whom; it does not carry a single packet.
+       Sharp outer corners; the rings inside may curve. -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="48%" r="78%">
+      <stop offset="0%" stop-color="#14151d"/>
+      <stop offset="100%" stop-color="#0a0b10"/>
+    </radialGradient>
+    <radialGradient id="iris" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#1a1016"/>
+      <stop offset="100%" stop-color="#0d0a0e"/>
+    </radialGradient>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+  </defs>
+
+  <style>
+    @media (prefers-reduced-motion: no-preference) {
+      .ring { animation: breathe 5.2s ease-in-out infinite }
+      .r1 { animation-delay: -0.0s }
+      .r2 { animation-delay: -1.3s }
+      .r3 { animation-delay: -2.6s }
+      @keyframes breathe {
+        0%, 100% { opacity: 0.30 }
+        50%      { opacity: 0.85 }
+      }
+      .chain { animation: pull 3.4s linear infinite }
+      @keyframes pull { to { stroke-dashoffset: -32 } }
+    }
+  </style>
+
+  <rect x="0" y="0" width="900" height="600" fill="url(#bg)"/>
+
+  <!-- data plane: peers talking straight to one another, bypassing the centre -->
+  <g stroke="#C4353F" stroke-width="2" fill="none" opacity="0.55">
+    <path d="M762 188 L450 75 L138 188 L138 412 L450 525 L762 412 Z"/>
+  </g>
+  <g stroke="#C4353F" stroke-width="1.5" fill="none" opacity="0.22">
+    <path d="M762 188 L138 412"/>
+    <path d="M138 188 L762 412"/>
+    <path d="M450 75  L450 525"/>
+  </g>
+
+  <!-- control plane: a chain from the centre to every node -->
+  <g stroke="#E0A94A" stroke-width="2" fill="none" opacity="0.42"
+     stroke-dasharray="9 7" stroke-linecap="round">
+    <path class="chain" d="M450 300 L762 188"/>
+    <path class="chain" d="M450 300 L450 75"/>
+    <path class="chain" d="M450 300 L138 188"/>
+    <path class="chain" d="M450 300 L138 412"/>
+    <path class="chain" d="M450 300 L450 525"/>
+    <path class="chain" d="M450 300 L762 412"/>
+  </g>
+
+  <!-- the nodes -->
+  <g>
+    <g transform="translate(745,171)">
+      <rect width="34" height="34" fill="#12131a" stroke="#C4353F" stroke-width="2"/>
+      <rect x="10" y="12" width="14" height="3" fill="#E8E6E3" opacity="0.75"/>
+      <rect x="10" y="19" width="9" height="3" fill="#E8E6E3" opacity="0.4"/>
+    </g>
+    <g transform="translate(433,58)">
+      <rect width="34" height="34" fill="#12131a" stroke="#C4353F" stroke-width="2"/>
+      <rect x="10" y="12" width="14" height="3" fill="#E8E6E3" opacity="0.75"/>
+      <rect x="10" y="19" width="9" height="3" fill="#E8E6E3" opacity="0.4"/>
+    </g>
+    <g transform="translate(121,171)">
+      <rect width="34" height="34" fill="#12131a" stroke="#C4353F" stroke-width="2"/>
+      <rect x="10" y="12" width="14" height="3" fill="#E8E6E3" opacity="0.75"/>
+      <rect x="10" y="19" width="9" height="3" fill="#E8E6E3" opacity="0.4"/>
+    </g>
+    <g transform="translate(121,395)">
+      <rect width="34" height="34" fill="#12131a" stroke="#C4353F" stroke-width="2"/>
+      <rect x="10" y="12" width="14" height="3" fill="#E8E6E3" opacity="0.75"/>
+      <rect x="10" y="19" width="9" height="3" fill="#E8E6E3" opacity="0.4"/>
+    </g>
+    <g transform="translate(433,508)">
+      <rect width="34" height="34" fill="#12131a" stroke="#C4353F" stroke-width="2"/>
+      <rect x="10" y="12" width="14" height="3" fill="#E8E6E3" opacity="0.75"/>
+      <rect x="10" y="19" width="9" height="3" fill="#E8E6E3" opacity="0.4"/>
+    </g>
+    <g transform="translate(745,395)">
+      <rect width="34" height="34" fill="#12131a" stroke="#C4353F" stroke-width="2"/>
+      <rect x="10" y="12" width="14" height="3" fill="#E8E6E3" opacity="0.75"/>
+      <rect x="10" y="19" width="9" height="3" fill="#E8E6E3" opacity="0.4"/>
+    </g>
+  </g>
+
+  <!-- the control plane itself: a ringed eye, opaque so the chains resolve
+       behind it rather than crossing the pupil -->
+  <circle cx="450" cy="300" r="132" fill="#C4353F" opacity="0.10" filter="url(#glow)"/>
+  <circle cx="450" cy="300" r="122" fill="url(#iris)"/>
+  <circle cx="450" cy="300" r="122" fill="none" stroke="#C4353F" stroke-width="3"/>
+
+  <g fill="none" stroke="#E0A94A" stroke-width="2">
+    <circle class="ring r1" cx="450" cy="300" r="98" opacity="0.55"/>
+    <circle class="ring r2" cx="450" cy="300" r="73" opacity="0.45"/>
+    <circle class="ring r3" cx="450" cy="300" r="48" opacity="0.35"/>
+  </g>
+
+  <!-- iris spokes -->
+  <g stroke="#C4353F" stroke-width="2" opacity="0.5">
+    <path d="M450 178 L450 422"/>
+    <path d="M328 300 L572 300"/>
+    <path d="M364 214 L536 386"/>
+    <path d="M536 214 L364 386"/>
+  </g>
+
+  <circle cx="450" cy="300" r="24" fill="#0a0b10"/>
+  <circle cx="450" cy="300" r="24" fill="none" stroke="#E0A94A" stroke-width="2.5" opacity="0.8"/>
+  <circle cx="450" cy="300" r="8" fill="#C4353F"/>
+</svg>
