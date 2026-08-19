@@ -18,3 +18,7 @@ func setAddr(iface string, addr netip.Addr) error {
 func addRoute(iface string, r netip.Prefix) error {
 	return fmt.Errorf("netcfg: route installation not implemented on %s", runtime.GOOS)
 }
+
+func delRoute(iface string, r netip.Prefix) error {
+	return fmt.Errorf("netcfg: route removal not implemented on %s", runtime.GOOS)
+}

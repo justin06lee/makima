@@ -1,3 +1,13 @@
 build/
 *.test
+
+# Bare binaries from a `go build ./cmd/...` that forgot -o; the Makefile always
+# writes into build/, so anything by these names at the root is an accident.
+/makima
+/makimad
+/makima-server
+
+# Node and control-plane state, which hold private keys.
 node.json
+control.json
+*.sock

@@ -1,18 +1,24 @@
-// Command makima manages a node's identity and peer list.
+// Command makima manages a node's identity and its membership in a mesh.
 //
-// The peer subcommand is scaffolding with a deliberately short life: it exists
-// because M0 has no control plane, and M1 deletes it in favour of a join token.
+// Two ways in: `init` for a hand-maintained static mesh, `join` for one with a
+// control server. The peer subcommand only applies to the former — a managed
+// node's peer list belongs to the server, and editing it locally would just be
+// overwritten by the next netmap.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/netip"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 )
 
@@ -28,6 +34,8 @@ func main() {
 		err = genkey()
 	case "init":
 		err = initNode(os.Args[2:])
+	case "join":
+		err = joinNode(os.Args[2:])
 	case "peer":
 		err = peer(os.Args[2:])
 	case "show":
@@ -50,11 +58,16 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `makima — a self-hosted mesh network
 
-usage:
-  makima genkey                    generate a keypair and print it
-  makima init    -name N -addr A   create this node's configuration
+joining a mesh with a control server:
+  makima join -server URL -authkey KEY [-name N] [-serverkey K]
+
+running a static mesh with no server:
+  makima init     -name N -addr A
   makima peer add -name N -key K -addr A [-endpoint HOST:PORT]
   makima peer rm  -name N
+
+always:
+  makima genkey                    generate a keypair and print it
   makima show                      print the current configuration
 
 every command takes -config PATH (default `+conf.DefaultPath+`)
@@ -86,40 +99,128 @@ func initNode(args []string) error {
 	if *name == "" || *addr == "" {
 		return fmt.Errorf("init needs -name and -addr")
 	}
-
-	// Refuse to clobber silently: overwriting the private key would evict this
-	// node from every peer's allowed list with no way back.
-	if _, err := os.Stat(*path); err == nil && !*force {
-		return fmt.Errorf("%s already exists (pass -force to replace, which rotates this node's identity)", *path)
+	if err := checkOverwrite(*path, *force); err != nil {
+		return err
 	}
 
 	prefix, err := meshPrefix(*addr)
 	if err != nil {
 		return err
 	}
-	priv, err := key.NewPrivate()
+	nodeKey, machineKey, discoKey, err := conf.NewIdentity()
 	if err != nil {
 		return err
 	}
 
-	m := &netmap.NetMap{
-		PrivateKey: priv,
+	f := &conf.File{
+		NodeKey:    nodeKey,
+		MachineKey: machineKey,
+		DiscoKey:   discoKey,
 		ListenPort: uint16(*port),
 		Self: netmap.Node{
 			ID:        1,
 			Name:      *name,
-			Key:       priv.Public(),
+			Key:       nodeKey.Public(),
 			Addresses: []netip.Prefix{prefix},
 		},
 	}
-	if err := conf.Save(*path, m); err != nil {
+	if err := conf.Save(*path, f); err != nil {
 		return err
 	}
 
 	fmt.Printf("wrote %s\n", *path)
 	fmt.Printf("node   %s at %s\n", *name, prefix.Addr())
-	fmt.Printf("key    %s\n\n", priv.Public())
+	fmt.Printf("key    %s\n\n", nodeKey.Public())
 	fmt.Print("give that public key to your other machines, and add them here with 'makima peer add'.\n")
+	return nil
+}
+
+func joinNode(args []string) error {
+	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	path := fs.String("config", conf.DefaultPath, "config path")
+	server := fs.String("server", "", "control server URL, e.g. http://control.example:8080")
+	authKey := fs.String("authkey", "", "join credential from 'makima-server authkey'")
+	serverKey := fs.String("serverkey", "", "control server's public key; fetched over the network if omitted")
+	name := fs.String("name", "", "this node's name (defaults to the hostname)")
+	port := fs.Uint("port", 51820, "UDP port WireGuard listens on")
+	force := fs.Bool("force", false, "replace an existing configuration")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *server == "" || *authKey == "" {
+		return fmt.Errorf("join needs -server and -authkey")
+	}
+	if *name == "" {
+		h, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("no -name given and the hostname is unreadable: %w", err)
+		}
+		*name = h
+	}
+	if err := checkOverwrite(*path, *force); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var srvKey key.Public
+	if *serverKey != "" {
+		k, err := key.ParsePublic(*serverKey)
+		if err != nil {
+			return fmt.Errorf("parse -serverkey: %w", err)
+		}
+		srvKey = k
+	} else {
+		// Trust-on-first-use. Fine on a network you control, and the reason
+		// -serverkey exists for one you do not.
+		k, err := control.FetchServerKey(ctx, *server)
+		if err != nil {
+			return err
+		}
+		srvKey = k
+		fmt.Printf("server key %s (fetched; pin it with -serverkey next time)\n", k)
+	}
+
+	nodeKey, machineKey, discoKey, err := conf.NewIdentity()
+	if err != nil {
+		return err
+	}
+
+	client := control.NewClient(*server, srvKey, machineKey)
+	resp, err := client.Register(ctx, &control.RegisterRequest{
+		Name:      *name,
+		NodeKey:   nodeKey.Public(),
+		DiscoKey:  discoKey.Public(),
+		AuthKey:   *authKey,
+		Endpoints: netcfg.LocalEndpoints(uint16(*port)),
+	})
+	if err != nil {
+		return err
+	}
+
+	f := &conf.File{
+		NodeKey:     nodeKey,
+		MachineKey:  machineKey,
+		DiscoKey:    discoKey,
+		ListenPort:  uint16(*port),
+		LoginServer: strings.TrimRight(*server, "/"),
+		ServerKey:   srvKey,
+		Self: netmap.Node{
+			ID:        resp.NodeID,
+			Name:      *name,
+			Key:       nodeKey.Public(),
+			Addresses: []netip.Prefix{resp.Address},
+		},
+	}
+	if err := conf.Save(*path, f); err != nil {
+		return err
+	}
+
+	fmt.Printf("joined %s\n", *server)
+	fmt.Printf("node   %s at %s (id %d)\n", *name, resp.Address.Addr(), resp.NodeID)
+	fmt.Printf("wrote  %s\n\n", *path)
+	fmt.Print("bring the tunnel up with: sudo makimad\n")
 	return nil
 }
 
@@ -151,7 +252,7 @@ func peerAdd(args []string) error {
 		return fmt.Errorf("peer add needs -name, -key and -addr")
 	}
 
-	m, err := conf.Load(*path)
+	f, err := loadStatic(*path)
 	if err != nil {
 		return err
 	}
@@ -160,7 +261,7 @@ func peerAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if pub == m.Self.Key {
+	if pub == f.Self.Key {
 		return fmt.Errorf("that is this node's own key")
 	}
 	prefix, err := meshPrefix(*addr)
@@ -169,7 +270,7 @@ func peerAdd(args []string) error {
 	}
 
 	p := netmap.Node{
-		ID:        netmap.NodeID(len(m.Peers) + 2),
+		ID:        netmap.NodeID(len(f.Peers) + 2),
 		Name:      *name,
 		Key:       pub,
 		Addresses: []netip.Prefix{prefix},
@@ -185,19 +286,19 @@ func peerAdd(args []string) error {
 	// Replace rather than duplicate: re-running add after a key rotation is
 	// the expected way to update a peer.
 	replaced := false
-	for i, existing := range m.Peers {
+	for i, existing := range f.Peers {
 		if existing.Name == *name {
 			p.ID = existing.ID
-			m.Peers[i] = p
+			f.Peers[i] = p
 			replaced = true
 			break
 		}
 	}
 	if !replaced {
-		m.Peers = append(m.Peers, p)
+		f.Peers = append(f.Peers, p)
 	}
 
-	if err := conf.Save(*path, m); err != nil {
+	if err := conf.Save(*path, f); err != nil {
 		return err
 	}
 	verb := "added"
@@ -219,13 +320,14 @@ func peerRemove(args []string) error {
 		return fmt.Errorf("peer rm needs -name")
 	}
 
-	m, err := conf.Load(*path)
+	f, err := loadStatic(*path)
 	if err != nil {
 		return err
 	}
-	kept := m.Peers[:0]
+
+	kept := f.Peers[:0]
 	found := false
-	for _, p := range m.Peers {
+	for _, p := range f.Peers {
 		if p.Name == *name {
 			found = true
 			continue
@@ -235,8 +337,9 @@ func peerRemove(args []string) error {
 	if !found {
 		return fmt.Errorf("no peer named %q", *name)
 	}
-	m.Peers = kept
-	if err := conf.Save(*path, m); err != nil {
+	f.Peers = kept
+
+	if err := conf.Save(*path, f); err != nil {
 		return err
 	}
 	fmt.Printf("removed peer %s\n", *name)
@@ -250,25 +353,36 @@ func show(args []string) error {
 		return err
 	}
 
-	m, err := conf.Load(*path)
+	f, err := conf.Load(*path)
 	if err != nil {
 		return err
 	}
-	selfAddr, _ := m.Self.Addr()
+	selfAddr, _ := f.Self.Addr()
 
-	fmt.Printf("node   %s\n", m.Self.Name)
+	fmt.Printf("node   %s\n", f.Self.Name)
 	fmt.Printf("addr   %s\n", selfAddr)
-	fmt.Printf("key    %s\n", m.Self.Key)
-	fmt.Printf("port   %d\n", m.ListenPort)
+	fmt.Printf("key    %s\n", f.Self.Key)
+	fmt.Printf("port   %d\n", f.ListenPort)
+	if f.Managed() {
+		fmt.Printf("server %s\n", f.LoginServer)
+		fmt.Printf("       %s\n", f.ServerKey)
+	} else {
+		fmt.Print("server none (static mesh)\n")
+	}
 
-	if len(m.Peers) == 0 {
-		fmt.Print("\nno peers yet — add one with 'makima peer add'\n")
+	if len(f.Peers) == 0 {
+		if f.Managed() {
+			fmt.Print("\nno peers yet — join another machine to this server\n")
+		} else {
+			fmt.Print("\nno peers yet — add one with 'makima peer add'\n")
+		}
 		return nil
 	}
-	fmt.Printf("\n%d peer(s):\n", len(m.Peers))
-	for _, p := range m.Peers {
+
+	fmt.Printf("\n%d peer(s):\n", len(f.Peers))
+	for _, p := range f.Peers {
 		a, _ := p.Addr()
-		via := "no known path (needs -endpoint until the relay lands)"
+		via := "no known path"
 		if len(p.Endpoints) > 0 {
 			var eps []string
 			for _, e := range p.Endpoints {
@@ -278,6 +392,25 @@ func show(args []string) error {
 		}
 		fmt.Printf("  %-16s %-15s %s\n", p.Name, a, via)
 		fmt.Printf("  %-16s %s\n", "", p.Key)
+	}
+	return nil
+}
+
+// loadStatic refuses to hand back a managed config for local editing.
+func loadStatic(path string) (*conf.File, error) {
+	f, err := conf.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	if f.Managed() {
+		return nil, fmt.Errorf("this node is managed by %s; its peers come from the server, and local edits would be overwritten by the next netmap", f.LoginServer)
+	}
+	return f, nil
+}
+
+func checkOverwrite(path string, force bool) error {
+	if _, err := os.Stat(path); err == nil && !force {
+		return fmt.Errorf("%s already exists (pass -force to replace, which rotates this node's identity)", path)
 	}
 	return nil
 }
@@ -294,8 +427,8 @@ func meshPrefix(s string) (netip.Prefix, error) {
 	if !addr.Is4() {
 		return netip.Prefix{}, fmt.Errorf("mesh addresses are IPv4 for now, got %q", s)
 	}
-	if !netcfgRange().Contains(addr) {
-		return netip.Prefix{}, fmt.Errorf("%s is outside the mesh range %s", addr, netcfgRange())
+	if !netcfg.CGNATRange.Contains(addr) {
+		return netip.Prefix{}, fmt.Errorf("%s is outside the mesh range %s", addr, netcfg.CGNATRange)
 	}
 	return netip.PrefixFrom(addr, 32), nil
 }

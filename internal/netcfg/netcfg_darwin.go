@@ -1,8 +1,6 @@
 package netcfg
 
-import (
-	"net/netip"
-)
+import "net/netip"
 
 // setAddr configures a utun interface on macOS.
 //
@@ -16,8 +14,10 @@ func setAddr(iface string, addr netip.Addr) error {
 }
 
 func addRoute(iface string, r netip.Prefix) error {
-	// -q suppresses the noise, -n skips reverse DNS on the output. Adding a
-	// route that already exists is an error on macOS, so this is not
-	// idempotent by itself; callers configure a freshly created interface.
+	// -q suppresses the banner, -n skips reverse DNS on the output.
 	return run("route", "-q", "-n", "add", "-inet", r.String(), "-interface", iface)
+}
+
+func delRoute(iface string, r netip.Prefix) error {
+	return run("route", "-q", "-n", "delete", "-inet", r.String(), "-interface", iface)
 }

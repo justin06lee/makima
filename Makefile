@@ -3,7 +3,7 @@
 # `make` alone does the whole golden path. Nothing else needs to be run by hand.
 
 BINDIR  := /usr/local/bin
-BINS    := makima makimad
+BINS    := makima makimad makima-server
 BUILD   := build
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)

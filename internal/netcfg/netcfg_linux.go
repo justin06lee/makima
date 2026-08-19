@@ -1,8 +1,6 @@
 package netcfg
 
-import (
-	"net/netip"
-)
+import "net/netip"
 
 // setAddr configures the interface via iproute2.
 //
@@ -19,4 +17,8 @@ func setAddr(iface string, addr netip.Addr) error {
 
 func addRoute(iface string, r netip.Prefix) error {
 	return run("ip", "route", "add", r.String(), "dev", iface)
+}
+
+func delRoute(iface string, r netip.Prefix) error {
+	return run("ip", "route", "del", r.String(), "dev", iface)
 }
