@@ -22,3 +22,23 @@ func addRoute(iface string, r netip.Prefix) error {
 func delRoute(iface string, r netip.Prefix) error {
 	return fmt.Errorf("netcfg: route removal not implemented on %s", runtime.GOOS)
 }
+
+func addRouteVia(r netip.Prefix, gateway netip.Addr) error {
+	return fmt.Errorf("netcfg: route installation not implemented on %s", runtime.GOOS)
+}
+
+func delRouteVia(r netip.Prefix, gateway netip.Addr) error {
+	return fmt.Errorf("netcfg: route removal not implemented on %s", runtime.GOOS)
+}
+
+func addDefaultViaInterface(iface string) error {
+	return fmt.Errorf("netcfg: exit nodes are not implemented on %s", runtime.GOOS)
+}
+
+func delDefaultViaInterface(iface string) error { return nil }
+
+func enableForwarding(iface string) error {
+	return fmt.Errorf("netcfg: subnet routing is not implemented on %s", runtime.GOOS)
+}
+
+func disableForwarding(iface string) error { return nil }

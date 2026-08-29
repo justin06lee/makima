@@ -29,7 +29,7 @@ func TestUAPIOrdering(t *testing.T) {
 			Endpoint:   &ep,
 			Keepalive:  25 * time.Second,
 		}},
-	})
+	}, addrEndpoint)
 
 	// replace_peers must appear before the first public_key, or wireguard-go
 	// wipes the peer we just declared.
@@ -68,7 +68,7 @@ func TestUAPIOmitsUnknownEndpoint(t *testing.T) {
 			PublicKey:  peerKey.Public(),
 			AllowedIPs: []netip.Prefix{netip.MustParsePrefix("100.64.0.3/32")},
 		}},
-	})
+	}, addrEndpoint)
 
 	if strings.Contains(got, "endpoint=") {
 		t.Errorf("emitted an endpoint for a peer with no known path:\n%s", got)

@@ -3,8 +3,9 @@
 // A node runs in one of two modes and the file says which:
 //
 //	static   no LoginServer. The peer list in this file is the whole mesh,
-//	         maintained by hand. This is M0, and it stays supported because it
-//	         is the only mode that needs no infrastructure at all.
+//	         maintained by hand. It stays supported because it is the only mode
+//	         that needs no infrastructure at all — and because it is the only
+//	         one where WireGuard gets an ordinary UDP socket.
 //	managed  LoginServer set. The peer list here is only a cache of the last
 //	         netmap the control server sent, so a node that boots while the
 //	         server is unreachable still comes up with the mesh it last knew.
@@ -13,6 +14,7 @@ package conf
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 
@@ -36,15 +38,37 @@ type File struct {
 	// and the key its control channel is sealed under.
 	MachineKey key.Private `json:"machine_key"`
 
-	// DiscoKey authenticates NAT-traversal probes. Unused until M3, but
-	// generated now: adding it later would mean re-registering every node.
+	// DiscoKey authenticates NAT-traversal probes, so path discovery can run
+	// before any WireGuard session exists.
 	DiscoKey key.Private `json:"disco_key"`
 
 	ListenPort uint16 `json:"listen_port"`
 
 	// LoginServer empty means static mode.
 	LoginServer string     `json:"login_server,omitempty"`
-	ServerKey   key.Public `json:"server_key,omitempty"`
+	ServerKey   key.Public `json:"server_key,omitzero"`
+
+	// AuthKey is a join credential held only between `makima join` and the
+	// daemon's first successful registration, then cleared. It exists because
+	// a node that is expired by an operator has to present one again, and
+	// prompting for it on a headless machine is not an option.
+	AuthKey string `json:"auth_key,omitempty"`
+
+	// AdvertiseRoutes and AdvertiseExit are this node's standing offers to
+	// route for the mesh. Requests, not facts: nothing takes effect until the
+	// control plane says it was approved.
+	AdvertiseRoutes []netip.Prefix `json:"advertise_routes,omitempty"`
+	AdvertiseExit   bool           `json:"advertise_exit,omitempty"`
+
+	// ExitNode is the peer this node routes its own traffic through, by name.
+	// Empty means normal routing.
+	ExitNode string `json:"exit_node,omitempty"`
+
+	// Domain and HomeRelay cache what the last netmap said, so a node that
+	// starts while the control server is unreachable still comes up with mesh
+	// DNS and a relay rather than isolated.
+	Domain    string       `json:"domain,omitempty"`
+	HomeRelay netmap.Relay `json:"home_relay,omitzero"`
 
 	Self  netmap.Node   `json:"self"`
 	Peers []netmap.Node `json:"peers,omitempty"`
@@ -72,6 +96,8 @@ func (f *File) NetMap() *netmap.NetMap {
 		ListenPort: f.ListenPort,
 		Self:       f.Self,
 		Peers:      f.Peers,
+		HomeRelay:  f.HomeRelay,
+		Domain:     f.Domain,
 	}
 }
 

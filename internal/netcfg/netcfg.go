@@ -92,6 +92,19 @@ func (r *Router) Routes() []netip.Prefix {
 	return out
 }
 
+// Close removes every route this router installed.
+//
+// Routes outlive the process that created them. A daemon that exits without
+// this leaves the host believing it can still reach mesh addresses down an
+// interface that no longer exists, which blackholes them until a reboot — and
+// looks like a network fault rather than a leftover.
+func (r *Router) Close() error {
+	if err := r.Sync(nil); err != nil {
+		return err
+	}
+	return nil
+}
+
 // run executes a network configuration command, folding stderr into the error
 // so a failure says what the OS actually complained about.
 func run(name string, args ...string) error {

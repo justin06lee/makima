@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -31,6 +32,9 @@ import (
 
 // DefaultStatePath is where the mesh's membership lives.
 const DefaultStatePath = "/var/lib/makima/control.json"
+
+// version is stamped by the Makefile from `git describe`.
+var version = "dev"
 
 func main() {
 	log.SetFlags(0)
@@ -53,6 +57,23 @@ func main() {
 		err = forget(os.Args[2:])
 	case "key":
 		err = showKey(os.Args[2:])
+	case "relay":
+		err = relayCmd(os.Args[2:])
+	case "routes":
+		err = routesCmd(os.Args[2:])
+	case "acl":
+		err = aclCmd(os.Args[2:])
+	case "dns":
+		err = dnsCmd(os.Args[2:])
+	case "lock":
+		err = lockCmd(os.Args[2:])
+	case "tags":
+		err = tagsCmd(os.Args[2:])
+	case "expire":
+		err = expireCmd(os.Args[2:])
+	case "version":
+		fmt.Println(version)
+		return
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -70,11 +91,33 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `makima-server — the coordination plane for a makima mesh
 
+running it:
   makima-server serve   [-addr :8080]
-  makima-server authkey [-reusable] [-expiry 24h]
-  makima-server nodes
-  makima-server forget  -name N
   makima-server key
+
+admitting machines:
+  makima-server authkey [-reusable] [-expiry 24h] [-tags tag1,tag2]
+  makima-server nodes
+  makima-server forget  -name N     remove a machine entirely
+  makima-server expire  -name N     make it re-authenticate, keeping its address
+  makima-server tags    -name N -tags t1,t2
+
+reaching machines that cannot reach each other:
+  makima-server relay add    -url HOST:3478 -key K
+  makima-server relay ls
+  makima-server relay prefer -url HOST:3478
+  makima-server relay rm     -url HOST:3478
+
+names, access, and routing:
+  makima-server dns    on [-domain makima] | off | status
+  makima-server acl    show | set -file P | reset
+  makima-server routes ls | approve -name N [-all] | revoke -name N
+
+not trusting this server about membership:
+  makima-server lock init      generate a signing key and trust it
+  makima-server lock sign      sign every unsigned node
+  makima-server lock enable    start enforcing
+  makima-server lock status
 
 every command takes -state PATH (default `+DefaultStatePath+`)
 `)
@@ -152,8 +195,16 @@ func authkey(args []string) error {
 	socketPath := fs.String("socket", "", "admin socket path (default: beside the state file)")
 	reusable := fs.Bool("reusable", false, "allow the key to admit more than one node")
 	expiry := fs.Duration("expiry", 24*time.Hour, "how long the key stays valid; 0 means forever")
+	tags := fs.String("tags", "", "comma-separated policy tags applied to whoever joins with this key")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	var tagList []string
+	for _, s := range strings.Split(*tags, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			tagList = append(tagList, s)
+		}
 	}
 
 	var (
@@ -162,7 +213,7 @@ func authkey(args []string) error {
 		err    error
 	)
 	if admin, live := control.DialAdmin(sock(*socketPath, *statePath)); live {
-		if a, err = admin.MintAuthKey(*reusable, *expiry); err != nil {
+		if a, err = admin.MintAuthKeyTagged(*reusable, *expiry, tagList); err != nil {
 			return err
 		}
 		if srvKey, err = admin.ServerKey(); err != nil {
@@ -173,7 +224,7 @@ func authkey(args []string) error {
 		if err != nil {
 			return err
 		}
-		if a, err = store.MintAuthKey(*reusable, *expiry); err != nil {
+		if a, err = store.MintAuthKeyTagged(*reusable, *expiry, tagList); err != nil {
 			return err
 		}
 		srvKey = store.ServerKey().Public()

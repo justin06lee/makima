@@ -9,22 +9,23 @@
 package control
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/netip"
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
-	"golang.org/x/crypto/nacl/box"
+	"github.com/justin06lee/makima/internal/policy"
 )
 
 // ProtocolVersion guards against a node and server disagreeing about the wire
 // format after an upgrade. Bump it on any breaking change to the types below.
-const ProtocolVersion = 1
-
-// nonceSize is what NaCl box requires.
-const nonceSize = 24
+//
+// Version 2 added the relay assignment, disco key, and signature fields that
+// M2, M3 and M6 need. A version-1 node and a version-2 server share no
+// messages, which is the honest outcome: the older node has no way to be told
+// about a relay it does not know how to use.
+const ProtocolVersion = 2
 
 // Envelope wraps every control message.
 //
@@ -47,6 +48,12 @@ type RegisterRequest struct {
 	DiscoKey  key.Public       `json:"disco_key"`
 	AuthKey   string           `json:"auth_key"`
 	Endpoints []netip.AddrPort `json:"endpoints,omitempty"`
+
+	// AdvertiseRoutes are subnets this node offers to route for the mesh, and
+	// AdvertiseExit that it offers to carry general internet traffic. Both are
+	// requests, not assertions: nothing is published until approved.
+	AdvertiseRoutes []netip.Prefix `json:"advertise_routes,omitempty"`
+	AdvertiseExit   bool           `json:"advertise_exit,omitempty"`
 }
 
 // RegisterResponse is the server's answer to a join.
@@ -54,6 +61,12 @@ type RegisterResponse struct {
 	NodeID  netmap.NodeID `json:"node_id"`
 	Address netip.Prefix  `json:"address"`
 	Error   string        `json:"error,omitempty"`
+
+	// PendingRoutes are advertised routes still awaiting approval, so the CLI
+	// can tell an operator what to go and approve rather than leaving them to
+	// wonder why nothing is routing.
+	PendingRoutes []netip.Prefix `json:"pending_routes,omitempty"`
+	PendingExit   bool           `json:"pending_exit,omitempty"`
 }
 
 // MapRequest asks for the caller's view of the mesh.
@@ -72,6 +85,29 @@ type MapResponse struct {
 	Self    netmap.Node   `json:"self"`
 	Peers   []netmap.Node `json:"peers"`
 	Error   string        `json:"error,omitempty"`
+
+	// HomeRelay is where this node should connect, and where peers will look
+	// for it when no direct path exists.
+	HomeRelay netmap.Relay `json:"home_relay,omitzero"`
+
+	// Filter is the compiled access policy this node enforces on ingress. Nil
+	// means no policy, which is allow-all.
+	Filter *policy.Filter `json:"filter,omitempty"`
+
+	// Domain and DNS configure mesh name resolution.
+	Domain string           `json:"domain,omitempty"`
+	DNS    netmap.DNSConfig `json:"dns,omitzero"`
+
+	// Lock is the network lock's trusted keys, so a node can verify its peers'
+	// signatures without asking the server what to trust — which would defeat
+	// the point entirely.
+	Lock *LockConfig `json:"lock,omitempty"`
+}
+
+// LockConfig is the part of the network lock a node needs.
+type LockConfig struct {
+	Enabled     bool         `json:"enabled"`
+	TrustedKeys []SigningKey `json:"trusted_keys"`
 }
 
 // seal encrypts v to the recipient, authenticated as the sender.
@@ -80,30 +116,14 @@ func seal(v any, recipient key.Public, sender key.Private) (nonce, payload []byt
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode payload: %w", err)
 	}
-
-	var n [nonceSize]byte
-	if _, err := rand.Read(n[:]); err != nil {
-		return nil, nil, fmt.Errorf("read nonce entropy: %w", err)
-	}
-
-	sealed := box.Seal(nil, plain, &n, (*[32]byte)(&recipient), (*[32]byte)(&sender))
-	return n[:], sealed, nil
+	return key.Seal(plain, recipient, sender)
 }
 
 // open decrypts a payload from sender into v.
 func open(payload, nonce []byte, v any, sender key.Public, recipient key.Private) error {
-	if len(nonce) != nonceSize {
-		return fmt.Errorf("bad nonce length %d, want %d", len(nonce), nonceSize)
-	}
-	var n [nonceSize]byte
-	copy(n[:], nonce)
-
-	plain, ok := box.Open(nil, payload, &n, (*[32]byte)(&sender), (*[32]byte)(&recipient))
-	if !ok {
-		// Deliberately vague: a caller cannot distinguish "wrong key" from
-		// "tampered payload", so a prober learns nothing about which machine
-		// keys the server knows.
-		return fmt.Errorf("payload failed to authenticate")
+	plain, err := key.Open(payload, nonce, sender, recipient)
+	if err != nil {
+		return err
 	}
 	if err := json.Unmarshal(plain, v); err != nil {
 		return fmt.Errorf("decode payload: %w", err)

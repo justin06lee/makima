@@ -3,12 +3,12 @@
 # `make` alone does the whole golden path. Nothing else needs to be run by hand.
 
 BINDIR  := /usr/local/bin
-BINS    := makima makimad makima-server
+BINS    := makima makimad makima-server makima-relay
 BUILD   := build
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build install update restart stop clean test fmt vet check cross
+.PHONY: all build install update restart stop clean test race fmt vet check cross
 
 all: build install restart
 
@@ -39,7 +39,10 @@ update: stop
 	@$(MAKE) --no-print-directory install
 	@$(MAKE) --no-print-directory restart
 
-check: fmt vet test
+check: fmt vet test race
+
+race:
+	@go test -race ./... >/dev/null && echo "  race ok"
 
 fmt:
 	@gofmt -l . | grep -v '^$$' && { echo "unformatted files above"; exit 1; } || echo "  fmt ok"
@@ -60,3 +63,4 @@ cross:
 
 clean:
 	@rm -rf $(BUILD)
+

@@ -37,6 +37,11 @@ type Node struct {
 	Name string     `json:"name"`
 	Key  key.Public `json:"key"`
 
+	// DiscoKey authenticates this node's path probes. Peers need it before
+	// they can probe: a probe sealed to the wrong key is indistinguishable
+	// from noise, which is exactly the property that keeps strangers out.
+	DiscoKey key.Public `json:"disco_key,omitzero"`
+
 	// Addresses are the node's own mesh IPs, always inside the CGNAT range.
 	Addresses []netip.Prefix `json:"addresses"`
 
@@ -45,10 +50,32 @@ type Node struct {
 	AllowedIPs []netip.Prefix `json:"allowed_ips,omitempty"`
 
 	// Endpoints are candidate paths to reach this node: LAN addresses, a
-	// STUN-observed public address, a port-mapped address. In M0 these are
-	// written by hand. From M3 disco discovers and ranks them, and the first
-	// entry is simply the current best guess.
+	// STUN-observed public address, a port-mapped address. In a static mesh
+	// these are written by hand; in a managed one the node gathers them itself
+	// and republishes on every poll.
 	Endpoints []netip.AddrPort `json:"endpoints,omitempty"`
+
+	// RelayURL is where this node can always be reached, even when no direct
+	// path exists. Empty means the node has no relay and is only reachable
+	// directly.
+	RelayURL string `json:"relay_url,omitempty"`
+
+	// Online is the control plane's view of whether the node is currently
+	// polling. Advisory: a node can be reachable without having polled
+	// recently, and unreachable despite having done so.
+	Online bool `json:"online,omitempty"`
+
+	// KeySignature is the network-lock signature over this node's key, empty
+	// when the mesh has no lock enabled. Verified by every peer before the
+	// node is admitted to the data plane, which is what stops a compromised
+	// control server from introducing one.
+	KeySignature []byte `json:"key_signature,omitempty"`
+}
+
+// Relay is a relay a node may use.
+type Relay struct {
+	URL string     `json:"url"`
+	Key key.Public `json:"key,omitzero"`
 }
 
 // NetMap is one node's complete picture of the mesh.
@@ -65,6 +92,30 @@ type NetMap struct {
 	// to choose, which is the right default once disco can discover and
 	// publish whatever it picked.
 	ListenPort uint16 `json:"listen_port"`
+
+	// HomeRelay is the relay this node connects to and advertises as its own.
+	// Peers reach it there when no direct path works.
+	HomeRelay Relay `json:"home_relay,omitzero"`
+
+	// DNS is the mesh's name service configuration.
+	DNS DNSConfig `json:"dns,omitzero"`
+
+	// Domain is the mesh's DNS suffix, e.g. "makima".
+	Domain string `json:"domain,omitempty"`
+}
+
+// DNSConfig is what a node needs to answer mesh name lookups.
+type DNSConfig struct {
+	// Enabled turns on the local resolver and the OS integration that points
+	// mesh names at it.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Domain is the suffix mesh names live under.
+	Domain string `json:"domain,omitempty"`
+
+	// Nameservers are upstream resolvers for names outside the mesh, used only
+	// when this node is acting as an exit node's DNS.
+	Nameservers []netip.Addr `json:"nameservers,omitempty"`
 }
 
 // Addr is the node's primary mesh address.
@@ -114,11 +165,55 @@ func (m *NetMap) WireGuardConfig() wg.Config {
 // into the tunnel would blackhole traffic to mesh addresses that are not
 // actually in this node's map, which matters as soon as ACLs start trimming
 // who can see whom.
+//
+// An exit node's default-route halves are excluded even though they arrive as
+// ordinary AllowedIPs. Installing them here would redirect this machine's
+// entire default route the moment any peer became an exit node — including for
+// nodes that never asked to use one — and would do it without the pinned route
+// that keeps the exit node itself reachable. Using an exit node is an opt-in
+// with a careful installation order, and that lives in netcfg.
 func (m *NetMap) Routes() []netip.Prefix {
 	var routes []netip.Prefix
 	for _, p := range m.Peers {
 		routes = append(routes, p.Addresses...)
-		routes = append(routes, p.AllowedIPs...)
+		for _, r := range p.AllowedIPs {
+			if IsDefaultHalf(r) {
+				continue
+			}
+			routes = append(routes, r)
+		}
 	}
 	return routes
+}
+
+// DefaultHalves are the two prefixes that together mean "all IPv4 traffic".
+//
+// Expressed as halves rather than 0.0.0.0/0 so they win over the host's real
+// default route by longest-prefix match while leaving it intact underneath —
+// which makes undoing an exit node a matter of removing two routes rather than
+// reconstructing the original default from memory.
+var DefaultHalves = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/1"),
+	netip.MustParsePrefix("128.0.0.0/1"),
+}
+
+// IsDefaultHalf reports whether a prefix is one of them.
+func IsDefaultHalf(p netip.Prefix) bool {
+	for _, h := range DefaultHalves {
+		if p == h {
+			return true
+		}
+	}
+	return false
+}
+
+// OffersExit reports whether a node has been approved as an exit node.
+func (n Node) OffersExit() bool {
+	found := 0
+	for _, r := range n.AllowedIPs {
+		if IsDefaultHalf(r) {
+			found++
+		}
+	}
+	return found == len(DefaultHalves)
 }

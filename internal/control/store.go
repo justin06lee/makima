@@ -13,6 +13,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
+	"github.com/justin06lee/makima/internal/policy"
 )
 
 // State is everything the control plane knows, and the whole of what must
@@ -35,7 +36,37 @@ type State struct {
 	Nodes    []*Node    `json:"nodes"`
 	AuthKeys []*AuthKey `json:"auth_keys"`
 	NextID   uint64     `json:"next_id"`
+
+	// Relays are the mesh's relays, in preference order.
+	//
+	// Every node is assigned the same one. That is not a simplification to be
+	// fixed later but a consequence of what a relay is: two nodes can only
+	// meet on a relay they are both connected to, and this relay does not
+	// forward to other relays. A list therefore means failover, not load
+	// spreading — the server picks one, and because the choice travels in the
+	// netmap, the whole mesh moves together or not at all.
+	Relays []netmap.Relay `json:"relays,omitempty"`
+
+	// Domain is the DNS suffix mesh names live under.
+	Domain string `json:"domain,omitempty"`
+
+	// DNSEnabled turns on name resolution mesh-wide.
+	DNSEnabled bool `json:"dns_enabled,omitempty"`
+
+	// Policy is the access-control policy. A nil policy means the default:
+	// every node may reach every other node.
+	Policy *policy.Policy `json:"policy,omitempty"`
+
+	// Lock is the network lock — the signing authority that lets nodes verify
+	// each other's keys without trusting this server. Nil means disabled.
+	Lock *Lock `json:"lock,omitempty"`
 }
+
+// DefaultDomain is the suffix mesh names live under when none is configured.
+//
+// Not a public TLD and not ".local", which mDNS already owns and which would
+// make every mesh lookup race a multicast responder.
+const DefaultDomain = "makima"
 
 // Node is one registered machine.
 type Node struct {
@@ -48,6 +79,48 @@ type Node struct {
 	Endpoints  []netip.AddrPort `json:"endpoints,omitempty"`
 	Created    time.Time        `json:"created"`
 	LastSeen   time.Time        `json:"last_seen"`
+
+	// AdvertisedRoutes are subnets this node has offered to route for the
+	// mesh. Offering is not enabling: a node can claim any prefix it likes,
+	// including one that would hijack the whole internet, so nothing is
+	// installed anywhere until an operator approves it.
+	AdvertisedRoutes []netip.Prefix `json:"advertised_routes,omitempty"`
+
+	// ApprovedRoutes are the subset an operator has accepted. Only these
+	// appear in anyone's netmap.
+	ApprovedRoutes []netip.Prefix `json:"approved_routes,omitempty"`
+
+	// AdvertisesExit reports that this node has offered to carry general
+	// internet traffic, and ExitApproved that an operator agreed.
+	AdvertisesExit bool `json:"advertises_exit,omitempty"`
+	ExitApproved   bool `json:"exit_approved,omitempty"`
+
+	// Tags label a node for policy. A node's tags come from the auth key it
+	// joined with, not from anything the node says about itself — otherwise a
+	// node could grant itself whatever access the policy gives a tag.
+	Tags []string `json:"tags,omitempty"`
+
+	// KeySignature is the network lock's signature over this node's key,
+	// present only once the lock is enabled and the node has been signed.
+	KeySignature []byte `json:"key_signature,omitempty"`
+
+	// KeyRotatedAt records the last node-key change, so an operator can see
+	// which machines are overdue.
+	KeyRotatedAt time.Time `json:"key_rotated_at,omitzero"`
+
+	// Expired means the node must present a valid auth key again before it is
+	// served another netmap. Set by an operator on a machine that may have
+	// been lost, and cleared by a successful re-registration.
+	Expired bool `json:"expired,omitempty"`
+}
+
+// Online reports whether the node has polled recently enough to be considered
+// present.
+//
+// The threshold is twice the poll heartbeat: one missed heartbeat is a network
+// hiccup, two means the node is genuinely not talking to us.
+func (n *Node) Online() bool {
+	return !n.LastSeen.IsZero() && time.Since(n.LastSeen) < 2*pollTimeout
 }
 
 // AuthKey is a single credential for joining the mesh.
@@ -58,6 +131,13 @@ type AuthKey struct {
 	Used     bool          `json:"used"`
 	UsedBy   netmap.NodeID `json:"used_by,omitempty"`
 	Created  time.Time     `json:"created"`
+
+	// Tags are applied to every node that joins with this key.
+	//
+	// Tagging via the credential rather than letting a node declare its own is
+	// the only arrangement where a tag means anything: a node that could name
+	// its own tags could grant itself whatever access the policy gives them.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // Valid reports whether the key may still be redeemed.
@@ -237,10 +317,45 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 	now := time.Now().UTC()
 
 	if existing := s.findByMachineKey(machineKey); existing != nil {
+		// An expired node has to prove itself again before anything else is
+		// accepted from it, including a key rotation — otherwise "expire the
+		// stolen laptop" would be undone by the laptop simply reconnecting.
+		if existing.Expired {
+			auth := s.findAuthKey(req.AuthKey)
+			if auth == nil || !auth.Valid(now) {
+				return nil, fmt.Errorf("node %q has been expired by an operator and needs a new auth key to rejoin", existing.Name)
+			}
+			auth.Used = true
+			auth.UsedBy = existing.ID
+			existing.Expired = false
+			existing.Tags = auth.Tags
+		}
+
+		// A changed node key is a rotation. Recording when it happened is what
+		// lets an operator see which machines are overdue, and dropping the
+		// old signature is mandatory: the signature covers the old key and
+		// would verify against nothing.
+		if existing.NodeKey != req.NodeKey && !existing.NodeKey.IsZero() {
+			existing.KeyRotatedAt = now
+			existing.KeySignature = nil
+		}
+
 		existing.NodeKey = req.NodeKey
 		existing.DiscoKey = req.DiscoKey
 		existing.Endpoints = req.Endpoints
 		existing.LastSeen = now
+		existing.AdvertisedRoutes = req.AdvertiseRoutes
+		existing.AdvertisesExit = req.AdvertiseExit
+
+		// An approval only ever covers a route the node is still advertising.
+		// Without this, a node could advertise 10.0.0.0/24, have it approved,
+		// stop advertising it, and later have the stale approval reactivated
+		// by re-advertising — approval granted once, applied forever.
+		existing.ApprovedRoutes = intersect(existing.ApprovedRoutes, req.AdvertiseRoutes)
+		if !req.AdvertiseExit {
+			existing.ExitApproved = false
+		}
+
 		if req.Name != "" {
 			existing.Name = req.Name
 		}
@@ -265,15 +380,18 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 	}
 
 	n := &Node{
-		ID:         netmap.NodeID(s.state.NextID),
-		Name:       req.Name,
-		MachineKey: machineKey,
-		NodeKey:    req.NodeKey,
-		DiscoKey:   req.DiscoKey,
-		Address:    addr,
-		Endpoints:  req.Endpoints,
-		Created:    now,
-		LastSeen:   now,
+		ID:               netmap.NodeID(s.state.NextID),
+		Name:             req.Name,
+		MachineKey:       machineKey,
+		NodeKey:          req.NodeKey,
+		DiscoKey:         req.DiscoKey,
+		Address:          addr,
+		Endpoints:        req.Endpoints,
+		Created:          now,
+		LastSeen:         now,
+		Tags:             auth.Tags,
+		AdvertisedRoutes: req.AdvertiseRoutes,
+		AdvertisesExit:   req.AdvertiseExit,
 	}
 	s.state.NextID++
 	s.state.Nodes = append(s.state.Nodes, n)
@@ -328,9 +446,10 @@ func sameEndpoints(a, b []netip.AddrPort) bool {
 
 // NetMapFor builds one node's view of the mesh.
 //
-// Every node currently sees every other node. That is where the ACL policy
-// engine plugs in later: this function becomes the place a compiled packet
-// filter trims the peer list, and nothing else has to change.
+// This is where the policy engine lives. A node's netmap is not the mesh; it
+// is the part of the mesh that node is allowed to see, and trimming it here
+// rather than only at the packet filter means an unauthorised peer is never
+// even named — no key, no address, nothing to attack.
 func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -340,28 +459,146 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 		return nil, fmt.Errorf("unknown machine key")
 	}
 
+	relay := s.activeRelayLocked()
+
 	resp := &MapResponse{
-		Version: s.version,
-		Self:    self.toNetmapNode(),
-		Peers:   make([]netmap.Node, 0, len(s.state.Nodes)-1),
+		Version:   s.version,
+		Self:      s.toNetmapNode(self, relay),
+		Peers:     make([]netmap.Node, 0, len(s.state.Nodes)-1),
+		HomeRelay: relay,
+		Domain:    s.domainLocked(),
+		DNS: netmap.DNSConfig{
+			Enabled: s.state.DNSEnabled,
+			Domain:  s.domainLocked(),
+		},
 	}
+
+	pol := s.policyLocked()
+	selfNode := self.policyNode()
+
+	// Every node, not just the visible ones: a rule whose source is a group
+	// has to resolve to the addresses of every member, including members this
+	// node cannot see. Their addresses appear in the filter, which is
+	// unavoidable — a filter that named only visible peers could not express
+	// "accept from the servers" at all.
+	all := make([]policy.Node, 0, len(s.state.Nodes))
+	for _, n := range s.state.Nodes {
+		all = append(all, n.policyNode())
+	}
+
 	for _, n := range s.state.Nodes {
 		if n.ID == self.ID {
 			continue
 		}
-		resp.Peers = append(resp.Peers, n.toNetmapNode())
+		if !pol.CanSee(selfNode, n.policyNode()) {
+			continue
+		}
+		resp.Peers = append(resp.Peers, s.toNetmapNode(n, relay))
+	}
+
+	// The packet filter is the second half of the policy. The netmap decides
+	// who a node may know about; this decides what may actually be sent to it,
+	// which has to be enforced on the node because only the receiver can be
+	// trusted to check.
+	resp.Filter = pol.CompileFor(selfNode, all)
+
+	if s.state.Lock != nil {
+		resp.Lock = &LockConfig{
+			Enabled:     s.state.Lock.Enabled,
+			TrustedKeys: s.state.Lock.TrustedKeys,
+		}
 	}
 	return resp, nil
 }
 
-func (n *Node) toNetmapNode() netmap.Node {
-	return netmap.Node{
-		ID:        n.ID,
-		Name:      n.Name,
-		Key:       n.NodeKey,
-		Addresses: []netip.Prefix{n.Address},
-		Endpoints: n.Endpoints,
+// policyLocked returns the mesh's policy, or the permissive default.
+func (s *Store) policyLocked() *policy.Policy {
+	if s.state.Policy == nil {
+		return policy.DefaultPolicy()
 	}
+	return s.state.Policy
+}
+
+// policyNode projects a stored node into what the policy engine needs.
+//
+// Tags come from the auth key the node joined with, never from the node
+// itself. A node that could tag itself could grant itself whatever access a
+// tag confers, which would make the policy advisory rather than enforced.
+func (n *Node) policyNode() policy.Node {
+	return policy.Node{
+		Name:      n.Name,
+		Tags:      n.Tags,
+		Addresses: []netip.Prefix{n.Address},
+		Routes:    n.ApprovedRoutes,
+	}
+}
+
+// activeRelayLocked is the relay every node is currently assigned.
+func (s *Store) activeRelayLocked() netmap.Relay {
+	if len(s.state.Relays) == 0 {
+		return netmap.Relay{}
+	}
+	return s.state.Relays[0]
+}
+
+func (s *Store) domainLocked() string {
+	if s.state.Domain != "" {
+		return s.state.Domain
+	}
+	return DefaultDomain
+}
+
+func (s *Store) toNetmapNode(n *Node, relay netmap.Relay) netmap.Node {
+	out := netmap.Node{
+		ID:           n.ID,
+		Name:         n.Name,
+		Key:          n.NodeKey,
+		DiscoKey:     n.DiscoKey,
+		Addresses:    []netip.Prefix{n.Address},
+		Endpoints:    n.Endpoints,
+		RelayURL:     relay.URL,
+		Online:       n.Online(),
+		KeySignature: n.KeySignature,
+	}
+
+	// Only approved routes are ever published. An advertised-but-unapproved
+	// route exists solely in the control plane's records, where an operator
+	// can see it and decide.
+	out.AllowedIPs = append(out.AllowedIPs, n.ApprovedRoutes...)
+	if n.ExitApproved {
+		out.AllowedIPs = append(out.AllowedIPs, exitRoutes()...)
+	}
+	return out
+}
+
+// exitRoutes are the two prefixes that together mean "all traffic".
+//
+// Expressed as two halves rather than 0.0.0.0/0 so they lose to any more
+// specific route by longest-prefix match — including the host's own default
+// route, which must keep working for the tunnel's own packets to get out.
+func exitRoutes() []netip.Prefix {
+	return []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/1"),
+		netip.MustParsePrefix("128.0.0.0/1"),
+	}
+}
+
+// intersect keeps only the prefixes present in both lists.
+func intersect(a, b []netip.Prefix) []netip.Prefix {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	in := make(map[netip.Prefix]bool, len(b))
+	for _, p := range b {
+		in[p] = true
+	}
+	out := make([]netip.Prefix, 0, len(a))
+	for _, p := range a {
+		if in[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // MintAuthKey creates a join credential. A zero ttl means it never expires.
@@ -371,6 +608,11 @@ func (n *Node) toNetmapNode() netmap.Node {
 // typo — into a credential that is valid forever, failing in the most
 // permissive direction available.
 func (s *Store) MintAuthKey(reusable bool, ttl time.Duration) (*AuthKey, error) {
+	return s.MintAuthKeyTagged(reusable, ttl, nil)
+}
+
+// MintAuthKeyTagged creates a credential that also assigns policy tags.
+func (s *Store) MintAuthKeyTagged(reusable bool, ttl time.Duration, tags []string) (*AuthKey, error) {
 	if ttl < 0 {
 		return nil, fmt.Errorf("auth key lifetime cannot be negative (got %s); pass 0 for a key that never expires", ttl)
 	}
@@ -384,6 +626,7 @@ func (s *Store) MintAuthKey(reusable bool, ttl time.Duration) (*AuthKey, error) 
 		Secret:   "makima_" + base64.RawURLEncoding.EncodeToString(raw[:]),
 		Reusable: reusable,
 		Created:  time.Now().UTC(),
+		Tags:     tags,
 	}
 	if ttl > 0 {
 		a.Expires = a.Created.Add(ttl)

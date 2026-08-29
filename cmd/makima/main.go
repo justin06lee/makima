@@ -22,6 +22,9 @@ import (
 	"github.com/justin06lee/makima/internal/netmap"
 )
 
+// version is stamped by the Makefile from `git describe`.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -40,6 +43,13 @@ func main() {
 		err = peer(os.Args[2:])
 	case "show":
 		err = show(os.Args[2:])
+	case "status":
+		err = status(os.Args[2:])
+	case "set":
+		err = set(os.Args[2:])
+	case "version":
+		fmt.Println(version)
+		return
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -66,9 +76,15 @@ running a static mesh with no server:
   makima peer add -name N -key K -addr A [-endpoint HOST:PORT]
   makima peer rm  -name N
 
+routing and exit nodes (managed meshes only):
+  makima set -advertise-routes 192.168.1.0/24
+  makima set -advertise-exit-node true
+  makima set -exit-node NAME
+
 always:
+  makima status                    peers, paths, and what this node offers
+  makima show                      the raw configuration
   makima genkey                    generate a keypair and print it
-  makima show                      print the current configuration
 
 every command takes -config PATH (default `+conf.DefaultPath+`)
 
@@ -206,6 +222,11 @@ func joinNode(args []string) error {
 		ListenPort:  uint16(*port),
 		LoginServer: strings.TrimRight(*server, "/"),
 		ServerKey:   srvKey,
+		// Kept only until the daemon's first successful registration, which
+		// clears it. A node that an operator expires needs to present one
+		// again, and there is nobody at the keyboard of a headless machine to
+		// type it.
+		AuthKey: *authKey,
 		Self: netmap.Node{
 			ID:        resp.NodeID,
 			Name:      *name,

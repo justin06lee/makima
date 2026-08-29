@@ -25,10 +25,14 @@ import (
 	"fmt"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // Size is the length of every key in this package, in bytes.
 const Size = 32
+
+// NonceSize is the length of a NaCl box nonce.
+const NonceSize = 24
 
 // Private is the secret half of a Curve25519 keypair. It is always stored
 // clamped, so Public is stable across calls.
@@ -124,6 +128,46 @@ func decode(s string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: got %d bytes, want %d", ErrBadKey, len(b), Size)
 	}
 	return b, nil
+}
+
+// Seal encrypts plain to recipient, authenticated as sender, and returns the
+// fresh nonce alongside the ciphertext.
+//
+// Every protocol in makima that needs a confidential, authenticated message
+// between two keyholders routes through here — the control channel, the relay
+// handshake, and disco probes alike. There is no separate signature step
+// anywhere: only the holder of the matching private key can produce something
+// that opens, so a successful decryption *is* the proof of identity. Keeping
+// that one primitive in one place is what makes that claim checkable.
+func Seal(plain []byte, recipient Public, sender Private) (nonce, sealed []byte, err error) {
+	var n [NonceSize]byte
+	if _, err := rand.Read(n[:]); err != nil {
+		return nil, nil, fmt.Errorf("read nonce entropy: %w", err)
+	}
+	sealed = box.Seal(nil, plain, &n, (*[Size]byte)(&recipient), (*[Size]byte)(&sender))
+	return n[:], sealed, nil
+}
+
+// ErrNotAuthenticated reports a payload that did not open.
+//
+// Deliberately one error for every failure mode: a caller cannot distinguish
+// "wrong key" from "tampered ciphertext", so a prober learns nothing about
+// which keys we hold by watching how we fail.
+var ErrNotAuthenticated = errors.New("key: payload failed to authenticate")
+
+// Open decrypts a payload from sender.
+func Open(sealed, nonce []byte, sender Public, recipient Private) ([]byte, error) {
+	if len(nonce) != NonceSize {
+		return nil, fmt.Errorf("%w: nonce is %d bytes, want %d", ErrNotAuthenticated, len(nonce), NonceSize)
+	}
+	var n [NonceSize]byte
+	copy(n[:], nonce)
+
+	plain, ok := box.Open(nil, sealed, &n, (*[Size]byte)(&sender), (*[Size]byte)(&recipient))
+	if !ok {
+		return nil, ErrNotAuthenticated
+	}
+	return plain, nil
 }
 
 // MarshalText lets public keys sit naturally in JSON config and wire messages.

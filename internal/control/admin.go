@@ -57,6 +57,7 @@ func CheckSocketPath(path string) error {
 type AuthKeyRequest struct {
 	Reusable bool          `json:"reusable"`
 	TTL      time.Duration `json:"ttl"`
+	Tags     []string      `json:"tags,omitempty"`
 }
 
 // ForgetRequest removes a node.
@@ -82,7 +83,7 @@ func (s *Server) AdminHandler() http.Handler {
 			writeJSON(w, http.StatusBadRequest, adminError{err.Error()})
 			return
 		}
-		a, err := s.store.MintAuthKey(req.Reusable, req.TTL)
+		a, err := s.store.MintAuthKeyTagged(req.Reusable, req.TTL, req.Tags)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, adminError{err.Error()})
 			return
@@ -114,6 +115,7 @@ func (s *Server) AdminHandler() http.Handler {
 		})
 	})
 
+	s.registerAdminRoutes(mux)
 	return mux
 }
 
@@ -184,8 +186,13 @@ func DialAdmin(path string) (*AdminClient, bool) {
 
 // MintAuthKey asks the running server for a join credential.
 func (c *AdminClient) MintAuthKey(reusable bool, ttl time.Duration) (*AuthKey, error) {
+	return c.MintAuthKeyTagged(reusable, ttl, nil)
+}
+
+// MintAuthKeyTagged asks for one that also assigns policy tags.
+func (c *AdminClient) MintAuthKeyTagged(reusable bool, ttl time.Duration, tags []string) (*AuthKey, error) {
 	var a AuthKey
-	if err := c.call(http.MethodPost, "/admin/authkey", AuthKeyRequest{Reusable: reusable, TTL: ttl}, &a); err != nil {
+	if err := c.call(http.MethodPost, "/admin/authkey", AuthKeyRequest{Reusable: reusable, TTL: ttl, Tags: tags}, &a); err != nil {
 		return nil, err
 	}
 	return &a, nil
