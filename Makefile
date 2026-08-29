@@ -8,7 +8,7 @@ BUILD   := build
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build install update restart stop clean test race fmt vet check cross
+.PHONY: all build install update restart stop clean test race fmt vet check cross service
 
 all: build install restart
 
@@ -63,4 +63,8 @@ cross:
 
 clean:
 	@rm -rf $(BUILD)
-
+# Service units. Installed on request rather than by `make`, because a daemon
+# that enables itself at boot on a machine somebody was only trying out is a
+# surprise, and this one takes over an interface and the routing table.
+service:
+	@sh dist/install-service.sh

@@ -1,0 +1,29 @@
+[Unit]
+Description=makima control plane
+Documentation=https://github.com/justin06lee/makima
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/makima-server serve
+Restart=always
+RestartSec=5
+
+# The control server never touches an interface and never needs root. Running
+# it as a plain user is what makes "compromising it buys an attacker the
+# ability to lie about membership, and nothing else" true of the machine as
+# well as of the protocol.
+DynamicUser=yes
+StateDirectory=makima
+Environment=MAKIMA_STATE=/var/lib/makima/control.json
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

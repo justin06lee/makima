@@ -1,0 +1,31 @@
+[Unit]
+Description=makima relay
+Documentation=https://github.com/justin06lee/makima
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/makima-relay serve
+Restart=always
+RestartSec=5
+
+# A relay holds no WireGuard key and decrypts nothing. It has less business
+# being root than anything else here, and the confinement below is the machine
+# saying the same thing the protocol does.
+DynamicUser=yes
+StateDirectory=makima
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# A relay is a forwarder with a connection per node and nothing else to do.
+# The default file limit is the first thing a busy one runs out of.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

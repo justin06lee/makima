@@ -1,0 +1,36 @@
+[Unit]
+Description=makima node daemon
+Documentation=https://github.com/justin06lee/makima
+# The tunnel needs a working network to reach its control server and relay, and
+# nothing that comes later should start before mesh addresses resolve.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/makimad
+Restart=always
+RestartSec=5
+
+# The daemon holds a TUN device. SIGTERM lets it remove its routes and resolver
+# entry on the way out; a KILL would leave both behind, and a machine that
+# believes it can still reach mesh addresses down a dead interface blackholes
+# them until the next reboot.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Root is required to create the TUN device and edit the routing table. The
+# capability set is narrowed to what that actually needs rather than left as
+# full root: NET_ADMIN for the interface and routes, NET_RAW for the socket.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+# The daemon reads and writes exactly one directory.
+ReadWritePaths=/etc/makima /etc/resolver
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

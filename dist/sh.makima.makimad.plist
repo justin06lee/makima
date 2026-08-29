@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>sh.makima.makimad</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/makimad</string>
+  </array>
+
+  <!-- A LaunchDaemon rather than a LaunchAgent: creating a utun device and
+       editing the routing table needs root, and the tunnel should exist
+       before anyone logs in. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- launchd sends SIGTERM first, which lets the daemon remove its routes
+       and its /etc/resolver entry. Twenty seconds is far more than it needs
+       and cheap insurance against a machine left believing it can reach mesh
+       addresses down an interface that is gone. -->
+  <key>ExitTimeOut</key>
+  <integer>20</integer>
+
+  <key>StandardOutPath</key>
+  <string>/var/log/makimad.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/makimad.log</string>
+</dict>
+</plist>
