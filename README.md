@@ -140,6 +140,14 @@ sudo makima serve 11434 -name ollama
 curl http://desktop.makima:11434/api/tags
 ```
 
+A service on another machine on that desktop's network — a printer, a NAS, a
+switch's web page — takes a three-part form instead, and the machine behind it
+never learns the mesh exists:
+
+```sh
+sudo makima serve 8080:192.168.1.50:80 -name printer
+```
+
 The daemon listens on the desktop's **mesh address** and forwards to
 `127.0.0.1:11434`. Nothing about Ollama changes — it stays bound to localhost,
 where it was right to be. The listener does not exist on your LAN, so nothing
