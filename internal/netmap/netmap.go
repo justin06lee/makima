@@ -70,6 +70,50 @@ type Node struct {
 	// node is admitted to the data plane, which is what stops a compromised
 	// control server from introducing one.
 	KeySignature []byte `json:"key_signature,omitempty"`
+
+	// Services are the ports this node publishes on the mesh.
+	//
+	// Advertised so the rest of the mesh can answer "what can I reach from
+	// here?" without anyone maintaining a list by hand. Only the mesh-facing
+	// port is published, never where it forwards to: a peer has no use for
+	// the knowledge that a service lives on 127.0.0.1:11434, and publishing
+	// internal layout for no benefit is how a convenience becomes a
+	// reconnaissance aid.
+	Services []Service `json:"services,omitempty"`
+}
+
+// Service is one port a node publishes on the mesh.
+type Service struct {
+	Name string `json:"name,omitempty"`
+	Port uint16 `json:"port"`
+
+	// Scheme is a hint for building a URL, "http" or "https" when the service
+	// speaks it. Empty means a plain TCP port and nothing to link to.
+	Scheme string `json:"scheme,omitempty"`
+}
+
+// URL renders a clickable address for a service on a node, or empty when the
+// service is not something a browser can open.
+func (s Service) URL(host string) string {
+	if s.Scheme == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s:%d", s.Scheme, host, s.Port)
+}
+
+// GuessScheme reports the scheme a port most likely speaks.
+//
+// A guess, and only ever used to decide whether to render a link. Getting it
+// wrong costs a browser tab; not guessing at all costs the entire point of
+// publishing a web service on a mesh, which is that you can click it.
+func GuessScheme(port uint16) string {
+	switch port {
+	case 80, 3000, 5000, 7860, 8000, 8080, 8081, 8188, 8888, 11434:
+		return "http"
+	case 443, 8443:
+		return "https"
+	}
+	return ""
 }
 
 // Relay is a relay a node may use.

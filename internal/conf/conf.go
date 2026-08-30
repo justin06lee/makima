@@ -20,6 +20,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
+	"github.com/justin06lee/makima/internal/serve"
 )
 
 // DefaultPath is where the daemon looks when no path is given. The daemon
@@ -64,6 +65,13 @@ type File struct {
 	// Empty means normal routing.
 	ExitNode string `json:"exit_node,omitempty"`
 
+	// Services are the local ports this node publishes on its mesh address.
+	//
+	// The target half stays here and is never sent anywhere. The control plane
+	// learns only which mesh port is open, because that is all any other node
+	// needs and telling it more would publish this machine's internal layout.
+	Services []serve.Service `json:"services,omitempty"`
+
 	// Domain and HomeRelay cache what the last netmap said, so a node that
 	// starts while the control server is unreachable still comes up with mesh
 	// DNS and a relay rather than isolated.
@@ -88,6 +96,23 @@ func NewIdentity() (nodeKey, machineKey, discoKey key.Private, err error) {
 
 // Managed reports whether a control server owns this node's peer list.
 func (f *File) Managed() bool { return f.LoginServer != "" }
+
+// AdvertisedServices renders the local service list into the form the control
+// plane is told about: which mesh ports are open, and nothing else.
+func (f *File) AdvertisedServices() []netmap.Service {
+	if len(f.Services) == 0 {
+		return nil
+	}
+	out := make([]netmap.Service, 0, len(f.Services))
+	for _, s := range f.Services {
+		out = append(out, netmap.Service{
+			Name:   s.Name,
+			Port:   s.Port,
+			Scheme: netmap.GuessScheme(s.Port),
+		})
+	}
+	return out
+}
 
 // NetMap renders the file into the mesh view the daemon consumes.
 func (f *File) NetMap() *netmap.NetMap {

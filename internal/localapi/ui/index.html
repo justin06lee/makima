@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>makima</title>
+<style>
+  /* The palette is the banner's: near-black ground, gold for the control
+     plane, crimson for the data path. Nothing else gets a colour, so when
+     something turns red it means something. */
+  :root {
+    --bg: #0a0b10;
+    --panel: #12131a;
+    --panel-2: #171822;
+    --line: #23242f;
+    --text: #E8E6E3;
+    --dim: #8e8f9c;
+    --gold: #E0A94A;
+    --crimson: #C4353F;
+    --green: #4CAF7D;
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: radial-gradient(ellipse at 50% 0%, #14151d 0%, var(--bg) 70%);
+    color: var(--text);
+    font: 14px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  header {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 26px 28px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 {
+    margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .14em;
+    text-transform: lowercase; color: var(--gold);
+  }
+  header .who { color: var(--dim); }
+  header .who b { color: var(--text); font-weight: 600; }
+
+  .pill {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px;
+    font-size: 12px; color: var(--dim); background: var(--panel);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  .dot.up { background: var(--green); }
+  .dot.down { background: var(--crimson); }
+  .dot.relay { background: var(--gold); }
+
+  main {
+    display: grid; gap: 18px; padding: 22px 28px 60px;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    max-width: 1500px;
+  }
+
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  section.wide { grid-column: 1 / -1; }
+  section > h2 {
+    margin: 0; padding: 13px 16px; font-size: 12px; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+    border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px;
+  }
+  section > h2 .count {
+    margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none;
+  }
+  .body { padding: 14px 16px; }
+
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 7px 14px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; word-break: break-all; }
+
+  .peer {
+    padding: 13px 16px; border-bottom: 1px solid var(--line);
+  }
+  .peer:last-child { border-bottom: 0; }
+  .peer .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .peer .name { font-weight: 600; }
+  .peer .addr { color: var(--dim); }
+  .peer .path {
+    margin-left: auto; font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line);
+  }
+  .peer .path.direct { color: var(--green); border-color: #23402f; }
+  .peer .path.relayed { color: var(--gold); border-color: #3a2f18; }
+  .peer .path.none { color: var(--crimson); border-color: #3a1e21; }
+
+  .chips { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 9px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 7px; font-size: 12.5px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); text-decoration: none;
+  }
+  a.chip:hover { border-color: var(--gold); color: var(--gold); }
+  .chip .port { color: var(--dim); }
+  .chip.plain { color: var(--dim); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; }
+  tr:last-child td { border-bottom: 0; }
+  td.state.ok { color: var(--green); }
+  td.state.bad { color: var(--crimson); }
+  td.state.warn { color: var(--gold); }
+
+  form.add { display: flex; gap: 9px; flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid var(--line); }
+  input, button, select {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 11px;
+  }
+  input { min-width: 0; }
+  input:focus, select:focus { outline: none; border-color: var(--gold); }
+  input.port { width: 108px; }
+  input.name { flex: 1 1 130px; }
+  button {
+    cursor: pointer; background: var(--gold); color: #171100; border-color: var(--gold);
+    font-weight: 600;
+  }
+  button.ghost { background: transparent; color: var(--dim); border-color: var(--line); font-weight: 400; }
+  button.ghost:hover { color: var(--crimson); border-color: var(--crimson); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .hint { color: var(--dim); font-size: 12.5px; padding: 0 16px 14px; }
+  .hint code { color: var(--gold); }
+
+  .check { display: flex; gap: 11px; padding: 11px 16px; border-bottom: 1px solid var(--line); align-items: flex-start; }
+  .check:last-child { border-bottom: 0; }
+  .check .mark { flex: none; width: 16px; text-align: center; font-weight: 700; }
+  .check.ok .mark { color: var(--green); }
+  .check.bad .mark { color: var(--crimson); }
+  .check.warn .mark { color: var(--gold); }
+  .check .what { flex: 1; }
+  .check .what b { font-weight: 600; }
+  .check .detail { color: var(--dim); }
+  .fix {
+    margin-top: 7px; padding: 7px 10px; background: #0d0e14;
+    border: 1px solid var(--line); border-radius: 6px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;
+    color: var(--gold); cursor: pointer; word-break: break-all;
+  }
+  .fix:hover { border-color: var(--gold); }
+  .fix::after { content: " ⧉"; color: var(--dim); }
+
+  .empty { padding: 22px 16px; color: var(--dim); text-align: center; }
+  .banner {
+    margin: 0 16px 14px; padding: 11px 13px; border-radius: 8px;
+    border: 1px solid #3a1e21; background: #1b1013; color: #f0b4b8;
+    display: flex; gap: 11px; align-items: center; flex-wrap: wrap;
+  }
+  .banner button { margin-left: auto; }
+
+  footer { padding: 0 28px 30px; color: var(--dim); font-size: 12px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    section { animation: rise .32s ease both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>makima</h1>
+  <div class="who"><b id="nodeName">—</b> <span id="nodeAddr"></span></div>
+  <div class="pill"><span class="dot" id="relayDot"></span><span id="relayText">connecting…</span></div>
+</header>
+
+<main>
+  <section>
+    <h2>This machine</h2>
+    <div class="body"><dl class="kv" id="selfKv"></dl></div>
+  </section>
+
+  <section>
+    <h2>Host firewall</h2>
+    <div id="fwBanner"></div>
+    <div class="body"><dl class="kv" id="fwKv"></dl></div>
+  </section>
+
+  <section class="wide">
+    <h2>On the mesh <span class="count" id="peerCount"></span></h2>
+    <div id="peers"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Published from this machine <span class="count" id="svcCount"></span></h2>
+    <div id="services"></div>
+    <form class="add" id="addForm">
+      <input class="port" id="addPort" placeholder="11434" inputmode="numeric" required>
+      <input class="name" id="addName" placeholder="name (optional)">
+      <button type="submit">Publish</button>
+    </form>
+    <div class="hint">
+      A published port listens on this machine's mesh address only — never on your LAN.
+      The service keeps binding to localhost. Common ones:
+      <code>11434</code> Ollama · <code>8080</code> Open WebUI · <code>8188</code> ComfyUI · <code>8888</code> Jupyter.
+      Use <code>80:11434</code> to publish a local port on a different mesh port.
+    </div>
+  </section>
+
+  <section class="wide">
+    <h2>Diagnosis <span class="count"><button class="ghost" id="runDoctor">Re-run</button></span></h2>
+    <div id="doctor"><div class="empty">Running…</div></div>
+  </section>
+</main>
+
+<footer id="footer"></footer>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+let writable = true;
+
+async function api(path, body) {
+  const opts = body === undefined
+    ? {}
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) { /* not json */ }
+  if (!res.ok) throw new Error((data && data.error) || res.statusText);
+  return data;
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function kv(dl, k, v) {
+  dl.append(el("dt", null, k), el("dd", null, v));
+}
+
+// A duration arrives as nanoseconds, which is Go's zero-config JSON form and
+// unreadable as-is.
+function ms(ns) {
+  if (!ns) return "";
+  const v = ns / 1e6;
+  return v < 10 ? v.toFixed(1) + " ms" : Math.round(v) + " ms";
+}
+
+function renderSelf(s) {
+  $("nodeName").textContent = s.node.name || "unnamed";
+  $("nodeAddr").textContent = s.node.address || "";
+
+  const dot = $("relayDot"), txt = $("relayText");
+  dot.className = "dot";
+  if (!s.managed) {
+    txt.textContent = "static mesh";
+  } else if (s.relay.connected) {
+    dot.classList.add("up");
+    txt.textContent = "relay " + s.relay.url;
+  } else if (s.relay.url) {
+    dot.classList.add("down");
+    txt.textContent = "relay unreachable";
+  } else {
+    dot.classList.add("relay");
+    txt.textContent = "no relay — direct only";
+  }
+
+  const dl = $("selfKv");
+  dl.textContent = "";
+  kv(dl, "Address", s.node.address || "not assigned");
+  kv(dl, "Interface", s.node.interface || "—");
+  kv(dl, "Control plane", s.managed ? s.server : "none (static)");
+  if (s.domain) kv(dl, "Mesh names", "*." + s.domain + (s.dns_active ? "" : " (resolver off)"));
+  if (s.exit_node) kv(dl, "Exit node", "via " + s.exit_node);
+  if (s.node.advertised_routes && s.node.advertised_routes.length) {
+    const approved = new Set(s.node.approved_routes || []);
+    kv(dl, "Routing", s.node.advertised_routes
+      .map((r) => r + (approved.has(r) ? "" : " (awaiting approval)")).join(", "));
+  }
+  if (s.filtering) kv(dl, "Policy", "enforced" + (s.dropped ? ` · ${s.dropped} packets dropped` : ""));
+  $("footer").textContent = "makima " + (s.version || "dev");
+}
+
+function renderFirewall(s) {
+  const f = s.firewall || {};
+  const dl = $("fwKv");
+  dl.textContent = "";
+  kv(dl, "Backend", f.backend || "unknown");
+  kv(dl, "Filtering", f.active ? "yes" : "no");
+  kv(dl, "Tunnel trusted", f.active ? (f.trusted ? "yes" : "no") : "not applicable");
+  if (f.detail) kv(dl, "Detail", f.detail);
+
+  const box = $("fwBanner");
+  box.textContent = "";
+  if (f.active && !f.trusted) {
+    const b = el("div", "banner");
+    b.append(el("span", null,
+      "This firewall is dropping traffic that arrives through the tunnel."));
+    if (f.automatic && writable) {
+      const btn = el("button", null, "Trust the tunnel");
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try { await api("/api/firewall/allow", {}); await refresh(); }
+        catch (e) { alert(e.message); btn.disabled = false; }
+      };
+      b.append(btn);
+    } else if (f.manual) {
+      b.append(fixLine(f.manual));
+    }
+    box.append(b);
+  }
+}
+
+function fixLine(cmd) {
+  const n = el("div", "fix", cmd);
+  n.title = "Click to copy";
+  n.onclick = () => navigator.clipboard && navigator.clipboard.writeText(cmd);
+  return n;
+}
+
+function renderPeers(s) {
+  const box = $("peers");
+  box.textContent = "";
+  const peers = s.peers || [];
+  $("peerCount").textContent = peers.length ? peers.length + " peer" + (peers.length === 1 ? "" : "s") : "";
+
+  if (!peers.length) {
+    box.append(el("div", "empty", "No peers yet. Join another machine to this mesh."));
+    return;
+  }
+
+  for (const p of peers) {
+    const row = el("div", "peer");
+    const top = el("div", "top");
+    top.append(el("span", "name", p.name), el("span", "addr", p.address));
+
+    let cls = "none", label = "no path";
+    if (p.direct) { cls = "direct"; label = "direct" + (p.latency ? " · " + ms(p.latency) : ""); }
+    else if (p.relay_url) { cls = "relayed"; label = "via relay"; }
+    top.append(el("span", "path " + cls, label));
+    row.append(top);
+
+    const chips = el("div", "chips");
+    for (const svc of p.services || []) {
+      const label = svc.name || "port " + svc.port;
+      if (svc.scheme) {
+        const a = el("a", "chip");
+        a.href = svc.scheme + "://" + p.address + ":" + svc.port;
+        a.target = "_blank";
+        a.rel = "noreferrer";
+        a.append(el("span", null, label), el("span", "port", ":" + svc.port));
+        chips.append(a);
+      } else {
+        const c = el("span", "chip plain");
+        c.append(el("span", null, label), el("span", "port", ":" + svc.port));
+        chips.append(c);
+      }
+    }
+    if (p.exit_node) chips.append(el("span", "chip plain", "exit node"));
+    for (const r of p.routes || []) chips.append(el("span", "chip plain", "routes " + r));
+    if (chips.children.length) row.append(chips);
+
+    box.append(row);
+  }
+}
+
+function renderServices(s) {
+  const box = $("services");
+  box.textContent = "";
+  const svcs = s.services || [];
+  $("svcCount").textContent = svcs.length ? svcs.length + " published" : "";
+
+  if (!svcs.length) {
+    box.append(el("div", "empty",
+      "Nothing published yet. Publish a local port to make it reachable from every machine on the mesh."));
+    return;
+  }
+
+  const t = el("table");
+  const head = el("tr");
+  for (const h of ["Name", "Mesh port", "Forwards to", "State", ""]) head.append(el("th", null, h));
+  t.append(head);
+
+  for (const s2 of svcs) {
+    const tr = el("tr");
+    tr.append(el("td", null, s2.name || "—"));
+    tr.append(el("td", "mono", ":" + s2.port));
+    tr.append(el("td", "mono", s2.target));
+
+    let cls = "ok", text = "ready";
+    if (s2.error) { cls = "bad"; text = s2.error; }
+    else if (!s2.listening) { cls = "bad"; text = "not listening"; }
+    else if (!s2.target_up) { cls = "warn"; text = "nothing on " + s2.target; }
+    else if (s2.active) { text = "ready · " + s2.active + " open"; }
+    tr.append(el("td", "state " + cls, text));
+
+    const td = el("td");
+    if (writable) {
+      const b = el("button", "ghost", "Remove");
+      b.onclick = async () => {
+        b.disabled = true;
+        try { await api("/api/unserve", { port: s2.port }); await refresh(); }
+        catch (e) { alert(e.message); b.disabled = false; }
+      };
+      td.append(b);
+    }
+    tr.append(td);
+    t.append(tr);
+  }
+  box.append(t);
+}
+
+function renderDoctor(d) {
+  const box = $("doctor");
+  box.textContent = "";
+  const checks = (d && d.checks) || [];
+  if (!checks.length) {
+    box.append(el("div", "empty", "No checks ran."));
+    return;
+  }
+  for (const c of checks) {
+    const cls = c.ok ? "ok" : (c.warning ? "warn" : "bad");
+    const row = el("div", "check " + cls);
+    row.append(el("div", "mark", c.ok ? "✓" : (c.warning ? "!" : "✕")));
+    const what = el("div", "what");
+    what.append(el("b", null, c.name));
+    what.append(el("div", "detail", c.detail));
+    if (c.fix) what.append(fixLine(c.fix));
+    row.append(what);
+    box.append(row);
+  }
+}
+
+$("addForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const spec = $("addPort").value.trim();
+  if (!spec) return;
+  try {
+    await api("/api/serve", { spec, name: $("addName").value.trim() });
+    $("addPort").value = "";
+    $("addName").value = "";
+    await refresh();
+  } catch (err) { alert(err.message); }
+};
+
+$("runDoctor").onclick = async () => {
+  try { renderDoctor(await api("/api/doctor")); } catch (e) { alert(e.message); }
+};
+
+async function refresh() {
+  try {
+    const s = await api("/api/status");
+    renderSelf(s);
+    renderFirewall(s);
+    renderPeers(s);
+    renderServices(s);
+  } catch (e) {
+    $("relayText").textContent = "daemon unreachable";
+    $("relayDot").className = "dot down";
+  }
+}
+
+// A read-only listener answers 403 on anything that changes something. Finding
+// that out once, up front, is better than letting every button fail.
+(async () => {
+  try {
+    await api("/api/serve", { port: 0 });
+  } catch (e) {
+    if (/read-only/.test(e.message)) {
+      writable = false;
+      $("addForm").remove();
+    }
+  }
+  await refresh();
+  try { renderDoctor(await api("/api/doctor")); } catch (_) {}
+  setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>

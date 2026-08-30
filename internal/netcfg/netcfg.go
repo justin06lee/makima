@@ -119,3 +119,19 @@ func run(name string, args ...string) error {
 	}
 	return nil
 }
+
+// combined runs a command and returns its output whether or not it succeeded.
+//
+// Distinct from run, which folds output into an error. Detection needs to read
+// what a command said even when it exited non-zero, because "inactive" is
+// routinely reported that way.
+func combined(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	return string(out), err
+}
+
+// have reports whether a command exists on this machine.
+func have(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}

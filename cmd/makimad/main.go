@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/policy"
 	"github.com/justin06lee/makima/internal/portmap"
+	"github.com/justin06lee/makima/internal/serve"
 	"github.com/justin06lee/makima/internal/stun"
 	"github.com/justin06lee/makima/internal/wg"
 )
@@ -48,6 +50,9 @@ func main() {
 	ifaceName := flag.String("iface", defaultIface, "TUN interface name")
 	mtu := flag.Int("mtu", wg.DefaultMTU, "tunnel MTU")
 	verbose := flag.Bool("v", false, "log WireGuard handshakes and peer state")
+	uiAddr := flag.String("ui", "", "serve the web UI on this address, e.g. 127.0.0.1:8088")
+	uiWrite := flag.Bool("ui-write", false, "let the web UI change settings, not just show them")
+	noFirewall := flag.Bool("no-firewall", false, "do not touch the host firewall")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -56,15 +61,36 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *ifaceName, *mtu, *verbose); err != nil {
+	opts := options{
+		configPath: *configPath,
+		iface:      *ifaceName,
+		mtu:        *mtu,
+		verbose:    *verbose,
+		uiAddr:     *uiAddr,
+		uiWrite:    *uiWrite,
+		noFirewall: *noFirewall,
+	}
+	if err := run(opts); err != nil {
 		log.Fatal(err)
 	}
 }
 
 // node is everything the daemon holds together for the life of the tunnel.
 type node struct {
-	cfgPath string
-	file    *conf.File
+	cfgPath   string
+	ifaceName string
+	startedAt time.Time
+
+	// mu guards file. The poll loop rewrites it on every netmap while the
+	// local API reads it on every status request and writes it when somebody
+	// publishes a port, so this is genuinely contended rather than defensive.
+	mu   sync.Mutex
+	file *conf.File
+
+	// lastPoll and lastPollErr are what the doctor reports about the control
+	// plane. Guarded by mu with the rest.
+	lastPoll    time.Time
+	lastPollErr error
 
 	engine     *wg.Engine
 	router     *netcfg.Router
@@ -75,6 +101,8 @@ type node struct {
 	advertiser *netcfg.Advertiser
 	exitClient *netcfg.ExitClient
 	pm         *portmap.Client
+	serve      *serve.Manager
+	firewall   *netcfg.Firewall
 
 	// filter is the compiled policy currently being enforced. Stored on the
 	// node rather than inside the tunnel wrapper so a netmap update can swap
@@ -84,10 +112,24 @@ type node struct {
 	verbose bool
 }
 
-func run(configPath, ifaceName string, mtu int, verbose bool) error {
+// options are the daemon's command-line settings, gathered so run's signature
+// does not grow a parameter per flag.
+type options struct {
+	configPath string
+	iface      string
+	mtu        int
+	verbose    bool
+	uiAddr     string
+	uiWrite    bool
+	noFirewall bool
+}
+
+func run(opts options) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("must run as root to create a TUN device (try: sudo %s)", os.Args[0])
 	}
+
+	configPath, ifaceName, mtu, verbose := opts.configPath, opts.iface, opts.mtu, opts.verbose
 
 	f, err := conf.Load(configPath)
 	if err != nil {
@@ -97,7 +139,16 @@ func run(configPath, ifaceName string, mtu int, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	n := &node{cfgPath: configPath, file: f, verbose: verbose, filter: policy.NewGuard()}
+	n := &node{
+		cfgPath:   configPath,
+		ifaceName: ifaceName,
+		startedAt: time.Now(),
+		file:      f,
+		verbose:   verbose,
+		filter:    policy.NewGuard(),
+		serve:     serve.New(log.Default()),
+	}
+	defer n.serve.Close()
 
 	// A managed node gets the path-selecting socket; a static one gets an
 	// ordinary UDP socket. The split matters: magicsock attributes an inbound
@@ -170,6 +221,27 @@ func run(configPath, ifaceName string, mtu int, verbose bool) error {
 	if n.sock != nil {
 		n.applyNetwork(m)
 	}
+
+	// The host firewall is configured after the interface exists, because
+	// every backend identifies the rule by interface name and the name is not
+	// known until the kernel has assigned one.
+	n.firewall = netcfg.NewFirewall(engine.Name())
+	if !opts.noFirewall {
+		n.openFirewall()
+	}
+	defer n.firewall.Reset()
+
+	// Services can start as soon as there is an address to bind to. A managed
+	// node that has one cached comes up serving immediately rather than after
+	// its first poll.
+	n.serve.Apply(addr, f.Services)
+
+	stopAPI, err := n.serveLocalAPI(ctx, opts)
+	if err != nil {
+		return err
+	}
+	defer stopAPI()
+
 	n.logState(engine.Name())
 
 	if n.client != nil {
@@ -196,6 +268,13 @@ func run(configPath, ifaceName string, mtu int, verbose bool) error {
 
 // netMap renders the current configuration into the mesh view.
 func (n *node) netMap() *netmap.NetMap {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.netMapLocked()
+}
+
+// netMapLocked is netMap for callers already holding the lock.
+func (n *node) netMapLocked() *netmap.NetMap {
 	m := n.file.NetMap()
 	if n.sock != nil {
 		m.ListenPort = n.sock.LocalPort()
@@ -209,36 +288,53 @@ func (n *node) register(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	resp, err := n.client.Register(ctx, &control.RegisterRequest{
+	// Snapshot under the lock, then make the call without holding it: a
+	// registration is a network round trip, and blocking every status request
+	// for its duration would make the UI stutter every time a port is
+	// published.
+	n.mu.Lock()
+	req := &control.RegisterRequest{
 		Name:            n.file.Self.Name,
 		NodeKey:         n.file.NodeKey.Public(),
 		DiscoKey:        n.file.DiscoKey.Public(),
 		AuthKey:         n.file.AuthKey,
-		Endpoints:       n.endpoints(),
 		AdvertiseRoutes: n.file.AdvertiseRoutes,
 		AdvertiseExit:   n.file.AdvertiseExit,
-	})
+		Services:        n.file.AdvertisedServices(),
+	}
+	nodeKey, discoKey := n.file.NodeKey, n.file.DiscoKey
+	n.mu.Unlock()
+
+	req.Endpoints = n.endpoints()
+
+	resp, err := n.client.Register(ctx, req)
 	if err != nil {
 		return err
 	}
 
+	n.mu.Lock()
 	n.file.Self.ID = resp.NodeID
-	n.file.Self.Key = n.file.NodeKey.Public()
-	n.file.Self.DiscoKey = n.file.DiscoKey.Public()
+	n.file.Self.Key = nodeKey.Public()
+	n.file.Self.DiscoKey = discoKey.Public()
 	n.file.Self.Addresses = []netip.Prefix{resp.Address}
 
 	// The auth key has now been redeemed. Keeping it would leave a reusable
 	// credential sitting in a file on every machine that ever joined.
+	var saveErr error
 	if n.file.AuthKey != "" {
 		n.file.AuthKey = ""
-		if err := conf.Save(n.cfgPath, n.file); err != nil {
-			log.Printf("warning: could not clear the stored auth key: %v", err)
-		}
+		saveErr = conf.Save(n.cfgPath, n.file)
+	}
+	name := n.file.Self.Name
+	n.mu.Unlock()
+
+	if saveErr != nil {
+		log.Printf("warning: could not clear the stored auth key: %v", saveErr)
 	}
 
 	if len(resp.PendingRoutes) > 0 || resp.PendingExit {
 		log.Printf("waiting for approval of %s", describePending(resp.PendingRoutes, resp.PendingExit))
-		log.Printf("approve with: makima-server routes approve -name %s", n.file.Self.Name)
+		log.Printf("approve with: makima-server routes approve -name %s", name)
 	}
 	return nil
 }
@@ -251,7 +347,10 @@ func (n *node) register(ctx context.Context) error {
 // answers), and a port mapping this node asked its router for (right when the
 // router cooperates).
 func (n *node) endpoints() []netip.AddrPort {
+	n.mu.Lock()
 	port := n.file.ListenPort
+	n.mu.Unlock()
+
 	if n.sock != nil {
 		port = n.sock.LocalPort()
 	}
@@ -285,6 +384,9 @@ func (n *node) poll(ctx context.Context) {
 				return
 			}
 			log.Printf("netmap poll failed: %v (retrying in %s)", err, backoff)
+			n.mu.Lock()
+			n.lastPollErr = err
+			n.mu.Unlock()
 
 			select {
 			case <-time.After(backoff):
@@ -299,6 +401,10 @@ func (n *node) poll(ctx context.Context) {
 			continue
 		}
 		backoff = time.Second
+		n.mu.Lock()
+		n.lastPoll = time.Now()
+		n.lastPollErr = nil
+		n.mu.Unlock()
 
 		if resp.Version == version {
 			continue // heartbeat, nothing moved
@@ -322,12 +428,16 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 		}
 	}
 
+	n.mu.Lock()
 	n.file.Self = resp.Self
 	n.file.Peers = peers
 	n.file.Domain = resp.Domain
 	n.file.HomeRelay = resp.HomeRelay
 
-	m := n.netMap()
+	m := n.netMapLocked()
+	services := append([]serve.Service(nil), n.file.Services...)
+	n.mu.Unlock()
+
 	m.HomeRelay = resp.HomeRelay
 	m.Domain = resp.Domain
 	m.DNS = resp.DNS
@@ -348,10 +458,19 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	n.applyExitNode(m)
 	n.applyDNS(ctx, m)
 
+	// Rebind published ports. Almost always a no-op, but the first netmap is
+	// where a fresh node learns its address, and every listener depends on it.
+	if addr, err := m.Self.Addr(); err == nil {
+		n.serve.Apply(addr, services)
+	}
+
 	// Persist last, so a cache is only written for a netmap that was actually
 	// applied successfully.
-	if err := conf.Save(n.cfgPath, n.file); err != nil {
-		log.Printf("cache netmap: %v", err)
+	n.mu.Lock()
+	saveErr := conf.Save(n.cfgPath, n.file)
+	n.mu.Unlock()
+	if saveErr != nil {
+		log.Printf("cache netmap: %v", saveErr)
 	}
 
 	log.Printf("netmap v%d: %d peer(s)%s", resp.Version, len(peers), relaySuffix(resp.HomeRelay))
@@ -418,6 +537,9 @@ func (n *node) refreshEndpoints(ctx context.Context) {
 }
 
 func (n *node) shutdown() {
+	if n.serve != nil {
+		n.serve.Close()
+	}
 	if n.dns != nil {
 		n.dns.Close()
 	}
@@ -430,14 +552,23 @@ func (n *node) shutdown() {
 }
 
 func (n *node) logState(iface string) {
+	n.mu.Lock()
 	addr, _ := n.file.Self.Addr()
 	mode := "static"
 	if n.file.Managed() {
 		mode = n.file.LoginServer
 	}
-	log.Printf("%s up on %s as %s [%s], %d peer(s)", iface, addr, n.file.Self.Name, mode, len(n.file.Peers))
-	for _, p := range n.file.Peers {
+	name := n.file.Self.Name
+	peers := append([]netmap.Node(nil), n.file.Peers...)
+	services := append([]serve.Service(nil), n.file.Services...)
+	n.mu.Unlock()
+
+	log.Printf("%s up on %s as %s [%s], %d peer(s)", iface, addr, name, mode, len(peers))
+	for _, p := range peers {
 		logPeer(p)
+	}
+	for _, s := range services {
+		log.Printf("  serving %s", s)
 	}
 }
 

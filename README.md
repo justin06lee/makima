@@ -25,7 +25,11 @@ between them.
 
 **Feature-complete.** A node joins with a credential, is handed an address, and
 receives the mesh's membership over a long poll that pushes changes as they
-happen. It reaches its peers directly where it can and through a relay where it
+happen. Local services are published on the mesh without being exposed to the
+LAN, the host firewall is configured to let tunnel traffic through, and a web
+interface shows what is reachable and what is broken.
+
+It reaches its peers directly where it can and through a relay where it
 cannot, upgrading to a direct path the moment one is found. Names resolve,
 access is governed by policy, subnets and exit nodes route, and a mesh that
 turns on the network lock no longer has to trust its own control server about
@@ -100,6 +104,69 @@ on a timer.
 `makima-server nodes` lists the mesh. `makima-server forget -name N` evicts a
 machine and every other node drops it on the spot.
 
+### Reaching a home server that will not cooperate
+
+This is the problem makima was built for, and it is worth being precise about,
+because it usually looks like one problem and is three.
+
+A desktop running Ollama or ComfyUI is unreachable from your laptop. You check
+the network, and the network is fine. What is actually happening is some
+combination of:
+
+1. **The service is bound to localhost.** Ollama, ComfyUI, Open WebUI, Jupyter
+   and vLLM all default to `127.0.0.1`. No amount of correct networking reaches
+   a socket that is only listening on loopback.
+2. **The host firewall is dropping it.** Arch with GNOME often means firewalld;
+   Ubuntu often means ufw. Neither says anything when it drops a packet, and
+   the symptom is a connection timeout — indistinguishable from a routing fault.
+3. **The router will not hairpin.** Once you have given up and set up a public
+   hostname and a port forward, it works from outside the house and fails from
+   inside it, because most consumer routers will not send a packet back in
+   through the WAN address it just came out of.
+
+The usual escalation makes all three worse: rebind to `0.0.0.0`, which exposes
+the service to every device on the LAN; open a firewall port, which exposes it
+further; forward it on the router, which exposes it to the internet.
+
+makima removes the LAN from the question entirely:
+
+```sh
+# on the desktop
+sudo makima serve 11434 -name ollama
+```
+
+```sh
+# from anywhere else on the mesh
+curl http://desktop.makima:11434/api/tags
+```
+
+The daemon listens on the desktop's **mesh address** and forwards to
+`127.0.0.1:11434`. Nothing about Ollama changes — it stays bound to localhost,
+where it was right to be. The listener does not exist on your LAN, so nothing
+on your LAN can reach it. No port is forwarded and the router is never
+involved, which is why hairpinning stops mattering: the packets never go near
+it.
+
+What does reach the service is what got through WireGuard's cryptographic
+authentication and then the mesh's access policy. That is the "requests that
+arrive in the name of makima just work" property, made literal.
+
+The firewall is handled too. On start the daemon detects firewalld, ufw, or a
+bare iptables ruleset and tells it to trust the tunnel interface — one narrow
+rule, removed again on exit, opening no port to the LAN or the internet. Pass
+`-no-firewall` if you would rather do it yourself, and see `makima firewall
+status` either way.
+
+And when something still is not right:
+
+```sh
+makima doctor
+```
+
+It checks the things that merely *look* like network faults first, in the order
+they usually turn out to be the cause, and prints the exact command to fix each
+one.
+
 ### Working from anywhere
 
 Two machines on the same network find each other without help. Two behind
@@ -119,6 +186,24 @@ tether, or a corporate network, not just from home.
 A relay holds no WireGuard key and decrypts nothing. Running one costs you
 nothing in confidentiality, which is why it is reasonable to put one on a cheap
 VPS and forget about it.
+
+### The web interface
+
+```sh
+sudo makimad -ui 127.0.0.1:8088 -ui-write
+makima ui
+```
+
+One page: this machine, every peer with the path currently in use and its
+latency, everything published from here, and the diagnosis. Services other
+nodes publish appear as links you can click — the desktop's Open WebUI is a
+link on your laptop, which is the entire point.
+
+Bound to loopback by default. Bind it to the node's mesh address instead to
+reach it from another machine, and note the trade: `-ui-write` on a
+non-loopback address means anyone who can reach that address controls the node.
+Without it the page is read-only, which is usually what you want when you are
+just looking at a headless box from your laptop.
 
 ### Names
 
@@ -332,6 +417,13 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   capture every lookup on the machine rather than just `*.makima`.
 - **IPv4 only inside the tunnel.** The socket is dual-stack and IPv6 endpoints
   work as paths; mesh addresses themselves are v4.
+- **Published services are TCP only.** A UDP service — a game server, a DNS
+  resolver on a peer — is reachable at the peer's mesh address directly, but
+  `makima serve` does not forward it.
+- **The firewall is configured automatically on Linux only,** and not at all
+  under a bare nftables ruleset: in nftables every table sees every packet, so
+  an accept rule makima owns would not override a drop in yours. `makima
+  doctor` prints the rule to add instead of pretending.
 - **No replay protection on the control channel.** Messages are sealed and
   authenticated, but nonces are not tracked, so a captured registration could
   be replayed to revert a node's key and endpoints to older values.
@@ -351,6 +443,8 @@ internal/relay      the forwarder, its client, and its wire format
 internal/disco      the probe protocol that finds direct paths
 internal/stun       asking a public server what address we appear to come from
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
+internal/serve      publishing a local port on the mesh, and nowhere else
+internal/localapi   the daemon's local API and the embedded web interface
 internal/netmap     the mesh's view of itself; renders to a WireGuard config
 internal/control    the coordination protocol, its server, client, and store
 internal/policy     who may talk to whom, and the filter nodes enforce

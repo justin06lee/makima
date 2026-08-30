@@ -112,6 +112,9 @@ type Node struct {
 	// served another netmap. Set by an operator on a machine that may have
 	// been lost, and cleared by a successful re-registration.
 	Expired bool `json:"expired,omitempty"`
+
+	// Services are the ports this node publishes, as it last reported them.
+	Services []netmap.Service `json:"services,omitempty"`
 }
 
 // Online reports whether the node has polled recently enough to be considered
@@ -346,6 +349,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		existing.LastSeen = now
 		existing.AdvertisedRoutes = req.AdvertiseRoutes
 		existing.AdvertisesExit = req.AdvertiseExit
+		existing.Services = req.Services
 
 		// An approval only ever covers a route the node is still advertising.
 		// Without this, a node could advertise 10.0.0.0/24, have it approved,
@@ -392,6 +396,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		Tags:             auth.Tags,
 		AdvertisedRoutes: req.AdvertiseRoutes,
 		AdvertisesExit:   req.AdvertiseExit,
+		Services:         req.Services,
 	}
 	s.state.NextID++
 	s.state.Nodes = append(s.state.Nodes, n)
@@ -559,6 +564,7 @@ func (s *Store) toNetmapNode(n *Node, relay netmap.Relay) netmap.Node {
 		RelayURL:     relay.URL,
 		Online:       n.Online(),
 		KeySignature: n.KeySignature,
+		Services:     n.Services,
 	}
 
 	// Only approved routes are ever published. An advertised-but-unapproved

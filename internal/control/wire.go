@@ -54,6 +54,14 @@ type RegisterRequest struct {
 	// requests, not assertions: nothing is published until approved.
 	AdvertiseRoutes []netip.Prefix `json:"advertise_routes,omitempty"`
 	AdvertiseExit   bool           `json:"advertise_exit,omitempty"`
+
+	// Services are the ports this node publishes on the mesh.
+	//
+	// Unlike routes these need no approval, because they grant nothing: a node
+	// publishing a port on its own mesh address is doing something it could
+	// already do, and the access policy still decides who may connect. What
+	// registering them buys is that other nodes can *find* them.
+	Services []netmap.Service `json:"services,omitempty"`
 }
 
 // RegisterResponse is the server's answer to a join.

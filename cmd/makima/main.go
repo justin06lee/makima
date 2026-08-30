@@ -47,6 +47,14 @@ func main() {
 		err = status(os.Args[2:])
 	case "set":
 		err = set(os.Args[2:])
+	case "serve":
+		err = serveCmd(os.Args[2:])
+	case "doctor":
+		err = doctor(os.Args[2:])
+	case "firewall":
+		err = firewallCmd(os.Args[2:])
+	case "ui":
+		err = uiCmd(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 		return
@@ -75,6 +83,17 @@ running a static mesh with no server:
   makima init     -name N -addr A
   makima peer add -name N -key K -addr A [-endpoint HOST:PORT]
   makima peer rm  -name N
+
+reaching this machine's services from the rest of the mesh:
+  makima serve 11434               publish a local port on the mesh
+  makima serve 80:11434            publish it on a different mesh port
+  makima serve list
+  makima serve rm PORT
+
+when something is not working:
+  makima doctor                    check every layer and say what to fix
+  makima firewall status | allow
+  makima ui                        open the web interface
 
 routing and exit nodes (managed meshes only):
   makima set -advertise-routes 192.168.1.0/24
