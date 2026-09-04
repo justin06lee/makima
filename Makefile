@@ -8,7 +8,13 @@ BUILD   := build
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build install update restart stop clean test race fmt vet check cross service
+# Platforms a release is built for. One line, so adding a platform is a
+# one-word change and every part of the release machinery follows.
+PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 linux/arm windows/amd64
+
+RELEASE := dist/release
+
+.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean
 
 all: build install restart
 
@@ -61,7 +67,47 @@ cross:
 		GOOS=$$os GOARCH=$$arch go build -o /dev/null ./... && echo ok || exit 1; \
 	done
 
-clean:
+# Release archives, one per platform, plus the checksums that make them
+# verifiable.
+#
+# The reason this exists at all: `make` from source is the single biggest
+# barrier to anybody actually using this, and no amount of CLI polish fixes it.
+# Somebody who has to install Go before they can find out whether a VPN works
+# will not find out whether a VPN works.
+#
+# -trimpath and a fixed -buildid make the output reproducible: two people
+# building the same tag get byte-identical archives, so a published checksum is
+# something anybody can check rather than something they have to trust.
+release: release-clean
+	@mkdir -p $(RELEASE)
+	@for t in $(PLATFORMS); do \
+		os=$${t%/*}; arch=$${t#*/}; \
+		dir=$(RELEASE)/makima-$(VERSION)-$$os-$$arch; \
+		mkdir -p $$dir; \
+		ext=""; [ "$$os" = windows ] && ext=".exe"; \
+		printf "  %-22s" "$$os/$$arch"; \
+		for b in $(BINS); do \
+			GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 \
+				go build -trimpath -ldflags "$(LDFLAGS) -buildid=" \
+				-o $$dir/$$b$$ext ./cmd/$$b || exit 1; \
+		done; \
+		cp README.md LICENSE $$dir/; \
+		cp -R dist/install-service.sh dist/*.service dist/*.plist $$dir/ 2>/dev/null || true; \
+		if [ "$$os" = windows ]; then \
+			(cd $(RELEASE) && zip -qr $$(basename $$dir).zip $$(basename $$dir)); \
+		else \
+			tar -C $(RELEASE) -czf $$dir.tar.gz $$(basename $$dir); \
+		fi; \
+		rm -rf $$dir; \
+		echo ok; \
+	done
+	@cd $(RELEASE) && (sha256sum *.tar.gz *.zip 2>/dev/null || shasum -a 256 *.tar.gz *.zip) > SHA256SUMS && \
+		echo "  checksums              $(RELEASE)/SHA256SUMS"
+
+release-clean:
+	@rm -rf $(RELEASE)
+
+clean: release-clean
 	@rm -rf $(BUILD)
 # Service units. Installed on request rather than by `make`, because a daemon
 # that enables itself at boot on a machine somebody was only trying out is a

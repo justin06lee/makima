@@ -11,3 +11,4 @@ build/
 node.json
 control.json
 *.sock
+dist/release/

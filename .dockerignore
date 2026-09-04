@@ -1,0 +1,12 @@
+# Everything the image does not need. Keeping the build context small is not
+# only about speed: it is what stops a stray node.json — which holds private
+# keys — from being copied into an image somebody publishes.
+build/
+dist/release/
+.git/
+.github/
+*.test
+node.json
+control.json
+relay.json
+*.sock

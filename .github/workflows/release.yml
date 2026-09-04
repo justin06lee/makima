@@ -1,0 +1,91 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, because the version is stamped from `git describe`
+          # and a shallow clone has no tags to describe against.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+
+      # A release that fails its own tests is worse than no release.
+      - name: test
+        run: go test ./...
+
+      - name: build release archives
+        run: make release
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/release/*
+
+      # The relay is the piece that genuinely wants to live in a container:
+      # an ordinary network service with no interest in the host's network
+      # stack, and something you want running somewhere permanently.
+      - name: publish the container image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker build \
+            -f dist/packaging/Dockerfile \
+            --build-arg "VERSION=${GITHUB_REF_NAME}" \
+            -t "$image:${GITHUB_REF_NAME}" \
+            -t "$image:latest" .
+          docker push "$image:${GITHUB_REF_NAME}"
+          docker push "$image:latest"
+
+      # The formula is versioned with the code it installs, so the checksums
+      # are filled in from the archives that were just built rather than by
+      # hand afterwards — which is the step everybody forgets.
+      - name: update the homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        if: env.GH_TOKEN != ''
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          formula=dist/packaging/makima.rb
+
+          sed -i "s|^  version \".*\"|  version \"${version}\"|" "$formula"
+
+          for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+            sum=$(grep " makima-${GITHUB_REF_NAME}-${target}.tar.gz\$" \
+                   dist/release/SHA256SUMS | cut -d' ' -f1)
+            [ -n "$sum" ] || { echo "no checksum for $target"; exit 1; }
+
+            # Replace the placeholder following this target's url line.
+            awk -v t="$target" -v s="$sum" '
+              index($0, t ".tar.gz") { print; getline; sub(/"[0-9a-f]{64}"/, "\"" s "\""); print; next }
+              { print }
+            ' "$formula" > "$formula.new" && mv "$formula.new" "$formula"
+          done
+
+          gh repo clone justin06lee/homebrew-makima tap
+          mkdir -p tap/Formula
+          cp "$formula" tap/Formula/makima.rb
+          cd tap
+          git config user.name "makima release"
+          git config user.email "noreply@github.com"
+          git add Formula/makima.rb
+          git commit -m "makima ${GITHUB_REF_NAME}"
+          git push
