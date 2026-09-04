@@ -63,6 +63,8 @@ func main() {
 		err = show(os.Args[2:])
 	case "status":
 		err = status(os.Args[2:])
+	case "ping":
+		err = pingCmd(os.Args[2:])
 	case "set":
 		err = set(os.Args[2:])
 	case "serve":
@@ -106,6 +108,7 @@ with no server at all:
 
 using it:
   makima status                    what you can see, and anything wrong
+  makima ping NAME                 is this peer direct, or going via a relay?
   makima ssh NAME                  a shell on another machine
   makima allow 11434               publish a local port on purpose
   makima deny 11434                stop publishing one

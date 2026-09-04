@@ -144,6 +144,35 @@ makima deny  11434       # keep a port off the mesh, and keep it off
 `deny` is recorded rather than merely applied, because the scanner runs again
 in five seconds and would otherwise put back whatever you just withdrew.
 
+### Is this direct, or going through a relay?
+
+A mesh that works is not the same as a mesh that works well. Traffic through a
+relay and traffic straight to the machine on the next desk look identical from
+the outside — same address, same commands, same everything except an order of
+magnitude of latency.
+
+```sh
+makima ping desktop
+#   100.64.0.2      relay   relay.example:3478  84.2ms
+#
+#   Reachable through relay.example:3478. Relayed, not direct —
+#   'makima ping -until-direct desktop' waits for an upgrade.
+
+makima ping -until-direct desktop
+#   100.64.0.2      relay   relay.example:3478  84.2ms
+#   100.64.0.2      relay   relay.example:3478  83.9ms
+#   100.64.0.2      direct  203.0.113.9:41641   11.4ms
+#
+#   Direct path to desktop after 3.2s.
+#   Traffic is going straight there — 11.4ms instead of 84.2ms through the relay.
+```
+
+Hole punching is not instant and not guaranteed: it depends on what two routers
+are willing to do, and the honest answer for the first few seconds is "not
+yet". `-until-direct` waits for it and then says plainly whether it happened.
+If it never does, that is a real answer too — and the one `makima doctor`
+knows how to act on.
+
 ### Getting a shell
 
 ```sh

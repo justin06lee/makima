@@ -27,6 +27,9 @@ type fakeBackend struct {
 	pairingOpen  bool
 	knockedAt    string
 	pairingClose int
+
+	ping   Ping
+	pinged []string
 }
 
 func (f *fakeBackend) Status() Status { return f.status }
@@ -52,6 +55,13 @@ func (f *fakeBackend) OpenPairing(seconds int) (PairingState, error) {
 	return PairingState{Address: "mkp1_test", Expires: time.Now().Add(time.Duration(seconds) * time.Second)}, nil
 }
 func (f *fakeBackend) ClosePairing() { f.pairingClose++ }
+func (f *fakeBackend) Ping(name string) (Ping, error) {
+	if f.fail != nil {
+		return Ping{}, f.fail
+	}
+	f.pinged = append(f.pinged, name)
+	return f.ping, nil
+}
 func (f *fakeBackend) Pair(_ context.Context, address string) (PairedResult, error) {
 	if f.fail != nil {
 		return PairedResult{}, f.fail
@@ -323,5 +333,85 @@ func TestPairReportsAFailedKnock(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "no answer") {
 		t.Errorf("the error did not reach the client: %s", w.Body)
+	}
+}
+
+func TestPingReportsThePath(t *testing.T) {
+	b := &fakeBackend{ping: Ping{
+		Name:         "desktop",
+		Address:      netip.MustParseAddr("100.64.0.2"),
+		Direct:       true,
+		Path:         "direct 203.0.113.9:41641",
+		Latency:      11 * time.Millisecond,
+		RelayLatency: 84 * time.Millisecond,
+	}}
+	h := NewServer(b, true).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping?peer=desktop", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	var p Ping
+	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Direct || p.Latency != 11*time.Millisecond {
+		t.Errorf("path did not survive the round trip: %+v", p)
+	}
+	// Both timings, because the gap between them is the point.
+	if p.RelayLatency != 84*time.Millisecond {
+		t.Errorf("the relayed timing was lost: %+v", p)
+	}
+	if len(b.pinged) != 1 || b.pinged[0] != "desktop" {
+		t.Errorf("the backend was asked about %v", b.pinged)
+	}
+}
+
+// Pinging is a read. It has to work on the web UI's listener, or the one
+// question a person is most likely to have about their own network becomes a
+// privileged operation.
+func TestPingWorksOnAReadOnlyListener(t *testing.T) {
+	b := &fakeBackend{ping: Ping{Name: "desktop"}}
+	h := NewServer(b, false).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping?peer=desktop", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("a read-only listener refused a ping: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestPingNeedsAPeer(t *testing.T) {
+	h := NewServer(&fakeBackend{}, true).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Error("a ping with no peer was accepted")
+	}
+}
+
+// An unknown name must come back as an error the caller can print, not an
+// empty result that reads as "known, and unreachable".
+func TestPingReportsAnUnknownPeer(t *testing.T) {
+	b := &fakeBackend{fail: errors.New(`no peer named "laptop"`)}
+	h := NewServer(b, true).Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping?peer=laptop", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("got %d, want 404", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "laptop") {
+		t.Errorf("the error did not name the peer: %s", w.Body)
 	}
 }

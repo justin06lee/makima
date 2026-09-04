@@ -666,3 +666,38 @@ func shortKey(k key.Public) string {
 	}
 	return s
 }
+
+// PeerStatus snapshots one peer's connectivity by node key.
+//
+// Status returns every peer; this answers about one, which is what a ping
+// needs. Reported false for a peer the socket has never been told about,
+// rather than an empty status that would read as "known, and unreachable".
+func (c *Conn) PeerStatus(k key.Public) (PeerStatus, bool) {
+	c.mu.RLock()
+	ps, ok := c.peers[k]
+	c.mu.RUnlock()
+	if !ok {
+		return PeerStatus{}, false
+	}
+	return ps.status(), true
+}
+
+// ProbeNow forces a probe of one peer, ignoring the rate limit.
+//
+// The limit exists so a burst of traffic to an unreachable peer cannot become
+// a burst of probes. A person typing `makima ping` is the one case where the
+// probe is the point rather than a side effect, so it is allowed to skip it.
+//
+// It returns as soon as the probes are sent. Whether any of them worked shows
+// up in PeerStatus a round trip later, which is the same asynchrony every
+// other part of path selection lives with.
+func (c *Conn) ProbeNow(k key.Public) bool {
+	c.mu.RLock()
+	ps, ok := c.peers[k]
+	c.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	c.probePeer(ps, true)
+	return true
+}

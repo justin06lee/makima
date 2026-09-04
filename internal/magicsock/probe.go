@@ -348,7 +348,17 @@ func (c *Conn) handlePong(ps *peerState, p *disco.Pong, src netip.AddrPort) {
 
 	if !src.IsValid() {
 		// A relayed pong confirms the peer is alive and reachable through the
-		// relay, but says nothing about any direct path.
+		// relay, but says nothing about any direct path. It does time the
+		// relayed path, which is worth keeping: it is the number a direct path
+		// has to beat, and the one somebody watching `makima ping` is deciding
+		// against.
+		ps.mu.Lock()
+		if ps.relayLatency == 0 {
+			ps.relayLatency = rtt
+		} else {
+			ps.relayLatency = (ps.relayLatency*3 + rtt) / 4
+		}
+		ps.mu.Unlock()
 		return
 	}
 
