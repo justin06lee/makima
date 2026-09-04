@@ -51,7 +51,7 @@ func main() {
 		err = denyCmd(os.Args[2:])
 
 	case "genkey":
-		err = genkey()
+		err = genkey(os.Args[2:])
 	case "init":
 		err = initNode(os.Args[2:])
 
@@ -117,7 +117,7 @@ everything else:
   makima ui            open the web interface
   makima init          start a mesh with no coordination plane
   makima peer          maintain one by hand
-  makima genkey        generate a keypair and print it
+  makima genkey        generate a keypair and print it (-psk for a preshared key)
 
   makima-server        administer the mesh: nodes, access, names, the lock
   makima-relay         the fallback path, for machines that cannot meet directly
@@ -126,7 +126,25 @@ every command takes -config PATH (default `+conf.DefaultPath+`)
 `)
 }
 
-func genkey() error {
+func genkey(args []string) error {
+	fs := flag.NewFlagSet("genkey", flag.ExitOnError)
+	psk := fs.Bool("psk", false, "generate a preshared key instead of a keypair")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *psk {
+		s, err := key.NewShared()
+		if err != nil {
+			return err
+		}
+		// One line and nothing else, because the only useful thing to do with
+		// it is paste it into two `makima peer add -psk` commands, and a label
+		// in front would have to be stripped off first.
+		fmt.Println(s.Base64())
+		return nil
+	}
+
 	priv, err := key.NewPrivate()
 	if err != nil {
 		return err
@@ -300,6 +318,7 @@ func peerAdd(args []string) error {
 	pubkey := fs.String("key", "", "peer public key")
 	addr := fs.String("addr", "", "peer mesh address")
 	endpoint := fs.String("endpoint", "", "peer's reachable HOST:PORT, if known")
+	psk := fs.String("psk", "", "preshared key shared with this peer (makima genkey -psk)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -337,6 +356,13 @@ func peerAdd(args []string) error {
 		}
 		p.Endpoints = []netip.AddrPort{ap}
 	}
+	if *psk != "" {
+		shared, err := key.ParseShared(*psk)
+		if err != nil {
+			return fmt.Errorf("parse preshared key: %w", err)
+		}
+		p.PresharedKey = shared
+	}
 
 	// Replace rather than duplicate: re-running add after a key rotation is
 	// the expected way to update a peer.
@@ -361,6 +387,12 @@ func peerAdd(args []string) error {
 		verb = "updated"
 	}
 	fmt.Printf("%s peer %s at %s\n", verb, *name, prefix.Addr())
+	if *psk != "" {
+		// The failure mode for a one-sided preshared key is a tunnel that
+		// never comes up and says nothing about why, so the reminder is worth
+		// a line every time rather than a sentence in the manual.
+		fmt.Printf("run the matching 'peer add -psk' on %s too — a preshared key set on one side only stops the tunnel entirely\n", *name)
+	}
 	return nil
 }
 

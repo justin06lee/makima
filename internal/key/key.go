@@ -15,6 +15,11 @@
 // decrypt traffic between nodes — the worst it can do is lie about who
 // belongs to the network, which is the threat node-key signing addresses
 // later on.
+//
+// Alongside the three keypairs there is one symmetric secret, Shared: an
+// optional WireGuard preshared key. It authenticates nobody and belongs to a
+// pair of nodes rather than to either of them, which is why it is a separate
+// type that can never be mistaken for an identity.
 package key
 
 import (
@@ -195,5 +200,74 @@ func (p *Private) UnmarshalText(b []byte) error {
 		return err
 	}
 	*p = v
+	return nil
+}
+
+// Shared is a WireGuard preshared key: 32 bytes of symmetric secret mixed into
+// the handshake alongside the Curve25519 exchange.
+//
+// It is not a replacement for the keypairs and does not authenticate anyone —
+// two peers with the same Shared and no matching node keys still cannot talk.
+// What it buys is a hedge against Curve25519 itself: an adversary recording
+// traffic today and breaking X25519 later — with a quantum computer or
+// otherwise — still faces a symmetric secret they never saw on the wire.
+// WireGuard's own protocol note calls this the post-quantum escape hatch, and
+// it costs one extra field.
+//
+// Distinct from Private because the two are never interchangeable: a Shared
+// has no public half, is symmetric, and must reach the far end by some channel
+// that already exists. In makima it travels inside a pairing address, which is
+// handed over out of band precisely so this is possible.
+type Shared [Size]byte
+
+// NewShared generates a preshared key from the system CSPRNG.
+func NewShared() (Shared, error) {
+	var s Shared
+	if _, err := rand.Read(s[:]); err != nil {
+		return Shared{}, fmt.Errorf("read entropy: %w", err)
+	}
+	return s, nil
+}
+
+// IsZero reports whether no preshared key was set.
+//
+// The zero value is meaningful: WireGuard treats an all-zero preshared key as
+// "none", so a peer without one needs no special case anywhere.
+func (s Shared) IsZero() bool { return s == Shared{} }
+
+// String redacts the secret, matching Private. A preshared key leaked to a log
+// is as bad as a private one, and the only way to be sure that never happens
+// by accident is for the default rendering to refuse.
+func (s Shared) String() string { return "psk:[redacted]" }
+
+// Base64 serialises the preshared key, for storage and for a pairing address.
+func (s Shared) Base64() string { return base64.StdEncoding.EncodeToString(s[:]) }
+
+// Hex renders it for WireGuard's UAPI protocol, which speaks hex only.
+func (s Shared) Hex() string { return hex.EncodeToString(s[:]) }
+
+// ParseShared decodes a base64 preshared key.
+func ParseShared(str string) (Shared, error) {
+	b, err := decode(str)
+	if err != nil {
+		return Shared{}, err
+	}
+	var s Shared
+	copy(s[:], b)
+	return s, nil
+}
+
+// MarshalText serialises the secret so it can sit in a config file or a
+// pairing address. As with Private, this is the one sanctioned way for it to
+// become text.
+func (s Shared) MarshalText() ([]byte, error) { return []byte(s.Base64()), nil }
+
+// UnmarshalText parses the base64 form.
+func (s *Shared) UnmarshalText(b []byte) error {
+	v, err := ParseShared(string(b))
+	if err != nil {
+		return err
+	}
+	*s = v
 	return nil
 }

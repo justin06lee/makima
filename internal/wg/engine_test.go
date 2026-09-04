@@ -77,3 +77,51 @@ func TestUAPIOmitsUnknownEndpoint(t *testing.T) {
 		t.Errorf("emitted a zero keepalive:\n%s", got)
 	}
 }
+
+// A preshared key must be rendered as hex and must sit inside the peer block
+// it belongs to — before the endpoint, and after the public_key that opened
+// the block. UAPI attaches every line to the most recently declared peer, so
+// a preshared_key emitted in the wrong place silently lands on the wrong peer.
+func TestUAPIPresharedKey(t *testing.T) {
+	priv, err := key.NewPrivate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, err := key.NewPrivate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := key.NewPrivate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	psk, err := key.NewShared()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := uapi(Config{
+		PrivateKey: priv,
+		Peers: []Peer{
+			{PublicKey: one.Public(), PresharedKey: psk},
+			{PublicKey: two.Public()},
+		},
+	}, addrEndpoint)
+
+	line := "preshared_key=" + psk.Hex()
+	if !strings.Contains(got, line) {
+		t.Fatalf("missing %q in:\n%s", line, got)
+	}
+	if strings.Count(got, "preshared_key=") != 1 {
+		t.Errorf("a peer without a preshared key got one anyway:\n%s", got)
+	}
+
+	// The key must fall between the first peer's public_key and the second's,
+	// which is what proves it attached to the peer that actually has it.
+	iFirst := strings.Index(got, "public_key="+one.Public().Hex())
+	iSecond := strings.Index(got, "public_key="+two.Public().Hex())
+	iPSK := strings.Index(got, line)
+	if !(iFirst < iPSK && iPSK < iSecond) {
+		t.Errorf("preshared_key landed outside its own peer block:\n%s", got)
+	}
+}

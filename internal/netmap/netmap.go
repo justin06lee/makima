@@ -80,6 +80,25 @@ type Node struct {
 	// internal layout for no benefit is how a convenience becomes a
 	// reconnaissance aid.
 	Services []Service `json:"services,omitempty"`
+
+	// PresharedKey is a symmetric secret shared with this peer alone, mixed
+	// into its WireGuard handshake as a hedge against Curve25519 being broken
+	// later. Zero means none, which is the normal case.
+	//
+	// It is local knowledge and never travels over the control channel: it
+	// lives in this struct because the peer list is what renders a WireGuard
+	// config, but a managed node clears whatever the server sent before
+	// applying a netmap. A control plane that could set preshared keys could
+	// silently sever any two nodes by giving them different ones, and it has
+	// no legitimate reason to hold a secret it is specifically designed not to
+	// need. Preshared keys reach a node the only way a symmetric secret can:
+	// out of band, inside a pairing address or a static config.
+	//
+	// The tag is a real one because this struct is also what a node writes to
+	// its own configuration file, where the key must survive a restart.
+	// Keeping it off the control channel is therefore enforced at the wire,
+	// not by the absence of a field: see control.Client.PollMap.
+	PresharedKey key.Shared `json:"psk,omitzero"`
 }
 
 // Service is one port a node publishes on the mesh.
@@ -190,9 +209,10 @@ func (m *NetMap) WireGuardConfig() wg.Config {
 		allowed = append(allowed, p.AllowedIPs...)
 
 		peer := wg.Peer{
-			PublicKey:  p.Key,
-			AllowedIPs: allowed,
-			Keepalive:  keepalive,
+			PublicKey:    p.Key,
+			AllowedIPs:   allowed,
+			Keepalive:    keepalive,
+			PresharedKey: p.PresharedKey,
 		}
 		if len(p.Endpoints) > 0 {
 			ep := p.Endpoints[0]

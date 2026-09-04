@@ -36,6 +36,17 @@ type Peer struct {
 	// default bind WireGuard sits unset until the peer speaks first.
 	Endpoint  *netip.AddrPort
 	Keepalive time.Duration
+
+	// PresharedKey is an optional symmetric secret mixed into this peer's
+	// handshake. Zero means none, which is also how WireGuard itself spells
+	// "no preshared key", so the common case needs no special handling.
+	//
+	// It must match on both ends exactly. A one-sided preshared key is not a
+	// weaker tunnel, it is no tunnel at all: the handshake simply fails, with
+	// no message saying why. That asymmetry is the reason makima only ever
+	// sets one from a source both ends read from — a pairing address, or a
+	// static config an operator wrote twice on purpose.
+	PresharedKey key.Shared
 }
 
 // Config is the complete desired state of the local WireGuard device.
@@ -189,6 +200,9 @@ func uapi(cfg Config, endpoint EndpointString) string {
 		b.WriteString("replace_allowed_ips=true\n")
 		for _, ip := range p.AllowedIPs {
 			fmt.Fprintf(&b, "allowed_ip=%s\n", ip.String())
+		}
+		if !p.PresharedKey.IsZero() {
+			fmt.Fprintf(&b, "preshared_key=%s\n", p.PresharedKey.Hex())
 		}
 		if ep := endpoint(p); ep != "" {
 			fmt.Fprintf(&b, "endpoint=%s\n", ep)

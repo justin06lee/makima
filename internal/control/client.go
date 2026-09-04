@@ -103,6 +103,9 @@ func (c *Client) PollMap(ctx context.Context, version uint64, endpoints []netip.
 	if resp.Error != "" {
 		return nil, fmt.Errorf("control server: %s", resp.Error)
 	}
+
+	resp.stripServerSuppliedSecrets()
+
 	return &resp, nil
 }
 

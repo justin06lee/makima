@@ -466,6 +466,30 @@ produce a payload that opens, so a successful decryption *is* the proof of
 identity. The relay handshake and disco probes work the same way, through one
 shared primitive in `internal/key`.
 
+### Preshared keys
+
+A pair of nodes can additionally share a **preshared key**: 32 symmetric bytes
+mixed into their WireGuard handshake alongside the Curve25519 exchange. It
+authenticates nobody — two machines with a matching preshared key and the wrong
+node keys still cannot talk. What it buys is a hedge against Curve25519 itself.
+An adversary recording your traffic today and breaking X25519 in twenty years
+still faces a secret that never crossed the wire.
+
+```sh
+makima genkey -psk                       # prints one line; use it twice
+makima peer add -name desktop -key ... -addr 100.64.0.2 -psk <the key>
+```
+
+Both sides must set the same one. A preshared key configured on one end only
+does not weaken the tunnel, it stops it: the handshake fails and nothing says
+why.
+
+The control plane never carries them. It has no use for one, and a server that
+could set preshared keys could hand two peers different ones and sever them
+silently — so whatever a server sends in that field is discarded on arrival,
+before anything reads it. Preshared keys reach a node the only way a symmetric
+secret can: out of band, in a static config or a pairing address.
+
 ### The admin socket
 
 `makima-server` keeps its state in one JSON file, held in memory by whichever
