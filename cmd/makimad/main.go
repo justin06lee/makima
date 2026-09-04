@@ -216,7 +216,7 @@ func run(opts options) error {
 		if err != nil {
 			return err
 		}
-		defer sock.Close()
+		defer sock.Shutdown()
 
 		n.sock = sock
 		wgOpts.Bind = sock

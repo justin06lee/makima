@@ -517,6 +517,43 @@ third party at all. Behind two NATs they need somewhere to meet: pass
 forwards frames it cannot decrypt between keys it cannot impersonate, so
 meeting at one you do not own costs nothing in confidentiality.
 
+### Without root either
+
+`makima try` is makima with the root prompt removed.
+
+```sh
+# on the machine with something to share
+makima try -serve 8080
+#   This machine is laptop at 100.79.11.4. Nothing on it has been changed.
+#
+#   Run this on the other machine:
+#     makima try mkp1_eyJuIjoi…
+
+# on the other one
+makima try -forward 18080:8080 mkp1_eyJuIjoi…
+#   Paired with laptop at 100.79.11.4.
+#     carrying  http://127.0.0.1:18080 → 100.79.11.4:8080
+#
+#   Direct path to [2600:…]:41641 (3ms).
+```
+
+WireGuard runs against a userspace TCP/IP stack instead of a kernel interface
+— same engine, same crypto, same NAT traversal, same relay — and connections
+terminate inside the process. **No interface is created, no route is installed,
+no firewall rule is written, no resolver is touched, and nothing survives
+Ctrl-C.** It does not ask for a password because it has nothing to ask for.
+
+The trade is worth stating rather than discovering: because the host kernel
+never learns the network exists, an arbitrary program cannot use it. You cannot
+point a browser at a mesh address or run the system `ssh` at one. What you can
+do is anything this process will carry — `-serve` offers a local port to the
+other machine, `-forward` brings one of theirs onto loopback here — which turns
+out to be most of what a first try is for.
+
+When you want the other thing — every program on the machine using mesh
+addresses directly, surviving reboots, with names and access control — that is
+`makima up`, and it is why that one needs root.
+
 ### By hand
 
 A static mesh predates pairing and is still the smallest possible thing:
@@ -708,6 +745,7 @@ internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/serve      publishing a local port on the mesh, and nowhere else
 internal/drop       sending a file to another machine, and receiving one
 internal/sshd       a shell server that only ever listens on the mesh
+internal/rootless   a whole node in one process: netstack, no root, no traces
 internal/localapi   the daemon's local API and the embedded web interface
 internal/netmap     the mesh's view of itself; renders to a WireGuard config
 internal/control    the coordination protocol, its server, client, and store

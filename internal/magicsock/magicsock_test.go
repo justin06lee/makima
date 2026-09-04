@@ -2,6 +2,7 @@ package magicsock
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -32,7 +33,7 @@ func newConn(t *testing.T) (*Conn, key.Private, key.Private) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { c.Shutdown() })
 	return c, nodeKey, discoKey
 }
 
@@ -498,4 +499,105 @@ func mustKeys(t *testing.T) (node, disco key.Private) {
 		t.Fatal(err)
 	}
 	return node, disco
+}
+
+// wireguard-go's Bind.Close does not mean teardown. It ends one listening
+// state, and bringing a device up calls Close then Open as a matter of course
+// — so a Close that released the socket for good would make the tunnel fail to
+// start at all, on every node that uses this socket.
+func TestCloseThenOpenReopens(t *testing.T) {
+	c, _, _ := newConn(t)
+
+	port := c.LocalPort()
+	if port == 0 {
+		t.Fatal("no port was bound")
+	}
+
+	fns, got, err := c.Open(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != port {
+		t.Errorf("Open returned port %d, want %d", got, port)
+	}
+
+	// The receive functions from the closed cycle must stop, or wireguard-go
+	// waits for them forever.
+	stopped := make(chan error, len(fns))
+	for _, fn := range fns {
+		go func() {
+			bufs := [][]byte{make([]byte, 1500)}
+			sizes := make([]int, 1)
+			eps := make([]conn.Endpoint, 1)
+			_, err := fn(bufs, sizes, eps)
+			stopped <- err
+		}()
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range fns {
+		select {
+		case err := <-stopped:
+			if !errors.Is(err, net.ErrClosed) {
+				t.Errorf("a receive function returned %v, want net.ErrClosed", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a receive function did not return after Close")
+		}
+	}
+
+	// And Open must work again, on the same port — the node advertised it to
+	// the control plane before WireGuard existed, and moving it here would
+	// invalidate every endpoint its peers hold.
+	if _, again, err := c.Open(0); err != nil {
+		t.Fatalf("Open after Close: %v", err)
+	} else if again != port {
+		t.Errorf("reopened on port %d, want %d", again, port)
+	}
+}
+
+// Shutdown is the other one: after it, nothing works and Open refuses.
+func TestShutdownIsFinal(t *testing.T) {
+	c, _, _ := newConn(t)
+
+	if err := c.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Open(0); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("Open after Shutdown returned %v, want net.ErrClosed", err)
+	}
+	// Idempotent, because it is reached from both a defer and a Close path.
+	if err := c.Shutdown(); err != nil {
+		t.Errorf("a second Shutdown returned %v", err)
+	}
+}
+
+// The whole sequence wireguard-go actually performs when a device comes up:
+// set the port (Close, then no Open because the device is down), then Up
+// (Close again, then Open). This is the exact path that used to fail.
+func TestTheDeviceStartupSequenceSurvives(t *testing.T) {
+	c, _, _ := newConn(t)
+	port := c.LocalPort()
+
+	// listen_port= : BindUpdate closes and, with the device down, stops.
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Up() : BindUpdate closes again — a no-op — then opens.
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	fns, got, err := c.Open(port)
+	if err != nil {
+		t.Fatalf("the device could not open its bind: %v", err)
+	}
+	if got != port {
+		t.Errorf("came up on port %d, want %d", got, port)
+	}
+	if len(fns) != 2 {
+		t.Errorf("Open returned %d receive functions, want 2", len(fns))
+	}
 }
