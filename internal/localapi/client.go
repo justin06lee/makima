@@ -30,6 +30,17 @@ type Client struct {
 	path string
 }
 
+// dialSocket is the transport every client here uses: the address is ignored
+// and the connection always goes to one Unix socket.
+func dialSocket(socketPath string) *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socketPath)
+		},
+	}
+}
+
 // Dial connects to the daemon's socket.
 func Dial(socketPath string) (*Client, error) {
 	c, err := net.DialTimeout("unix", socketPath, 2*time.Second)
@@ -41,15 +52,23 @@ func Dial(socketPath string) (*Client, error) {
 	return &Client{
 		path: socketPath,
 		http: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", socketPath)
-				},
-			},
+			Timeout:   30 * time.Second,
+			Transport: dialSocket(socketPath),
 		},
 	}, nil
+}
+
+// withTimeout returns a client to the same daemon that will wait longer.
+//
+// The default is deliberately short: every other call is a local read or a
+// file write, and one that takes thirty seconds has hung. Pairing is the
+// exception — it blocks on a machine somewhere else answering — so it gets its
+// own client rather than loosening the bound for everything.
+func (c *Client) withTimeout(d time.Duration) *Client {
+	return &Client{
+		path: c.path,
+		http: &http.Client{Timeout: d, Transport: dialSocket(c.path)},
+	}
 }
 
 // Status fetches the daemon's view of itself.
@@ -198,4 +217,31 @@ func ServiceLine(s serve.Status) string {
 		state = "NOTHING ON " + s.Target
 	}
 	return fmt.Sprintf("%-24s %s", s.Service.String(), state)
+}
+
+// OpenPairing publishes a pairing address on this node and returns it.
+func (c *Client) OpenPairing(seconds int) (PairingState, error) {
+	var st PairingState
+	err := c.call("POST", "/api/pair", PairRequest{Seconds: seconds}, &st)
+	return st, err
+}
+
+// ClosePairing stops this node answering knocks.
+func (c *Client) ClosePairing() error {
+	return c.call("POST", "/api/pair/close", nil, nil)
+}
+
+// Pair knocks on another machine's pairing address, waiting up to wait for an
+// answer.
+//
+// Hanging up is how a knock is cancelled: the daemon takes the request's
+// context from the connection, so a client that gives up stops the knocking
+// rather than leaving it running on the other side of the socket.
+func (c *Client) Pair(address string, wait time.Duration) (PairedResult, error) {
+	var res PairedResult
+	// A little more than the caller asked for, so the timeout that fires is
+	// the daemon's — which knows what it was waiting for — rather than this
+	// one, which would only be able to say "deadline exceeded".
+	err := c.withTimeout(wait+5*time.Second).call("POST", "/api/pair", PairRequest{Address: address}, &res)
+	return res, err
 }

@@ -15,6 +15,7 @@
 package localapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -50,9 +51,18 @@ type Status struct {
 	Domain    string         `json:"domain,omitempty"`
 	DNSActive bool           `json:"dns_active"`
 	ExitNode  string         `json:"exit_node,omitempty"`
-	Filtering bool           `json:"filtering"`
-	Dropped   uint64         `json:"dropped"`
-	Since     time.Time      `json:"since"`
+
+	// Serverless says this node has no control plane and gains peers by
+	// pairing. The UI and the CLI both need it to know which vocabulary to
+	// use — "invite" or "pair" — for adding a machine.
+	Serverless bool `json:"serverless"`
+
+	// Pairing is the open pairing window, nil when none is open.
+	Pairing *PairingState `json:"pairing,omitempty"`
+
+	Filtering bool      `json:"filtering"`
+	Dropped   uint64    `json:"dropped"`
+	Since     time.Time `json:"since"`
 }
 
 // NodeInfo is this machine's own entry.
@@ -89,6 +99,33 @@ type PeerInfo struct {
 	Services []netmap.Service `json:"services,omitempty"`
 	Routes   []netip.Prefix   `json:"routes,omitempty"`
 	ExitNode bool             `json:"exit_node"`
+}
+
+// PairingState is an open invitation to be knocked on.
+type PairingState struct {
+	// Address is the string to hand to the other machine. It is regenerated
+	// on every request rather than stored: two of its fields, the endpoints
+	// and the relay, change underneath it.
+	Address string `json:"address"`
+
+	// Expires is when this node stops answering knocks.
+	Expires time.Time `json:"expires"`
+}
+
+// PairRequest opens a window or knocks on someone else's.
+type PairRequest struct {
+	// Address is a pairing address to knock on. Empty means open a window
+	// here instead.
+	Address string `json:"address,omitempty"`
+
+	// Seconds is how long to hold a window open. Zero means the default.
+	Seconds int `json:"seconds,omitempty"`
+}
+
+// PairedResult is the machine on the other end of a completed pairing.
+type PairedResult struct {
+	Name    string     `json:"name"`
+	Address netip.Addr `json:"address"`
 }
 
 // Check is one diagnostic result.
@@ -129,6 +166,13 @@ type Backend interface {
 
 	AddService(s serve.Service) error
 	RemoveService(port uint16) error
+
+	// OpenPairing publishes a pairing address and starts answering knocks on
+	// it. ClosePairing stops. Pair knocks on somebody else's, blocking until
+	// it is answered or ctx expires.
+	OpenPairing(seconds int) (PairingState, error)
+	ClosePairing()
+	Pair(ctx context.Context, address string) (PairedResult, error)
 
 	SetExitNode(name string) error
 	AllowFirewall() (netcfg.Report, error)
@@ -198,6 +242,48 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
+		writeJSON(w, http.StatusOK, okBody())
+	})
+
+	// Pairing is a write operation in the strongest sense — it admits a new
+	// machine to the data plane — so it is behind the same gate as the rest,
+	// which in practice means the Unix socket only.
+	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
+		if !s.write(w) {
+			return
+		}
+		var req PairRequest
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+
+		if req.Address == "" {
+			st, err := s.backend.OpenPairing(req.Seconds)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, st)
+			return
+		}
+
+		// A knock blocks until the far end answers or the caller gives up, so
+		// the request's own context is what bounds it. A client that hangs up
+		// cancels the knock rather than leaving it running here.
+		res, err := s.backend.Pair(r.Context(), req.Address)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
+
+	mux.HandleFunc("POST /api/pair/close", func(w http.ResponseWriter, r *http.Request) {
+		if !s.write(w) {
+			return
+		}
+		s.backend.ClosePairing()
 		writeJSON(w, http.StatusOK, okBody())
 	})
 

@@ -375,9 +375,56 @@ thing as the node's identity to the server.
 
 ### Without a control server
 
-A mesh of two or three machines that never change does not need one. `makima
-init` and `makima peer add` maintain the peer list by hand, and the daemon runs
-identically:
+Two machines can talk with nothing between them. One side prints an address,
+the other pastes it:
+
+```sh
+# on the first machine
+makima pair
+#   makima pair mkp1_eyJuIjoi…
+
+# on the second
+makima pair mkp1_eyJuIjoi…
+#   Paired with desktop at 100.79.11.4.
+```
+
+That is the whole procedure. There is no server, no account, no membership and
+nothing to administer — each machine simply writes the other into its own
+configuration. From there it is an ordinary makima mesh: the same tunnel, the
+same NAT traversal, the same `makima ssh`, `makima status` and published
+services.
+
+A **pairing address** carries exactly what the far end needs and nothing else:
+two public keys, the mesh address this machine answers on, optionally a
+preshared key, optionally a relay to meet at, and wherever it currently thinks
+it can be reached. Mesh addresses are derived from the node key rather than
+handed out, so both ends compute the same answer from public information and
+there is nothing to negotiate.
+
+Pairing is a **window, not a service**. `makima pair` listens for ten minutes
+by default (`-for 1h`, or `makima pair -stop` to close it early); outside that
+window the machine answers a knock with silence, not a refusal. Anyone holding
+the address can ask, which is why it is time-boxed — and why `-psk` exists:
+
+```sh
+makima genkey -psk                    # run once, use the same value both sides
+makima pair -psk <the key>            # on one machine
+makima pair -psk <the key> mkp1_…     # on the other
+```
+
+With a preshared key, an address that leaks is not enough on its own.
+
+Whether the two ever meet depends on the same thing everything else does. On
+one LAN, or with one side directly reachable, they find each other with no
+third party at all. Behind two NATs they need somewhere to meet: pass
+`-relay HOST:PORT` and the knocker adopts that relay from the address. A relay
+forwards frames it cannot decrypt between keys it cannot impersonate, so
+meeting at one you do not own costs nothing in confidentiality.
+
+### By hand
+
+A static mesh predates pairing and is still the smallest possible thing:
+`makima init` and `makima peer add` maintain the peer list yourself.
 
 ```sh
 makima init -name laptop -addr 100.64.0.1
@@ -389,8 +436,9 @@ makima up
 Only one side needs an `-endpoint`. Whichever machine speaks first teaches the
 other where it lives, and the keepalive holds that path open afterwards. A
 static mesh gets an ordinary UDP socket rather than the path-selecting one —
-there is no control plane to tell it about relays and no disco keys to probe
-with, so there would be nothing for it to select between.
+nothing tells it about relays and its peers have no disco keys to probe with,
+so there would be nothing for it to select between. A serverless one does get
+the path-selecting socket, because pairing *is* a disco exchange.
 
 ### Addressing
 
@@ -556,7 +604,9 @@ internal/key        Curve25519 keypairs, and the sealed-box primitive
 internal/wg         userspace WireGuard on a TUN device
 internal/magicsock  path selection: relay, direct, and the upgrade between
 internal/relay      the forwarder, its client, and its wire format
-internal/disco      the probe protocol that finds direct paths
+internal/disco      the probe protocol that finds direct paths, and knocks
+internal/pair       serverless pairing addresses: two machines, no server
+internal/invite     one pasteable string that carries a whole join
 internal/stun       asking a public server what address we appear to come from
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/serve      publishing a local port on the mesh, and nowhere else

@@ -208,6 +208,18 @@ func (c *Conn) handleDisco(b []byte, src netip.AddrPort) {
 		return
 	}
 
+	// Pairing is handled before the peer lookup, and is the only thing that
+	// is: a knock comes from a machine that is by definition not a peer yet,
+	// so requiring one would make serverless pairing impossible.
+	switch m := msg.(type) {
+	case *disco.Knock:
+		c.handleKnock(sender, m, src, false)
+		return
+	case *disco.Knocked:
+		c.handleKnocked(sender, m, src, false)
+		return
+	}
+
 	c.mu.RLock()
 	ps := c.byDisco[sender]
 	c.mu.RUnlock()
@@ -234,6 +246,24 @@ func (c *Conn) handleDisco(b []byte, src netip.AddrPort) {
 func (c *Conn) handleDiscoRelayed(b []byte, srcNode key.Public) {
 	sender, msg, err := disco.Open(b, c.discoKey)
 	if err != nil {
+		return
+	}
+
+	switch m := msg.(type) {
+	case *disco.Knock:
+		// The relay's header names the sender, and only a connection that
+		// proved possession of that node key could have set it. A knock
+		// claiming a different one inside is lying about half of itself.
+		if m.NodeKey != srcNode {
+			return
+		}
+		c.handleKnock(sender, m, netip.AddrPort{}, true)
+		return
+	case *disco.Knocked:
+		if m.NodeKey != srcNode {
+			return
+		}
+		c.handleKnocked(sender, m, netip.AddrPort{}, true)
 		return
 	}
 
