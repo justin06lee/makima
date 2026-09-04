@@ -112,6 +112,26 @@ type MapResponse struct {
 	Lock *LockConfig `json:"lock,omitempty"`
 }
 
+// stripServerSuppliedSecrets clears the fields a control plane has no business
+// setting, before anything downstream can act on them.
+//
+// Today that is exactly one field: the WireGuard preshared key. It is a secret
+// two nodes agreed on out of band, and the server is not one of them — it has
+// never held one and cannot benefit from one. What it *could* do with the
+// field is hand two peers different keys and sever them silently, since a
+// mismatched preshared key produces a tunnel that never completes a handshake
+// and reports nothing. Clearing whatever arrived, rather than trusting the
+// server not to send any, keeps that out of reach by construction.
+//
+// Applied at the wire rather than at the point of use, so a future caller
+// cannot reach a server-supplied secret by reading the struct directly.
+func (m *MapResponse) stripServerSuppliedSecrets() {
+	m.Self.PresharedKey = key.Shared{}
+	for i := range m.Peers {
+		m.Peers[i].PresharedKey = key.Shared{}
+	}
+}
+
 // LockConfig is the part of the network lock a node needs.
 type LockConfig struct {
 	Enabled     bool         `json:"enabled"`

@@ -103,3 +103,65 @@ func TestPublicTextMarshal(t *testing.T) {
 		t.Error("public key did not survive text marshalling")
 	}
 }
+
+func TestSharedRoundTrip(t *testing.T) {
+	s, err := NewShared()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.IsZero() {
+		t.Fatal("a freshly generated preshared key is all zeroes")
+	}
+
+	back, err := ParseShared(s.Base64())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back != s {
+		t.Error("preshared key did not survive base64 round trip")
+	}
+
+	// The hex form is what reaches wireguard-go, so it has to be the same 32
+	// bytes and nothing else.
+	if len(s.Hex()) != Size*2 {
+		t.Errorf("hex form is %d characters, want %d", len(s.Hex()), Size*2)
+	}
+}
+
+// The zero Shared is how "no preshared key" is spelled, so it must never be
+// mistaken for a real one.
+func TestSharedZeroIsNone(t *testing.T) {
+	var s Shared
+	if !s.IsZero() {
+		t.Error("the zero preshared key does not report itself as unset")
+	}
+}
+
+func TestSharedStringRedacts(t *testing.T) {
+	s, err := NewShared()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(s.String(), s.Base64()) {
+		t.Errorf("String() leaked the secret: %q", s.String())
+	}
+}
+
+func TestSharedTextMarshal(t *testing.T) {
+	s, err := NewShared()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.MarshalText()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var back Shared
+	if err := back.UnmarshalText(b); err != nil {
+		t.Fatal(err)
+	}
+	if back != s {
+		t.Error("preshared key did not survive a text round trip")
+	}
+}
