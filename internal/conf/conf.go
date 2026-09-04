@@ -94,6 +94,16 @@ type File struct {
 	// "keep it off the mesh" rather than "take it off the mesh for a moment".
 	DeniedPorts []uint16 `json:"denied_ports,omitempty"`
 
+	// Inbox is where files sent by peers land, and InboxOff switches
+	// receiving off entirely.
+	//
+	// Two fields rather than one, because "" has to keep meaning "the
+	// default" — a node whose inbox is off and one that has never been
+	// configured are different states, and collapsing them would make
+	// `makima inbox -off` indistinguishable from a fresh install.
+	Inbox    string `json:"inbox,omitempty"`
+	InboxOff bool   `json:"inbox_off,omitempty"`
+
 	// Domain and HomeRelay cache what the last netmap said, so a node that
 	// starts while the control server is unreachable still comes up with mesh
 	// DNS and a relay rather than isolated.

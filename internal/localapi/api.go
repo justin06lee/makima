@@ -60,6 +60,9 @@ type Status struct {
 	// Pairing is the open pairing window, nil when none is open.
 	Pairing *PairingState `json:"pairing,omitempty"`
 
+	// Inbox is where files sent by peers land.
+	Inbox InboxInfo `json:"inbox"`
+
 	Filtering bool      `json:"filtering"`
 	Dropped   uint64    `json:"dropped"`
 	Since     time.Time `json:"since"`
@@ -99,6 +102,19 @@ type PeerInfo struct {
 	Services []netmap.Service `json:"services,omitempty"`
 	Routes   []netip.Prefix   `json:"routes,omitempty"`
 	ExitNode bool             `json:"exit_node"`
+}
+
+// InboxInfo is where files from peers land, and whether any have.
+type InboxInfo struct {
+	Dir      string `json:"dir,omitempty"`
+	Active   bool   `json:"active"`
+	Received uint64 `json:"received"`
+}
+
+// InboxRequest changes where files land, or switches receiving off.
+type InboxRequest struct {
+	Dir string `json:"dir,omitempty"`
+	Off bool   `json:"off,omitempty"`
 }
 
 // PairingState is an open invitation to be knocked on.
@@ -204,6 +220,10 @@ type Backend interface {
 
 	// Ping probes one peer and reports the path to it.
 	Ping(name string) (Ping, error)
+
+	// SetInbox changes where files from peers land, or switches receiving
+	// off. An empty dir with off false restores the default.
+	SetInbox(dir string, off bool) error
 
 	SetExitNode(name string) error
 	AllowFirewall() (netcfg.Report, error)
@@ -332,6 +352,22 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		s.backend.ClosePairing()
+		writeJSON(w, http.StatusOK, okBody())
+	})
+
+	mux.HandleFunc("POST /api/inbox", func(w http.ResponseWriter, r *http.Request) {
+		if !s.write(w) {
+			return
+		}
+		var req InboxRequest
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.backend.SetInbox(req.Dir, req.Off); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, okBody())
 	})
 
