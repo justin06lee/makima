@@ -162,6 +162,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	fmt.Println("Add another machine — run this on it:")
 	fmt.Printf("  makima join %s\n", inv)
 	warnIfUnreachable(reachable)
+	installDieAlias()
 	return nil
 }
 
@@ -193,7 +194,11 @@ func joinWith(ctx context.Context, path string, inv invite.Invite, name string) 
 	if err := registerNode(ctx, path, inv, name); err != nil {
 		return err
 	}
-	return bringUp(ctx, path)
+	if err := bringUp(ctx, path); err != nil {
+		return err
+	}
+	installDieAlias()
+	return nil
 }
 
 // bringUp starts the daemon and prints what the machine can now see.
