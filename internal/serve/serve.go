@@ -58,6 +58,13 @@ type Service struct {
 	// address; allowed to be any host so one node can publish a device that
 	// cannot run makima itself — a printer, a switch, a NAS appliance.
 	Target string `json:"target"`
+
+	// Auto marks a service the daemon found rather than one somebody asked
+	// for. Reported so that status output can say where a listener came from:
+	// an automatic one appears and disappears with the program behind it, and
+	// somebody wondering why their mesh gained a port deserves to be told it
+	// was because they started a dev server.
+	Auto bool `json:"auto,omitempty"`
 }
 
 // String renders a service the way the CLI prints it.

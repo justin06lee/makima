@@ -373,8 +373,6 @@ func (n *node) RemoveService(port uint16) error {
 // other node's UI within a second rather than at the next poll heartbeat.
 func (n *node) servicesChanged() error {
 	n.mu.Lock()
-	addr, _ := n.file.Self.Addr()
-	services := append([]serve.Service(nil), n.file.Services...)
 	err := conf.Save(n.cfgPath, n.file)
 	n.mu.Unlock()
 
@@ -382,7 +380,10 @@ func (n *node) servicesChanged() error {
 		return fmt.Errorf("save configuration: %w", err)
 	}
 	if n.serve != nil {
-		n.serve.Apply(addr, services)
+		// The union, not just the explicit list: rebinding to file.Services
+		// alone would tear down every automatically published port every time
+		// somebody published one by hand.
+		n.applyServices()
 	}
 	if n.client != nil {
 		go n.reregister()
