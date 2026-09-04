@@ -19,9 +19,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,6 +55,7 @@ func main() {
 	uiAddr := flag.String("ui", "", "serve the web UI on this address, e.g. 127.0.0.1:8088")
 	uiWrite := flag.Bool("ui-write", false, "let the web UI change settings, not just show them")
 	noFirewall := flag.Bool("no-firewall", false, "do not touch the host firewall")
+	noAutoServe := flag.Bool("no-auto-serve", false, "do not publish this machine's loopback services on the mesh automatically")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -62,13 +65,14 @@ func main() {
 	}
 
 	opts := options{
-		configPath: *configPath,
-		iface:      *ifaceName,
-		mtu:        *mtu,
-		verbose:    *verbose,
-		uiAddr:     *uiAddr,
-		uiWrite:    *uiWrite,
-		noFirewall: *noFirewall,
+		configPath:  *configPath,
+		iface:       *ifaceName,
+		mtu:         *mtu,
+		verbose:     *verbose,
+		uiAddr:      *uiAddr,
+		uiWrite:     *uiWrite,
+		noFirewall:  *noFirewall,
+		noAutoServe: *noAutoServe,
 	}
 	if err := run(opts); err != nil {
 		log.Fatal(err)
@@ -104,6 +108,16 @@ type node struct {
 	serve      *serve.Manager
 	firewall   *netcfg.Firewall
 
+	// autoServices are the loopback ports the daemon found and published by
+	// itself, kept apart from file.Services so a scan never rewrites the
+	// operator's own configuration. Guarded by mu.
+	autoServices []serve.Service
+
+	// autoServe is whether to look for them at all, and uiPort is the one
+	// loopback port that must never be republished onto the mesh.
+	autoServe bool
+	uiPort    uint16
+
 	// filter is the compiled policy currently being enforced. Stored on the
 	// node rather than inside the tunnel wrapper so a netmap update can swap
 	// it atomically without disturbing the data path.
@@ -115,13 +129,14 @@ type node struct {
 // options are the daemon's command-line settings, gathered so run's signature
 // does not grow a parameter per flag.
 type options struct {
-	configPath string
-	iface      string
-	mtu        int
-	verbose    bool
-	uiAddr     string
-	uiWrite    bool
-	noFirewall bool
+	configPath  string
+	iface       string
+	mtu         int
+	verbose     bool
+	uiAddr      string
+	uiWrite     bool
+	noFirewall  bool
+	noAutoServe bool
 }
 
 func run(opts options) error {
@@ -147,6 +162,8 @@ func run(opts options) error {
 		verbose:   verbose,
 		filter:    policy.NewGuard(),
 		serve:     serve.New(log.Default()),
+		autoServe: !opts.noAutoServe,
+		uiPort:    uiPort(opts.uiAddr),
 	}
 	defer n.serve.Close()
 
@@ -236,6 +253,12 @@ func run(opts options) error {
 	// its first poll.
 	n.serve.Apply(addr, f.Services)
 
+	if n.autoServe {
+		log.Print("auto-serve: on — services on 127.0.0.1 are published to your mesh as they appear")
+		log.Print("           your mesh is trusted like this machine is; -no-auto-serve turns it off")
+		go n.watchLocalPorts(ctx)
+	}
+
 	stopAPI, err := n.serveLocalAPI(ctx, opts)
 	if err != nil {
 		return err
@@ -300,7 +323,7 @@ func (n *node) register(ctx context.Context) error {
 		AuthKey:         n.file.AuthKey,
 		AdvertiseRoutes: n.file.AdvertiseRoutes,
 		AdvertiseExit:   n.file.AdvertiseExit,
-		Services:        n.file.AdvertisedServices(),
+		Services:        n.advertisedServicesLocked(),
 	}
 	nodeKey, discoKey := n.file.NodeKey, n.file.DiscoKey
 	n.mu.Unlock()
@@ -435,7 +458,6 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	n.file.HomeRelay = resp.HomeRelay
 
 	m := n.netMapLocked()
-	services := append([]serve.Service(nil), n.file.Services...)
 	n.mu.Unlock()
 
 	m.HomeRelay = resp.HomeRelay
@@ -460,9 +482,7 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 
 	// Rebind published ports. Almost always a no-op, but the first netmap is
 	// where a fresh node learns its address, and every listener depends on it.
-	if addr, err := m.Self.Addr(); err == nil {
-		n.serve.Apply(addr, services)
-	}
+	n.applyServices()
 
 	// Persist last, so a cache is only written for a netmap that was actually
 	// applied successfully.
@@ -609,4 +629,24 @@ func appendUniqueAddrPort(s []netip.AddrPort, a netip.AddrPort) []netip.AddrPort
 		}
 	}
 	return append(s, a)
+}
+
+// uiPort extracts the port from a -ui address, or 0 when the UI is off.
+//
+// Needed so the daemon can keep its own web interface off the mesh: with
+// -ui-write that page can change this node's settings, and republishing it
+// would hand that to anything that can reach the address.
+func uiPort(addr string) uint16 {
+	if addr == "" {
+		return 0
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	p, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return 0
+	}
+	return uint16(p)
 }

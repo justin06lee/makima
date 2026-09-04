@@ -340,9 +340,26 @@ func (n *node) AddService(s serve.Service) error {
 		}
 	}
 	n.file.Services = append(n.file.Services, s)
+	// Publishing a port on purpose withdraws any standing refusal of it,
+	// otherwise denying something once would quietly veto every later attempt
+	// to publish it and there would be nothing on screen explaining why.
+	n.file.DeniedPorts = dropPort(n.file.DeniedPorts, s.Port)
 	n.mu.Unlock()
 
 	return n.servicesChanged()
+}
+
+func dropPort(ports []uint16, p uint16) []uint16 {
+	out := ports[:0]
+	for _, v := range ports {
+		if v != p {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // RemoveService withdraws one.
@@ -357,14 +374,48 @@ func (n *node) RemoveService(port uint16) error {
 		}
 		kept = append(kept, s)
 	}
-	if !found {
+
+	// An automatically published port counts as published: it is on the mesh,
+	// somebody can see it, and asking for it to stop is a reasonable thing to
+	// do. Refusing because it is not in the explicit list would be an
+	// implementation detail leaking out as an error message.
+	auto := false
+	for _, s := range n.autoServices {
+		if s.Port == port {
+			auto = true
+			break
+		}
+	}
+	if !found && !auto {
 		n.mu.Unlock()
 		return fmt.Errorf("nothing is published on port %d", port)
 	}
+
 	n.file.Services = kept
+	// Recorded, not merely withdrawn. The scanner runs again in five seconds
+	// and would republish anything still listening, so without this "deny"
+	// would mean "for five seconds".
+	if !containsPort(n.file.DeniedPorts, port) {
+		n.file.DeniedPorts = append(n.file.DeniedPorts, port)
+	}
+	for i, s := range n.autoServices {
+		if s.Port == port {
+			n.autoServices = append(n.autoServices[:i:i], n.autoServices[i+1:]...)
+			break
+		}
+	}
 	n.mu.Unlock()
 
 	return n.servicesChanged()
+}
+
+func containsPort(ports []uint16, p uint16) bool {
+	for _, v := range ports {
+		if v == p {
+			return true
+		}
+	}
+	return false
 }
 
 // servicesChanged persists the list, rebinds the listeners, and tells the mesh.
@@ -373,8 +424,6 @@ func (n *node) RemoveService(port uint16) error {
 // other node's UI within a second rather than at the next poll heartbeat.
 func (n *node) servicesChanged() error {
 	n.mu.Lock()
-	addr, _ := n.file.Self.Addr()
-	services := append([]serve.Service(nil), n.file.Services...)
 	err := conf.Save(n.cfgPath, n.file)
 	n.mu.Unlock()
 
@@ -382,7 +431,10 @@ func (n *node) servicesChanged() error {
 		return fmt.Errorf("save configuration: %w", err)
 	}
 	if n.serve != nil {
-		n.serve.Apply(addr, services)
+		// The union, not just the explicit list: rebinding to file.Services
+		// alone would tear down every automatically published port every time
+		// somebody published one by hand.
+		n.applyServices()
 	}
 	if n.client != nil {
 		go n.reregister()

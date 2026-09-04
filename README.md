@@ -23,11 +23,12 @@ between them.
 
 ## Status
 
-**Feature-complete.** A node joins with a credential, is handed an address, and
-receives the mesh's membership over a long poll that pushes changes as they
-happen. Local services are published on the mesh without being exposed to the
-LAN, the host firewall is configured to let tunnel traffic through, and a web
-interface shows what is reachable and what is broken.
+**Feature-complete.** `makima up` on one machine makes a mesh; one pasted
+invite puts another on it. A node is handed an address and receives the mesh's
+membership over a long poll that pushes changes as they happen. Local services
+are published on the mesh — automatically, as they start — without being
+exposed to the LAN, the host firewall is configured to let tunnel traffic
+through, and a web interface shows what is reachable and what is broken.
 
 It reaches its peers directly where it can and through a relay where it
 cannot, upgrading to a direct path the moment one is found. Names resolve,
@@ -44,6 +45,7 @@ who belongs.
 | **M4** | port mapping — NAT-PMP and PCP | **done** |
 | **M5** | DNS names, ACLs, exit nodes, subnet routes | **done** |
 | **M6** | network lock — node-key signing, key rotation | **done** |
+| **M7** | one-command setup — `up`, invites, services that publish themselves | **done** |
 
 What this has *not* had is a week of running on real machines behind real NATs.
 Every layer is covered by tests, including the relay and the path-selecting
@@ -67,32 +69,33 @@ its address assignment is not wired up yet.
 
 ## Use
 
-Pick a machine to hold the control plane — anything the others can reach. Run:
+On the first machine:
 
 ```sh
-makima-server serve
+makima up
 ```
 
-It prints its public key on startup and stores everything in
-`/var/lib/makima/control.json`. Mint a credential for each machine you want to
-add:
+That is the whole thing. There is no mesh yet, so it makes one, puts the
+coordination plane on this machine, turns on names, joins itself, starts the
+daemon, and prints an invite. It asks for sudo when it needs it rather than
+failing with advice about it.
+
+On every machine after, paste what it printed:
 
 ```sh
-makima-server authkey -reusable -expiry 1h
+makima join mk1_...
 ```
 
-That prints a ready-to-paste join command. On each machine:
+One string, because the three things a machine needs to join — where the
+coordination plane is, a credential, and the plane's public key — are three
+things to get right and one thing to paste. The key travelling *with* the
+invite is the point: a node that has to fetch it over the connection it is
+about to trust cannot tell an impostor from the real server.
 
 ```sh
-sudo makima join -server http://<control-host>:8080 \
-                 -authkey makima_... \
-                 -serverkey <the server's public key>
-```
-
-Then bring the tunnel up:
-
-```sh
-sudo makimad
+makima invite        # another one, for the next machine
+makima status        # what this machine can see, and anything wrong
+makima down          # stop, and put this machine back
 ```
 
 Each node is handed an address from `100.64.0.0/10` and learns about the others
@@ -100,9 +103,54 @@ automatically. Nodes appearing and disappearing propagate within milliseconds �
 the daemon holds a long poll open, so a change is pushed rather than discovered
 on a timer.
 
-`makima status` shows what a node can see and how it is reaching it.
-`makima-server nodes` lists the mesh. `makima-server forget -name N` evicts a
-machine and every other node drops it on the spot.
+### Services publish themselves
+
+Anything listening on `127.0.0.1` is put on the mesh as it appears, and taken
+off again when it stops. Start Ollama and it is at `desktop.makima:11434` from
+your laptop a few seconds later. Start a dev server and it is reachable from
+the sofa. There is no command.
+
+That is a deliberate policy: **your mesh is trusted the way this machine is.**
+It is the right default for the machines one person owns, and the wrong one the
+moment somebody else's laptop joins — so the daemon says which it is doing at
+startup, and `makimad -no-auto-serve` turns it off.
+
+```sh
+makima allow 8080:3000   # publish a port on purpose, on a different mesh port
+makima deny  11434       # keep a port off the mesh, and keep it off
+```
+
+`deny` is recorded rather than merely applied, because the scanner runs again
+in five seconds and would otherwise put back whatever you just withdrew.
+
+### Getting a shell
+
+```sh
+makima ssh desktop
+makima possess desktop     # the same command
+```
+
+Sugar over `ssh desktop.makima`, which has always worked — `sshd` listens on
+every address, so a peer is reachable the moment the tunnel is up. What this
+removes is having to remember the suffix.
+
+### die
+
+`makima up` adds a `die` alias to your shell as a shortcut for `makima down`.
+It is a fenced block in your own startup file; delete it if you would rather
+not have it.
+
+### Administering a mesh
+
+The one machine holding the coordination plane has `makima-server`, and it is
+where the mesh is administered from:
+
+```sh
+makima-server nodes                  # every machine on it
+makima-server forget -name laptop    # evict one; every node drops it at once
+makima-server acl set -file p.json   # who may reach whom
+makima-server lock status            # stop trusting this server about membership
+```
 
 ### Reaching a home server that will not cooperate
 
@@ -132,7 +180,7 @@ makima removes the LAN from the question entirely:
 
 ```sh
 # on the desktop
-sudo makima serve 11434 -name ollama
+makima up
 ```
 
 ```sh
@@ -140,12 +188,16 @@ sudo makima serve 11434 -name ollama
 curl http://desktop.makima:11434/api/tags
 ```
 
+Nothing in between. The daemon sees Ollama listening on loopback and publishes
+it; `makima allow 11434 -name ollama` is only needed if you want to choose the
+name or the mesh port.
+
 A service on another machine on that desktop's network — a printer, a NAS, a
 switch's web page — takes a three-part form instead, and the machine behind it
 never learns the mesh exists:
 
 ```sh
-sudo makima serve 8080:192.168.1.50:80 -name printer
+sudo makima allow 8080:192.168.1.50:80 -name printer
 ```
 
 The daemon listens on the desktop's **mesh address** and forwards to
@@ -201,6 +253,8 @@ VPS and forget about it.
 sudo makimad -ui 127.0.0.1:8088 -ui-write
 makima ui
 ```
+
+(`makima up` starts the daemon without the UI; pass `-ui` yourself to have one.)
 
 One page: this machine, every peer with the path currently in use and its
 latency, everything published from here, and the diagnosis. Services other
@@ -308,7 +362,7 @@ identically:
 makima init -name laptop -addr 100.64.0.1
 makima peer add -name desktop -key <public key> -addr 100.64.0.2 \
                 -endpoint 192.168.1.50:51820
-sudo makimad
+makima up
 ```
 
 Only one side needs an `-endpoint`. Whichever machine speaks first teaches the
@@ -427,11 +481,16 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   work as paths; mesh addresses themselves are v4.
 - **Published services are TCP only.** A UDP service — a game server, a DNS
   resolver on a peer — is reachable at the peer's mesh address directly, but
-  `makima serve` does not forward it.
+  `makima allow` does not forward it, and it is not published automatically.
 - **The firewall is configured automatically on Linux only,** and not at all
   under a bare nftables ruleset: in nftables every table sees every packet, so
   an accept rule makima owns would not override a drop in yours. `makima
   doctor` prints the rule to add instead of pretending.
+- **Automatic publishing trusts the whole mesh.** Every loopback service on a
+  node is reachable by every node permitted to see it — including a Postgres
+  with trust auth, a debug port, or an unauthenticated admin panel. Right for
+  the machines one person owns; wrong the moment the mesh has somebody else's
+  laptop on it, at which point use ACLs or `-no-auto-serve`.
 - **No replay protection on the control channel.** Messages are sealed and
   authenticated, but nonces are not tracked, so a captured registration could
   be replayed to revert a node's key and endpoints to older values.

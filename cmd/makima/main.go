@@ -33,12 +33,28 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	// The plug-and-play surface. Everything below it still works and is still
+	// reachable; it is simply not what somebody starting out has to read.
+	case "up":
+		err = upCmd(os.Args[2:])
+	case "join":
+		err = joinCmd(os.Args[2:])
+	case "invite":
+		err = inviteCmd(os.Args[2:])
+	case "down":
+		err = downCmd(os.Args[2:])
+	case "ssh", "possess":
+		err = sshCmd(os.Args[2:])
+	case "allow":
+		err = serveCmd(os.Args[2:])
+	case "deny":
+		err = denyCmd(os.Args[2:])
+
 	case "genkey":
 		err = genkey()
 	case "init":
 		err = initNode(os.Args[2:])
-	case "join":
-		err = joinNode(os.Args[2:])
+
 	case "peer":
 		err = peer(os.Args[2:])
 	case "show":
@@ -74,40 +90,39 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `makima — a self-hosted mesh network
+	fmt.Fprint(os.Stderr, `makima — every machine you own, on one private network
 
-joining a mesh with a control server:
-  makima join -server URL -authkey KEY [-name N] [-serverkey K]
+getting started:
+  makima up                        start. the first machine makes the mesh.
+  makima invite                    print an invite for the next machine
+  makima join <invite>             run this on that machine
+  makima down                      stop, and put this machine back
 
-running a static mesh with no server:
-  makima init     -name N -addr A
-  makima peer add -name N -key K -addr A [-endpoint HOST:PORT]
-  makima peer rm  -name N
+using it:
+  makima status                    what you can see, and anything wrong
+  makima ssh NAME                  a shell on another machine
+  makima allow 11434               publish a local port on purpose
+  makima deny 11434                stop publishing one
 
-reaching this machine's services from the rest of the mesh:
-  makima serve 11434               publish a local port on the mesh
-  makima serve 80:11434            publish it on a different mesh port
-  makima serve list
-  makima serve rm PORT
+Services listening on 127.0.0.1 are published to your mesh as they appear, so
+starting Ollama or a dev server is the whole procedure. Your mesh is trusted
+like this machine is; run the daemon with -no-auto-serve if that is not what
+you want.
 
-when something is not working:
-  makima doctor                    check every layer and say what to fix
-  makima firewall status | allow
-  makima ui                        open the web interface
+everything else:
+  makima show          the raw configuration
+  makima set           routes and exit nodes
+  makima doctor        the long-form diagnosis
+  makima firewall      status | allow
+  makima ui            open the web interface
+  makima init          start a mesh with no coordination plane
+  makima peer          maintain one by hand
+  makima genkey        generate a keypair and print it
 
-routing and exit nodes (managed meshes only):
-  makima set -advertise-routes 192.168.1.0/24
-  makima set -advertise-exit-node true
-  makima set -exit-node NAME
-
-always:
-  makima status                    peers, paths, and what this node offers
-  makima show                      the raw configuration
-  makima genkey                    generate a keypair and print it
+  makima-server        administer the mesh: nodes, access, names, the lock
+  makima-relay         the fallback path, for machines that cannot meet directly
 
 every command takes -config PATH (default `+conf.DefaultPath+`)
-
-bring the tunnel up with:  sudo makimad
 `)
 }
 

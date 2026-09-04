@@ -72,6 +72,15 @@ type File struct {
 	// needs and telling it more would publish this machine's internal layout.
 	Services []serve.Service `json:"services,omitempty"`
 
+	// DeniedPorts are ports this node must never publish, even when something
+	// is listening on them.
+	//
+	// Needed because loopback services are published automatically: without a
+	// record of the refusal, withdrawing one would last until the next scan
+	// noticed it again five seconds later. This is what makes "deny" mean
+	// "keep it off the mesh" rather than "take it off the mesh for a moment".
+	DeniedPorts []uint16 `json:"denied_ports,omitempty"`
+
 	// Domain and HomeRelay cache what the last netmap said, so a node that
 	// starts while the control server is unreachable still comes up with mesh
 	// DNS and a relay rather than isolated.
