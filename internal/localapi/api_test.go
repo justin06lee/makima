@@ -33,6 +33,10 @@ type fakeBackend struct {
 
 	inboxDir string
 	inboxOff bool
+
+	sshOn   bool
+	sshKeys []string
+	sshUser string
 }
 
 func (f *fakeBackend) Status() Status { return f.status }
@@ -58,6 +62,13 @@ func (f *fakeBackend) OpenPairing(seconds int) (PairingState, error) {
 	return PairingState{Address: "mkp1_test", Expires: time.Now().Add(time.Duration(seconds) * time.Second)}, nil
 }
 func (f *fakeBackend) ClosePairing() { f.pairingClose++ }
+func (f *fakeBackend) SetSSH(on bool, keys []string, user string) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	f.sshOn, f.sshKeys, f.sshUser = on, keys, user
+	return nil
+}
 func (f *fakeBackend) SetInbox(dir string, off bool) error {
 	if f.fail != nil {
 		return f.fail
@@ -456,5 +467,57 @@ func TestSetInboxIsRefusedOnAReadOnlyListener(t *testing.T) {
 	}
 	if b.inboxDir != "" {
 		t.Error("a read-only listener reached the backend anyway")
+	}
+}
+
+func TestSetSSHSwitchesTheServerOn(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	w := post(t, h, "/api/ssh", SSHRequest{On: true, Keys: []string{"github:you"}, User: "alex"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if !b.sshOn || b.sshUser != "alex" {
+		t.Errorf("backend got on=%v user=%q", b.sshOn, b.sshUser)
+	}
+	if len(b.sshKeys) != 1 || b.sshKeys[0] != "github:you" {
+		t.Errorf("backend got keys %v", b.sshKeys)
+	}
+
+	if w := post(t, h, "/api/ssh", SSHRequest{On: false}); w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if b.sshOn {
+		t.Error("switching the server off did not reach the backend")
+	}
+}
+
+// Handing out a shell is the single most consequential thing in this API. A
+// browser tab must not be able to do it.
+func TestSetSSHIsRefusedOnAReadOnlyListener(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, false).Handler()
+
+	if w := post(t, h, "/api/ssh", SSHRequest{On: true}); w.Code == http.StatusOK {
+		t.Error("a read-only listener switched the ssh server on")
+	}
+	if b.sshOn {
+		t.Error("a read-only listener reached the backend anyway")
+	}
+}
+
+// Switching it on with no usable keys would leave a listening service nobody
+// can use, so the failure has to reach the person who typed the command.
+func TestSetSSHReportsWhyItWouldNotStart(t *testing.T) {
+	b := &fakeBackend{fail: errors.New("no authorized keys were found")}
+	h := NewServer(b, true).Handler()
+
+	w := post(t, h, "/api/ssh", SSHRequest{On: true})
+	if w.Code == http.StatusOK {
+		t.Fatal("switching on with no keys returned 200")
+	}
+	if !strings.Contains(w.Body.String(), "authorized keys") {
+		t.Errorf("the reason did not reach the client: %s", w.Body)
 	}
 }

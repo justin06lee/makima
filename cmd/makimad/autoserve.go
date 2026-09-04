@@ -111,6 +111,7 @@ func (n *node) refreshAutoServices() {
 // applyServices rebinds everything that lives on the mesh address.
 func (n *node) applyServices() {
 	n.applyInbox()
+	n.applySSH(context.Background())
 	n.applyPublishedPorts()
 }
 

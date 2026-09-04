@@ -39,6 +39,7 @@ import (
 	"github.com/justin06lee/makima/internal/policy"
 	"github.com/justin06lee/makima/internal/portmap"
 	"github.com/justin06lee/makima/internal/serve"
+	"github.com/justin06lee/makima/internal/sshd"
 	"github.com/justin06lee/makima/internal/stun"
 	"github.com/justin06lee/makima/internal/wg"
 )
@@ -115,6 +116,8 @@ type node struct {
 	serve      *serve.Manager
 	firewall   *netcfg.Firewall
 	inbox      *drop.Receiver
+	ssh        *sshd.Server
+	sshKeys    *sshd.Keys
 
 	// opts is the command line as given, kept so settings that can change at
 	// runtime can be re-resolved against the flags that still override them.
@@ -184,10 +187,14 @@ func run(opts options) error {
 		autoServe: !opts.noAutoServe,
 		uiPort:    uiPort(opts.uiAddr),
 		inbox:     drop.New(log.Default()),
+		ssh:       sshd.New(log.Default()),
+		sshKeys:   sshd.NewKeys(log.Default()),
 		opts:      opts,
 	}
 	defer n.serve.Close()
 	defer n.inbox.Close()
+	defer n.ssh.Close()
+	defer n.sshKeys.Close()
 
 	// A managed node gets the path-selecting socket; a static one gets an
 	// ordinary UDP socket. The split matters: magicsock attributes an inbound
@@ -278,9 +285,10 @@ func run(opts options) error {
 	// its first poll.
 	n.serve.Apply(addr, f.Services)
 
-	// The inbox binds the mesh address, so it can start as soon as there is
-	// one — the same moment published ports can.
+	// The inbox and the SSH server both bind the mesh address, so they can
+	// start as soon as there is one — the same moment published ports can.
 	n.applyInbox()
+	n.applySSH(ctx)
 
 	if n.autoServe {
 		log.Print("auto-serve: on — services on 127.0.0.1 are published to your mesh as they appear")
@@ -598,6 +606,12 @@ func (n *node) shutdown() {
 	}
 	if n.inbox != nil {
 		n.inbox.Close()
+	}
+	if n.ssh != nil {
+		n.ssh.Close()
+	}
+	if n.sshKeys != nil {
+		n.sshKeys.Close()
 	}
 	if n.dns != nil {
 		n.dns.Close()

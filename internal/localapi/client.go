@@ -258,3 +258,8 @@ func (c *Client) Ping(name string) (Ping, error) {
 func (c *Client) SetInbox(dir string, off bool) error {
 	return c.call("POST", "/api/inbox", InboxRequest{Dir: dir, Off: off}, nil)
 }
+
+// SetSSH switches the built-in SSH server on or off.
+func (c *Client) SetSSH(on bool, keys []string, user string) error {
+	return c.call("POST", "/api/ssh", SSHRequest{On: on, Keys: keys, User: user}, nil)
+}

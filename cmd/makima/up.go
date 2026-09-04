@@ -22,6 +22,7 @@ import (
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/relay"
+	"github.com/justin06lee/makima/internal/sshd"
 	"github.com/justin06lee/makima/internal/supervise"
 )
 
@@ -489,6 +490,16 @@ func sshCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Prefer the far end's built-in server when it has one. Probed rather
+	// than advertised because it has to work in every mode — a serverless
+	// pairing carries no service list, and a peer that switched its server on
+	// a minute ago has not re-registered anywhere.
+	var extra []string
+	if builtInSSH(host) {
+		extra = []string{"-p", strconv.Itoa(sshd.DefaultPort)}
+	}
+
 	if user != "" {
 		host = user + "@" + host
 	}
@@ -498,7 +509,8 @@ func sshCmd(args []string) error {
 		return errors.New("no ssh client on this machine")
 	}
 
-	cmd := exec.Command(ssh, append([]string{host}, rest...)...)
+	args = append(append(extra, host), rest...)
+	cmd := exec.Command(ssh, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -508,6 +520,21 @@ func sshCmd(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// builtInSSH reports whether a machine is running makima's own SSH server.
+//
+// One short dial. The alternative — asking the control plane what a peer
+// advertises — is unavailable in exactly the cases that matter most: a
+// serverless pairing carries no service list at all, and a peer that switched
+// its server on a moment ago has not told anyone yet.
+func builtInSSH(host string) bool {
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(sshd.DefaultPort)), 700*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }
 
 // resolvePeer turns a name into something ssh can dial, preferring the mesh
