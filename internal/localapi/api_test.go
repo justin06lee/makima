@@ -30,6 +30,9 @@ type fakeBackend struct {
 
 	ping   Ping
 	pinged []string
+
+	inboxDir string
+	inboxOff bool
 }
 
 func (f *fakeBackend) Status() Status { return f.status }
@@ -55,6 +58,13 @@ func (f *fakeBackend) OpenPairing(seconds int) (PairingState, error) {
 	return PairingState{Address: "mkp1_test", Expires: time.Now().Add(time.Duration(seconds) * time.Second)}, nil
 }
 func (f *fakeBackend) ClosePairing() { f.pairingClose++ }
+func (f *fakeBackend) SetInbox(dir string, off bool) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	f.inboxDir, f.inboxOff = dir, off
+	return nil
+}
 func (f *fakeBackend) Ping(name string) (Ping, error) {
 	if f.fail != nil {
 		return Ping{}, f.fail
@@ -413,5 +423,38 @@ func TestPingReportsAnUnknownPeer(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "laptop") {
 		t.Errorf("the error did not name the peer: %s", w.Body)
+	}
+}
+
+func TestSetInboxChangesTheDirectory(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	if w := post(t, h, "/api/inbox", InboxRequest{Dir: "/srv/incoming"}); w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if b.inboxDir != "/srv/incoming" || b.inboxOff {
+		t.Errorf("inbox is %q off=%v", b.inboxDir, b.inboxOff)
+	}
+
+	if w := post(t, h, "/api/inbox", InboxRequest{Off: true}); w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if !b.inboxOff {
+		t.Error("switching the inbox off did not reach the backend")
+	}
+}
+
+// Choosing where another machine may write files on this one is the most
+// write-shaped operation in the API, so a read-only listener must not have it.
+func TestSetInboxIsRefusedOnAReadOnlyListener(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, false).Handler()
+
+	if w := post(t, h, "/api/inbox", InboxRequest{Dir: "/tmp/anywhere"}); w.Code == http.StatusOK {
+		t.Error("a read-only listener changed the inbox")
+	}
+	if b.inboxDir != "" {
+		t.Error("a read-only listener reached the backend anyway")
 	}
 }

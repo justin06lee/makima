@@ -47,6 +47,10 @@ func main() {
 		err = downCmd(os.Args[2:])
 	case "ssh", "possess":
 		err = sshCmd(os.Args[2:])
+	case "cp":
+		err = cpCmd(os.Args[2:])
+	case "inbox":
+		err = inboxCmd(os.Args[2:])
 	case "allow":
 		err = serveCmd(os.Args[2:])
 	case "deny":
@@ -110,6 +114,8 @@ using it:
   makima status                    what you can see, and anything wrong
   makima ping NAME                 is this peer direct, or going via a relay?
   makima ssh NAME                  a shell on another machine
+  makima cp FILE NAME:             send a file to it
+  makima inbox                     where files from other machines land
   makima allow 11434               publish a local port on purpose
   makima deny 11434                stop publishing one
 

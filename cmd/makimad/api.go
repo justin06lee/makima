@@ -121,6 +121,11 @@ func (n *node) Status() localapi.Status {
 	}
 	st.DNSActive = n.dns != nil
 
+	if n.inbox != nil {
+		dir, active, received := n.inbox.Status()
+		st.Inbox = localapi.InboxInfo{Dir: dir, Active: active, Received: received}
+	}
+
 	// An open pairing window is the one piece of state a person is likely to
 	// be actively waiting on, so status reports it rather than making them
 	// remember whether they left one open.

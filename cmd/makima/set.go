@@ -114,9 +114,12 @@ func status(args []string) error {
 	selfAddr, _ := f.Self.Addr()
 	fmt.Printf("%-10s %s (%s)\n", "node", f.Self.Name, selfAddr)
 
-	if f.Managed() {
+	switch {
+	case f.Managed():
 		fmt.Printf("%-10s %s\n", "server", f.LoginServer)
-	} else {
+	case f.Serverless:
+		fmt.Printf("%-10s none (paired directly)\n", "server")
+	default:
 		fmt.Printf("%-10s none (static mesh)\n", "server")
 	}
 
@@ -134,6 +137,22 @@ func status(args []string) error {
 	}
 	if f.ExitNode != "" {
 		fmt.Printf("%-10s via %s\n", "traffic", f.ExitNode)
+	}
+
+	// Read from the daemon rather than the file, because the default inbox is
+	// resolved at runtime from whoever started it — the file usually says
+	// nothing at all, and printing that would be misleading.
+	if c, err := dialDaemon(*path); err == nil {
+		if st, err := c.Status(); err == nil {
+			switch {
+			case st.Inbox.Active && st.Inbox.Received > 0:
+				fmt.Printf("%-10s %s (%d received)\n", "inbox", st.Inbox.Dir, st.Inbox.Received)
+			case st.Inbox.Active:
+				fmt.Printf("%-10s %s\n", "inbox", st.Inbox.Dir)
+			default:
+				fmt.Printf("%-10s off\n", "inbox")
+			}
+		}
 	}
 
 	if len(f.Peers) == 0 {

@@ -253,3 +253,8 @@ func (c *Client) Ping(name string) (Ping, error) {
 	err := c.call(http.MethodGet, "/api/ping?peer="+url.QueryEscape(name), nil, &p)
 	return p, err
 }
+
+// SetInbox changes where files from peers land, or switches receiving off.
+func (c *Client) SetInbox(dir string, off bool) error {
+	return c.call("POST", "/api/inbox", InboxRequest{Dir: dir, Off: off}, nil)
+}

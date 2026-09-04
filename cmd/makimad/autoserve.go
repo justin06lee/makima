@@ -108,7 +108,13 @@ func (n *node) refreshAutoServices() {
 }
 
 // applyServices binds the union of what was asked for and what was found.
+// applyServices rebinds everything that lives on the mesh address.
 func (n *node) applyServices() {
+	n.applyInbox()
+	n.applyPublishedPorts()
+}
+
+func (n *node) applyPublishedPorts() {
 	n.mu.Lock()
 	addr, err := n.file.Self.Addr()
 	svcs := n.effectiveServicesLocked()

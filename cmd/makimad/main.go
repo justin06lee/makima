@@ -32,6 +32,7 @@ import (
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/dnsserver"
+	"github.com/justin06lee/makima/internal/drop"
 	"github.com/justin06lee/makima/internal/magicsock"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -56,6 +57,9 @@ func main() {
 	uiWrite := flag.Bool("ui-write", false, "let the web UI change settings, not just show them")
 	noFirewall := flag.Bool("no-firewall", false, "do not touch the host firewall")
 	noAutoServe := flag.Bool("no-auto-serve", false, "do not publish this machine's loopback services on the mesh automatically")
+	noRecv := flag.Bool("no-recv", false, "do not accept files from peers")
+	inbox := flag.String("inbox", "", "where files sent by peers land (default: the invoking user's Downloads/makima)")
+	maxFile := flag.Int64("max-file", drop.DefaultMaxSize, "largest file to accept, in bytes")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -73,6 +77,9 @@ func main() {
 		uiWrite:     *uiWrite,
 		noFirewall:  *noFirewall,
 		noAutoServe: *noAutoServe,
+		noRecv:      *noRecv,
+		inbox:       *inbox,
+		maxFile:     *maxFile,
 	}
 	if err := run(opts); err != nil {
 		log.Fatal(err)
@@ -107,6 +114,11 @@ type node struct {
 	pm         *portmap.Client
 	serve      *serve.Manager
 	firewall   *netcfg.Firewall
+	inbox      *drop.Receiver
+
+	// opts is the command line as given, kept so settings that can change at
+	// runtime can be re-resolved against the flags that still override them.
+	opts options
 
 	// autoServices are the loopback ports the daemon found and published by
 	// itself, kept apart from file.Services so a scan never rewrites the
@@ -137,6 +149,13 @@ type options struct {
 	uiWrite     bool
 	noFirewall  bool
 	noAutoServe bool
+
+	// noRecv, inbox and maxFile configure the file receiver. Kept here rather
+	// than resolved at startup because the stored settings can change while
+	// the daemon runs, and the flags have to keep winning when they do.
+	noRecv  bool
+	inbox   string
+	maxFile int64
 }
 
 func run(opts options) error {
@@ -164,8 +183,11 @@ func run(opts options) error {
 		serve:     serve.New(log.Default()),
 		autoServe: !opts.noAutoServe,
 		uiPort:    uiPort(opts.uiAddr),
+		inbox:     drop.New(log.Default()),
+		opts:      opts,
 	}
 	defer n.serve.Close()
+	defer n.inbox.Close()
 
 	// A managed node gets the path-selecting socket; a static one gets an
 	// ordinary UDP socket. The split matters: magicsock attributes an inbound
@@ -255,6 +277,10 @@ func run(opts options) error {
 	// node that has one cached comes up serving immediately rather than after
 	// its first poll.
 	n.serve.Apply(addr, f.Services)
+
+	// The inbox binds the mesh address, so it can start as soon as there is
+	// one — the same moment published ports can.
+	n.applyInbox()
 
 	if n.autoServe {
 		log.Print("auto-serve: on — services on 127.0.0.1 are published to your mesh as they appear")
@@ -569,6 +595,9 @@ func (n *node) refreshEndpoints(ctx context.Context) {
 func (n *node) shutdown() {
 	if n.serve != nil {
 		n.serve.Close()
+	}
+	if n.inbox != nil {
+		n.inbox.Close()
 	}
 	if n.dns != nil {
 		n.dns.Close()

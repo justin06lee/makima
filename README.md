@@ -173,6 +173,34 @@ yet". `-until-direct` waits for it and then says plainly whether it happened.
 If it never does, that is a real answer too — and the one `makima doctor`
 knows how to act on.
 
+### Sending a file
+
+```sh
+makima cp report.pdf desktop:
+#   report.pdf → /Users/you/Downloads/makima/report.pdf (2.4 MiB in 310ms)
+
+makima inbox                     # where files from other machines land
+makima inbox ~/incoming          # somewhere else
+makima inbox -off                # stop accepting them
+```
+
+Push-only, like scp's simplest form. Pulling would mean letting a peer read a
+path of its choosing on this machine, which is a much larger promise than "you
+may put a file in one directory" — and `makima ssh desktop cat notes.txt`
+already covers it for anyone who wants it.
+
+Receiving is on by default, on the same reasoning as auto-serve: your mesh is
+trusted like this machine is, and a feature you have to discover before it
+works is one most people never find. The safety is in what a sender can do
+rather than in whether it can do anything at all. A transfer may only create a
+file **directly inside the inbox** — base names only, no paths, no traversal —
+it never overwrites (a second `notes.txt` becomes `notes (2).txt`), it is
+capped at 8 GiB by default, and files arrive readable by their owner and nobody
+else. A transfer that stalls is cut off; one that is merely slow is not.
+
+On a mesh with access control, the inbox is an ordinary port and needs an
+ordinary rule — `"dst": ["desktop:3479"]`.
+
 ### Getting a shell
 
 ```sh
@@ -639,6 +667,7 @@ internal/invite     one pasteable string that carries a whole join
 internal/stun       asking a public server what address we appear to come from
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/serve      publishing a local port on the mesh, and nowhere else
+internal/drop       sending a file to another machine, and receiving one
 internal/localapi   the daemon's local API and the embedded web interface
 internal/netmap     the mesh's view of itself; renders to a WireGuard config
 internal/control    the coordination protocol, its server, client, and store
