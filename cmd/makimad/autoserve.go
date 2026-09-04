@@ -161,16 +161,20 @@ func (n *node) advertisedServicesLocked() []netmap.Service {
 	return out
 }
 
-// reservedPortsLocked are the loopback ports the daemon must not republish.
+// reservedPortsLocked are the loopback ports the daemon must not publish.
 //
-// The web UI is the one that matters. With -ui-write it can change this node's
-// settings, and putting it on the mesh would hand that to anything that can
-// reach the address — which is the opposite of the guarantee the UI's loopback
-// default is there to make.
+// Two sources. Ports somebody denied, which have to survive the next scan or
+// "deny" would mean "for five seconds". And the web UI, which with -ui-write
+// can change this node's settings — putting that on the mesh would hand
+// control of the machine to anything that can reach the address, which is the
+// opposite of the guarantee its loopback default exists to make.
 func (n *node) reservedPortsLocked() map[uint16]bool {
-	out := make(map[uint16]bool, 2)
+	out := make(map[uint16]bool, len(n.file.DeniedPorts)+1)
 	if n.uiPort != 0 {
 		out[n.uiPort] = true
+	}
+	for _, p := range n.file.DeniedPorts {
+		out[p] = true
 	}
 	return out
 }

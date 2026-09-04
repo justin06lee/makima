@@ -80,6 +80,13 @@ func Encode(inv Invite) (string, error) {
 		inv.Nonce = base64.RawURLEncoding.EncodeToString(b[:])
 	}
 
+	// Seconds, not nanoseconds. Nobody needs an invite to expire at a precise
+	// microsecond, and the extra digits are forty characters of a string
+	// somebody has to select and paste.
+	if !inv.Expires.IsZero() {
+		inv.Expires = inv.Expires.Truncate(time.Second)
+	}
+
 	payload, err := json.Marshal(inv)
 	if err != nil {
 		return "", fmt.Errorf("invite: encode: %w", err)

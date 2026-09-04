@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -86,7 +85,7 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 	cmd.Stderr = logw
 	// Its own process group, so it survives the shell that started it and does
 	// not take a Ctrl-C aimed at the CLI with it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachAttrs()
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", d.Name, err)
@@ -126,7 +125,7 @@ func (d Daemon) Stop(ctx context.Context, wait time.Duration) error {
 		return fmt.Errorf("%s is running but its process could not be found; stop it by hand", d.Name)
 	}
 
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := terminate(pid); err != nil {
 		return fmt.Errorf("stop %s: %w", d.Name, err)
 	}
 
@@ -195,7 +194,7 @@ func (d Daemon) readPID() (int, bool) {
 	}
 	// A pidfile outlives the process it named, and pids are reused. Confirm
 	// something is there before signalling what might now be someone else.
-	if syscall.Kill(pid, 0) != nil {
+	if !alive(pid) {
 		return 0, false
 	}
 	return pid, true

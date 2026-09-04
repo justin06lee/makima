@@ -152,3 +152,40 @@ func TestSameServices(t *testing.T) {
 		t.Fatal("empty and nil compared unequal")
 	}
 }
+
+// Denying a port has to outlive the next scan, or "deny" means "for five
+// seconds" — the scanner would find the same listener and publish it again.
+func TestDeniedPortsAreReserved(t *testing.T) {
+	n := nodeWith(nil, nil, true)
+	n.file.DeniedPorts = []uint16{11434, 3000}
+
+	reserved := n.reservedPortsLocked()
+	if !reserved[11434] || !reserved[3000] {
+		t.Fatalf("denied ports not reserved: %v", reserved)
+	}
+}
+
+func TestPortListHelpers(t *testing.T) {
+	if !containsPort([]uint16{1, 2, 3}, 2) {
+		t.Fatal("containsPort missed a member")
+	}
+	if containsPort([]uint16{1, 2, 3}, 9) {
+		t.Fatal("containsPort found a non-member")
+	}
+	if containsPort(nil, 1) {
+		t.Fatal("containsPort found something in nothing")
+	}
+
+	got := dropPort([]uint16{1, 2, 3}, 2)
+	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
+		t.Fatalf("dropPort = %v, want [1 3]", got)
+	}
+	// Empty must come back nil so the field stays out of the JSON entirely
+	// rather than persisting as an empty array.
+	if dropPort([]uint16{7}, 7) != nil {
+		t.Fatal("dropping the last port left a non-nil slice")
+	}
+	if got := dropPort([]uint16{1}, 9); len(got) != 1 {
+		t.Fatalf("dropPort removed something it should not have: %v", got)
+	}
+}
