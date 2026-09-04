@@ -41,6 +41,8 @@ func main() {
 		err = joinCmd(os.Args[2:])
 	case "pair":
 		err = pairCmd(os.Args[2:])
+	case "try":
+		err = tryCmd(os.Args[2:])
 	case "invite":
 		err = inviteCmd(os.Args[2:])
 	case "down":
@@ -111,6 +113,10 @@ getting started:
 with no server at all:
   makima pair                      print an address, and listen for one machine
   makima pair <address>            run this on that machine
+
+without root, without changing anything:
+  makima try -serve 8080           offer a local port, and print an address
+  makima try <address>             run this on the other machine
 
 using it:
   makima status                    what you can see, and anything wrong

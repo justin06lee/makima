@@ -118,6 +118,9 @@ type Options struct {
 //
 // On macOS the kernel names utun devices itself, so name should be "utun" and
 // the real name is read back via Name after creation.
+//
+// This needs root, because creating a network interface does. UpOn is the same
+// engine without that requirement.
 func Up(name string, cfg Config, opts Options) (*Engine, error) {
 	mtu := opts.MTU
 	if mtu == 0 {
@@ -128,7 +131,21 @@ func Up(name string, cfg Config, opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create tun %q: %w", name, err)
 	}
+	return UpOn(tunDev, cfg, opts)
+}
 
+// UpOn starts WireGuard on a TUN device the caller already has.
+//
+// The device does not have to be a kernel interface. A userspace TCP/IP stack
+// presents the same interface — packets in, packets out — and swapping one in
+// removes every reason this ever needed root: no interface to create, no route
+// to install, no firewall rule, no resolver to edit. What it costs is that the
+// tunnel is reachable only from inside this process, since the host kernel
+// never learns the network exists.
+//
+// Both are the same engine. The difference is entirely in what is on the other
+// side of the TUN, which is exactly the seam wireguard-go was designed around.
+func UpOn(tunDev tun.Device, cfg Config, opts Options) (*Engine, error) {
 	realName, err := tunDev.Name()
 	if err != nil {
 		tunDev.Close()

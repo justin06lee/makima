@@ -90,8 +90,19 @@ type Conn struct {
 	ctx       context.Context
 	ctxCancel context.CancelFunc
 
-	closeOnce sync.Once
-	closed    chan struct{}
+	// closed marks permanent teardown, by Shutdown. bindClosed marks the end
+	// of one Open/Close cycle and is replaced on every Open.
+	//
+	// The two are separate because wireguard-go's Close does not mean what it
+	// sounds like. Bind.Close ends a *listening state*: the receive functions
+	// must return net.ErrClosed, and a later Open must work. wireguard-go
+	// relies on exactly that — bringing a device up calls Close then Open, and
+	// so does every listen_port change — so a Close that tore the socket down
+	// for good would make the tunnel fail to start at all.
+	closeOnce  sync.Once
+	closed     chan struct{}
+	bindMu     sync.Mutex
+	bindClosed chan struct{}
 }
 
 var _ conn.Bind = (*Conn)(nil)
@@ -165,11 +176,14 @@ func (c *Conn) DiscoPublicKey() key.Public { return c.discoKey.Public() }
 
 // --- conn.Bind ---------------------------------------------------------
 
-// Open reports the receive functions WireGuard should run.
+// Open puts the socket into a listening state and reports the receive
+// functions WireGuard should run.
 //
-// The socket already exists, so a requested port only causes a rebind when it
-// actually differs. WireGuard calls this on start and on any listen_port
-// change.
+// Called on start, after every Close, and on any listen_port change. A port of
+// zero means "whatever you already have", which is what keeps a node's
+// advertised endpoints valid across the close-then-open that bringing a device
+// up performs: the port was published to the control plane before WireGuard
+// existed, and changing it here would invalidate every endpoint peers hold.
 func (c *Conn) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	select {
 	case <-c.closed:
@@ -177,27 +191,81 @@ func (c *Conn) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	default:
 	}
 
-	if port != 0 && port != c.LocalPort() {
+	c.mu.RLock()
+	have, current := c.pconn != nil, c.port
+	c.mu.RUnlock()
+
+	if port == 0 {
+		port = current
+	}
+	if !have || port != current {
 		if err := c.bind(port); err != nil {
 			return nil, 0, err
 		}
 	}
-	return []conn.ReceiveFunc{c.receiveUDP, c.receiveRelay}, c.LocalPort(), nil
+
+	// A fresh cycle. The receive functions close over it rather than reading
+	// a field, so the ones handed out here stop when *this* cycle is closed
+	// and are not confused by a later Open.
+	done := make(chan struct{})
+	c.bindMu.Lock()
+	c.bindClosed = done
+	c.bindMu.Unlock()
+
+	return []conn.ReceiveFunc{
+			func(p [][]byte, s []int, e []conn.Endpoint) (int, error) { return c.receiveUDP(done, p, s, e) },
+			func(p [][]byte, s []int, e []conn.Endpoint) (int, error) { return c.receiveRelay(done, p, s, e) },
+		},
+		c.LocalPort(), nil
 }
 
-// Close tears down the socket and the relay connection.
+// Close ends the current listening state, as wireguard-go's Bind means it.
+//
+// The receive functions return net.ErrClosed and the UDP socket is released,
+// but the Conn stays usable: peers, paths, probes and the relay connection all
+// survive, and a later Open resumes on the same port. This is not teardown —
+// see Shutdown for that. wireguard-go calls Close then Open as a matter of
+// course, so treating it as teardown would mean the tunnel never came up.
 func (c *Conn) Close() error {
+	c.bindMu.Lock()
+	done := c.bindClosed
+	c.bindClosed = nil
+	c.bindMu.Unlock()
+
+	if done != nil {
+		close(done)
+	}
+
+	c.mu.Lock()
+	pconn := c.pconn
+	// The port is deliberately remembered. Open with zero rebinds to it, so a
+	// close-and-reopen does not silently move the node.
+	c.pconn = nil
+	c.mu.Unlock()
+
+	if pconn != nil {
+		pconn.Close()
+	}
+	return nil
+}
+
+// Shutdown tears the Conn down for good: the socket, the relay connection, and
+// the probe loop. Nothing works afterwards, and Open refuses.
+//
+// Distinct from Close because the Bind interface has no room for the
+// difference: everything wireguard-go calls Close for is temporary, and
+// everything a caller means by "I am finished with this" is not.
+func (c *Conn) Shutdown() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)
 		c.ctxCancel()
 
 		c.mu.Lock()
-		pconn := c.pconn
 		rc := c.relayClient
 		cancel := c.relayCancel
-		c.pconn = nil
 		c.relayClient = nil
 		c.relayCancel = nil
+		c.relayURL = ""
 		c.mu.Unlock()
 
 		if cancel != nil {
@@ -206,11 +274,8 @@ func (c *Conn) Close() error {
 		if rc != nil {
 			rc.Close()
 		}
-		if pconn != nil {
-			pconn.Close()
-		}
 	})
-	return nil
+	return c.Close()
 }
 
 // SetMark is a Linux traffic-marking hook makima does not use. Returning nil
@@ -274,8 +339,14 @@ func (c *Conn) peerFor(k key.Public) *peerState {
 //
 // Disco packets are consumed here and never surface: they are this package's
 // own control traffic, and WireGuard would reject them as malformed.
-func (c *Conn) receiveUDP(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+func (c *Conn) receiveUDP(done <-chan struct{}, packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 	for {
+		select {
+		case <-done:
+			return 0, net.ErrClosed
+		default:
+		}
+
 		c.mu.RLock()
 		pc := c.pconn
 		c.mu.RUnlock()
@@ -339,9 +410,12 @@ func (c *Conn) receiveUDP(packets [][]byte, sizes []int, eps []conn.Endpoint) (i
 //
 // Attribution is free here: the relay's frame header names the sender, and
 // only a connection that proved possession of that node key could have set it.
-func (c *Conn) receiveRelay(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+func (c *Conn) receiveRelay(done <-chan struct{}, packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 	for {
 		select {
+		case <-done:
+			return 0, net.ErrClosed
+
 		case <-c.closed:
 			return 0, net.ErrClosed
 
