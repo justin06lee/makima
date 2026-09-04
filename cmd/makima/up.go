@@ -77,7 +77,7 @@ func upCmd(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	path := fs.String("config", conf.DefaultPath, "config path")
 	name := fs.String("name", "", "this machine's name on the mesh (defaults to the hostname)")
-	advertise := fs.String("advertise", "", "the address other machines should reach this one at, when it holds the mesh")
+	advertise := fs.String("advertise", "", "where other machines reach this one's coordination plane: a host, host:port, or full URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	if reachable == "" {
 		reachable = guessReachableAddr()
 	}
-	serverURL := "http://" + net.JoinHostPort(reachable, "8080")
+	serverURL := controlURL(reachable)
 
 	// Names on by default. There is no reason to make somebody turn on the
 	// ability to type a name instead of an address, and every reason not to
@@ -227,7 +227,7 @@ func bringUp(ctx context.Context, path string) error {
 // inviteCmd prints a fresh invite for the next machine.
 func inviteCmd(args []string) error {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
-	advertise := fs.String("advertise", "", "the address the joining machine should reach this one at")
+	advertise := fs.String("advertise", "", "where the joining machine reaches this one's coordination plane: a host, host:port, or full URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -247,7 +247,7 @@ func inviteCmd(args []string) error {
 		reachable = guessReachableAddr()
 	}
 
-	inv, err := mintInvite(admin, "http://"+net.JoinHostPort(reachable, "8080"), serverKey)
+	inv, err := mintInvite(admin, controlURL(reachable), serverKey)
 	if err != nil {
 		return err
 	}
@@ -440,9 +440,14 @@ func warnIfUnreachable(addr string) {
 	fmt.Println("    network to be added, and once added it can only find its way back home")
 	fmt.Println("    through a relay.")
 	fmt.Println()
-	fmt.Println("    To have it work from anywhere: run 'makima up' on a machine with a public")
-	fmt.Println("    address instead — any cheap VPS — and join this one to that. It becomes the")
-	fmt.Println("    relay too, and nothing here needs a port forwarded.")
+	fmt.Println("    Two ways out. Run 'makima up' on a machine with a public address instead —")
+	fmt.Println("    any cheap VPS — and join this one to that; it becomes the relay too.")
+	fmt.Println()
+	fmt.Println("    Or, if something already carries traffic into this network for you — a")
+	fmt.Println("    reverse proxy, a Cloudflare tunnel, a port forward — point it at port 8080")
+	fmt.Println("    here and re-run with the name it answers on:")
+	fmt.Println()
+	fmt.Println("      makima up -advertise https://makima.example.dev")
 }
 
 // waitForPeers gives the first netmap a moment to land.
@@ -636,4 +641,28 @@ func startRelayIfPublic(ctx context.Context, admin *control.AdminClient, addr st
 
 	fmt.Printf("Relaying on %s too, so machines that cannot reach each other directly still can.\n", url)
 	fmt.Printf("Open TCP %d on this host's firewall if it has one.\n", relay.DefaultPort)
+}
+
+// controlURL turns what somebody passed to -advertise into a URL a joining
+// machine can use.
+//
+// Three forms, because there are three real situations. A bare address is the
+// common one and gets the default port. A host:port is a moved listener. And a
+// full URL is the case that matters most for somebody who already self-hosts:
+// if a reverse proxy or a Cloudflare tunnel is already carrying traffic into
+// the house for some other service, the coordination plane can ride the same
+// path — and then it is on 443 behind a name, not on 8080 behind an address.
+func controlURL(advertise string) string {
+	s := strings.TrimSpace(advertise)
+	s = strings.TrimRight(s, "/")
+
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return s
+	}
+	// An IPv6 literal has colons of its own, so "has a colon" is not the same
+	// question as "has a port".
+	if _, _, err := net.SplitHostPort(s); err == nil {
+		return "http://" + s
+	}
+	return "http://" + net.JoinHostPort(s, "8080")
 }

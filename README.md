@@ -78,9 +78,19 @@ makima up
 **Pick it deliberately.** Every other machine has to be able to reach this one
 to join, so if it is a desktop behind your home NAT, the mesh only works from
 inside your house — a laptop in a café cannot join, and once joined can only
-find its way home through a relay. Put it on anything with a public address —
-a $4 VPS is plenty — and everything works from anywhere. `makima up` tells you
-which of the two you just did.
+find its way home through a relay. `makima up` tells you which of the two you
+just did.
+
+If you already self-host something on a public name, you have already solved
+this and can reuse it. Whatever carries `something.example.dev` into your
+network — a reverse proxy, a Cloudflare tunnel, a port forward — can carry the
+coordination plane too. Point it at port 8080 and say so:
+
+```sh
+makima up -advertise https://makima.example.dev
+```
+
+Otherwise put it on anything with a public address; a small VPS is plenty.
 
 A public machine automatically becomes the relay as well, so machines that
 cannot reach each other directly still meet there. Nothing at home needs a port
