@@ -51,6 +51,8 @@ func main() {
 		err = cpCmd(os.Args[2:])
 	case "inbox":
 		err = inboxCmd(os.Args[2:])
+	case "sshd":
+		err = sshdCmd(os.Args[2:])
 	case "allow":
 		err = serveCmd(os.Args[2:])
 	case "deny":
@@ -129,6 +131,7 @@ everything else:
   makima set           routes and exit nodes
   makima doctor        the long-form diagnosis
   makima firewall      status | allow
+  makima sshd          let other machines ssh in, without an sshd
   makima ui            open the web interface
   makima init          start a mesh with no coordination plane
   makima peer          maintain one by hand

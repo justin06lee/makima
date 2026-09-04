@@ -126,6 +126,30 @@ func (n *node) Status() localapi.Status {
 		st.Inbox = localapi.InboxInfo{Dir: dir, Active: active, Received: received}
 	}
 
+	if n.ssh != nil {
+		addr, active, fingerprint, sessions := n.ssh.Status()
+		st.SSH = localapi.SSHInfo{Active: active, Fingerprint: fingerprint, Sessions: sessions}
+		if active {
+			st.SSH.Addr = addr.String()
+		}
+
+		n.mu.Lock()
+		st.SSH.Sources = append([]string(nil), n.file.SSHKeys...)
+		userName := n.file.SSHUser
+		n.mu.Unlock()
+
+		if u, err := resolveSSHUser(userName); err == nil {
+			st.SSH.User = u.Name
+		}
+		if n.sshKeys != nil {
+			count, _, keyErr := n.sshKeys.Status()
+			st.SSH.Keys = count
+			if keyErr != nil {
+				st.SSH.KeyError = keyErr.Error()
+			}
+		}
+	}
+
 	// An open pairing window is the one piece of state a person is likely to
 	// be actively waiting on, so status reports it rather than making them
 	// remember whether they left one open.

@@ -63,6 +63,9 @@ type Status struct {
 	// Inbox is where files sent by peers land.
 	Inbox InboxInfo `json:"inbox"`
 
+	// SSH is the built-in shell server's state.
+	SSH SSHInfo `json:"ssh"`
+
 	Filtering bool      `json:"filtering"`
 	Dropped   uint64    `json:"dropped"`
 	Since     time.Time `json:"since"`
@@ -102,6 +105,36 @@ type PeerInfo struct {
 	Services []netmap.Service `json:"services,omitempty"`
 	Routes   []netip.Prefix   `json:"routes,omitempty"`
 	ExitNode bool             `json:"exit_node"`
+}
+
+// SSHInfo is the built-in SSH server's state.
+type SSHInfo struct {
+	Active bool   `json:"active"`
+	Addr   string `json:"addr,omitempty"`
+
+	// User is the single local account sessions run as. Reported because it
+	// is the one thing about this server that is decided here rather than by
+	// whoever connects, and the thing worth checking.
+	User string `json:"user,omitempty"`
+
+	// Fingerprint is the host key, so it can be verified out of band rather
+	// than trusted on first use.
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// Keys is how many authorized keys are in force, Sources where they came
+	// from, and KeyError what went wrong reading them last time.
+	Keys     int      `json:"keys"`
+	Sources  []string `json:"sources,omitempty"`
+	KeyError string   `json:"key_error,omitempty"`
+
+	Sessions uint64 `json:"sessions"`
+}
+
+// SSHRequest switches the built-in SSH server on or off.
+type SSHRequest struct {
+	On   bool     `json:"on"`
+	Keys []string `json:"keys,omitempty"`
+	User string   `json:"user,omitempty"`
 }
 
 // InboxInfo is where files from peers land, and whether any have.
@@ -224,6 +257,10 @@ type Backend interface {
 	// SetInbox changes where files from peers land, or switches receiving
 	// off. An empty dir with off false restores the default.
 	SetInbox(dir string, off bool) error
+
+	// SetSSH switches the built-in SSH server on or off. Nil keys and an
+	// empty user leave those settings as they were.
+	SetSSH(on bool, keys []string, user string) error
 
 	SetExitNode(name string) error
 	AllowFirewall() (netcfg.Report, error)
@@ -365,6 +402,22 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if err := s.backend.SetInbox(req.Dir, req.Off); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, okBody())
+	})
+
+	mux.HandleFunc("POST /api/ssh", func(w http.ResponseWriter, r *http.Request) {
+		if !s.write(w) {
+			return
+		}
+		var req SSHRequest
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.backend.SetSSH(req.On, req.Keys, req.User); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}

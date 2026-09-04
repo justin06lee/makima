@@ -104,6 +104,18 @@ type File struct {
 	Inbox    string `json:"inbox,omitempty"`
 	InboxOff bool   `json:"inbox_off,omitempty"`
 
+	// SSH switches on the built-in SSH server, SSHKeys names where its
+	// authorized keys come from, and SSHUser is the single local account every
+	// session runs as.
+	//
+	// Off unless explicitly set. Everything else makima does is reversible by
+	// stopping the daemon; a shell server is the one feature where being on by
+	// default would be a decision made on somebody's behalf that they might
+	// not discover for months.
+	SSH     bool     `json:"ssh,omitempty"`
+	SSHKeys []string `json:"ssh_keys,omitempty"`
+	SSHUser string   `json:"ssh_user,omitempty"`
+
 	// Domain and HomeRelay cache what the last netmap said, so a node that
 	// starts while the control server is unreachable still comes up with mesh
 	// DNS and a relay rather than isolated.

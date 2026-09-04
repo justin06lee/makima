@@ -212,6 +212,45 @@ Sugar over `ssh desktop.makima`, which has always worked — `sshd` listens on
 every address, so a peer is reachable the moment the tunnel is up. What this
 removes is having to remember the suffix.
 
+### A shell on a machine with no sshd
+
+`makima ssh` hands off to the system client, which works right up until the far
+end has no sshd — on a laptop, the normal case. macOS ships Remote Login off,
+most desktop Linux installs run no server, and turning one on means opening a
+service to every network that machine is ever on.
+
+```sh
+makima sshd -on                         # use ~/.ssh/authorized_keys
+makima sshd -on -keys github:justin06lee # use the keys on a GitHub account
+makima sshd                             # what it is doing, and its fingerprint
+makima sshd -off
+```
+
+It binds the mesh address and nothing else — not the LAN, not localhost, not
+the internet. There is no password authentication and no way to add one. Port
+forwarding through it is refused, because makima already forwards ports as a
+first-class thing that shows up in status and obeys the mesh's access control.
+`makima ssh` finds the port on its own.
+
+Every session runs as **one local account, chosen on that machine** — whoever
+ran `makima up`, or `-user NAME`. Never the username the client asks for: a
+daemon that runs as root and trusts the name it is handed is a root shell for
+anybody holding an authorized key.
+
+The host key is derived from the machine key rather than stored, so it survives
+reinstalling makima without a host-key warning and differs on every machine.
+`makima sshd` prints the fingerprint so it can be checked out of band, which is
+the only way a host key check means anything.
+
+`-keys github:USER` reads the account's published keys, and re-reads them
+hourly. It is worth being plain about what that means: whoever controls that
+GitHub account can get a shell here. If a read fails, the keys already in force
+stay in force — losing the network must not lock you out of your own machine.
+
+This is off unless you switch it on, unlike everything else makima does by
+default. Publishing a port or accepting a file into one directory are bounded;
+a shell is not, and nobody should discover months later that they had one.
+
 ### die
 
 `makima up` adds a `die` alias to your shell as a shortcut for `makima down`.
@@ -668,6 +707,7 @@ internal/stun       asking a public server what address we appear to come from
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/serve      publishing a local port on the mesh, and nowhere else
 internal/drop       sending a file to another machine, and receiving one
+internal/sshd       a shell server that only ever listens on the mesh
 internal/localapi   the daemon's local API and the embedded web interface
 internal/netmap     the mesh's view of itself; renders to a WireGuard config
 internal/control    the coordination protocol, its server, client, and store
