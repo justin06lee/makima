@@ -726,7 +726,9 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 - **One relay at a time.** Two nodes can only meet on a relay they are both
   connected to, and a relay does not forward to other relays. Registering
   several gives you failover, not load spreading: the control plane picks one
-  and the whole mesh follows.
+  and the whole mesh follows. Pairing inherits this: a knocker adopts the relay
+  named in the address, so two machines that already have *different* relays
+  cannot pair through either of them.
 - **No UPnP.** NAT-PMP and PCP are spoken; UPnP IGD would need SSDP discovery
   and SOAP for a shrinking share of routers, and every router that speaks only
   UPnP still works through the relay.
@@ -750,6 +752,21 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   with trust auth, a debug port, or an unauthenticated admin panel. Right for
   the machines one person owns; wrong the moment the mesh has somebody else's
   laptop on it, at which point use ACLs or `-no-auto-serve`.
+- **`makima try` is only usable by itself.** With no kernel interface, the
+  host does not know the network exists, so an arbitrary program cannot use a
+  mesh address — only the ports that process is asked to carry. That is the
+  price of not needing root, and `makima up` is the other side of the trade.
+- **File transfer is push-only.** `makima cp` puts a file in a peer's inbox;
+  there is no pull, because letting a peer read a path of its choosing here is
+  a far larger promise. `makima ssh desktop cat notes.txt` covers it.
+- **The built-in SSH server is Unix-only and single-account.** Windows has no
+  pty to allocate and no credential to drop to, so it refuses to start there.
+  Every session runs as one local account chosen on that machine — there is no
+  per-user login, no sftp subsystem, and no port forwarding through it.
+- **Preshared keys never travel over the control plane.** They are symmetric
+  secrets shared by two nodes, so they have to arrive out of band — in a
+  pairing address, or typed twice into `makima peer add`. A managed mesh cannot
+  distribute them, by design.
 - **No replay protection on the control channel.** Messages are sealed and
   authenticated, but nonces are not tracked, so a captured registration could
   be replayed to revert a node's key and endpoints to older values.

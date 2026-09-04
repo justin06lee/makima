@@ -139,8 +139,8 @@ everything else:
   makima firewall      status | allow
   makima sshd          let other machines ssh in, without an sshd
   makima ui            open the web interface
-  makima init          start a mesh with no coordination plane
-  makima peer          maintain one by hand
+  makima init          start a mesh you maintain by hand
+  makima peer          add and remove its peers
   makima genkey        generate a keypair and print it (-psk for a preshared key)
 
   makima-server        administer the mesh: nodes, access, names, the lock
