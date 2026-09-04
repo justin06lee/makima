@@ -246,3 +246,43 @@ func TestWritePIDRoundTrip(t *testing.T) {
 		t.Fatal("pidfile survived clearPID")
 	}
 }
+
+// A process with no Unix socket — the relay is one — is judged by its TCP
+// port. Without this, Running() is always false and every `makima up` starts
+// another copy.
+func TestRunningFollowsATCPPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+
+	d := Daemon{Name: "x", TCPAddr: addr}
+	if !d.Running() {
+		t.Fatal("reported not running with a live TCP listener")
+	}
+
+	ln.Close()
+	if d.Running() {
+		t.Fatal("reported running after the listener closed")
+	}
+}
+
+// Socket wins when both are set, so a daemon that has one is never judged by
+// a port that something else might be holding.
+func TestSocketBeatsTCPAddr(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	d := Daemon{
+		Name:    "x",
+		Socket:  filepath.Join(t.TempDir(), "absent.sock"),
+		TCPAddr: ln.Addr().String(),
+	}
+	if d.Running() {
+		t.Fatal("fell back to the TCP port when a socket was configured")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
+	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/supervise"
 )
 
@@ -28,6 +30,7 @@ const (
 	serverStatePath = "/var/lib/makima/control.json"
 	runDir          = "/var/lib/makima"
 	logDir          = "/var/log/makima"
+	relayStatePath  = "/var/lib/makima/relay.json"
 
 	// inviteTTL is how long a fresh invite lasts.
 	//
@@ -149,6 +152,11 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	if err != nil {
 		return err
 	}
+
+	// A machine with a public address is the only kind that can hold a mesh
+	// usable from outside the house, and it is also the only kind that can be
+	// a relay. Since it is already both, make it both.
+	startRelayIfPublic(ctx, admin, reachable)
 
 	decoded, err := checkInvite(inv)
 	if err != nil {
@@ -426,10 +434,15 @@ func warnIfUnreachable(addr string) {
 		return
 	}
 	fmt.Println()
-	fmt.Printf("Note: %s is a private address, so machines outside this network cannot reach\n", addr)
-	fmt.Println("the coordination plane. Everything here works; a laptop that leaves keeps its")
-	fmt.Println("tunnel but stops learning about changes. Hold the mesh on a machine with a")
-	fmt.Println("public address to avoid that.")
+	fmt.Printf("  ⚠ This mesh only works from inside this network.\n\n")
+	fmt.Printf("    %s is a private address. A machine somewhere else cannot reach it, so\n", addr)
+	fmt.Println("    'makima join' will fail from anywhere but here — a laptop has to be on this")
+	fmt.Println("    network to be added, and once added it can only find its way back home")
+	fmt.Println("    through a relay.")
+	fmt.Println()
+	fmt.Println("    To have it work from anywhere: run 'makima up' on a machine with a public")
+	fmt.Println("    address instead — any cheap VPS — and join this one to that. It becomes the")
+	fmt.Println("    relay too, and nothing here needs a port forwarded.")
 }
 
 // waitForPeers gives the first netmap a moment to land.
@@ -572,4 +585,55 @@ func denyCmd(args []string) error {
 		return errors.New("which port? (try: makima deny 11434 — 'makima status' lists what is published)")
 	}
 	return serveRemove(args)
+}
+
+// relayDaemon is the fallback path, run on the machine holding the mesh.
+func relayDaemon() supervise.Daemon {
+	return supervise.Daemon{
+		Name: "makima-relay",
+		Args: []string{"serve", "-state", relayStatePath},
+		// No Unix socket: the port it forwards on is the only evidence it is
+		// up, and without a probe every `makima up` would start another one.
+		TCPAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(relay.DefaultPort)),
+		PIDFile: filepath.Join(runDir, "makima-relay.pid"),
+		LogFile: filepath.Join(logDir, "makima-relay.log"),
+	}
+}
+
+// startRelayIfPublic turns the coordination machine into a relay as well.
+//
+// Two machines behind different NATs cannot dial each other, and the way they
+// meet is a relay — which has to be somewhere both can reach, which means a
+// public address. The machine holding the mesh already needs one for anything
+// to work from outside the house, so it is exactly the machine that can be a
+// relay, and asking somebody to set up a second one would be asking them to
+// solve a problem they have already solved.
+//
+// Skipped on a private address, where it would be a listener nothing could
+// ever connect to.
+func startRelayIfPublic(ctx context.Context, admin *control.AdminClient, addr string) {
+	ip, err := netip.ParseAddr(addr)
+	if err != nil || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return
+	}
+
+	id, err := relay.LoadIdentity(relayStatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "note: no relay here: %v\n", err)
+		return
+	}
+
+	if err := relayDaemon().Start(ctx, startWait); err != nil {
+		fmt.Fprintf(os.Stderr, "note: no relay here: %v\n", err)
+		return
+	}
+
+	url := net.JoinHostPort(addr, strconv.Itoa(relay.DefaultPort))
+	if err := admin.AddRelay(url, id.PrivateKey.Public()); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the relay is running but the mesh was not told about it: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Relaying on %s too, so machines that cannot reach each other directly still can.\n", url)
+	fmt.Printf("Open TCP %d on this host's firewall if it has one.\n", relay.DefaultPort)
 }

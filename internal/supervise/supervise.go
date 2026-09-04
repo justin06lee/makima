@@ -38,6 +38,11 @@ type Daemon struct {
 	// is how every other method decides whether it is running.
 	Socket string
 
+	// TCPAddr is the same idea for a process that has no Unix socket — the
+	// relay listens on a TCP port and nothing else, so that port is the only
+	// evidence it is up. Ignored when Socket is set.
+	TCPAddr string
+
 	// PIDFile is where the pid is recorded so Stop can find it again. Optional:
 	// without it, Stop falls back to matching the process by name.
 	PIDFile string
@@ -49,10 +54,15 @@ type Daemon struct {
 
 // Running reports whether the daemon is up and answering.
 func (d Daemon) Running() bool {
-	if d.Socket == "" {
+	network, addr := "unix", d.Socket
+	if addr == "" {
+		network, addr = "tcp", d.TCPAddr
+	}
+	if addr == "" {
 		return false
 	}
-	c, err := net.DialTimeout("unix", d.Socket, 500*time.Millisecond)
+
+	c, err := net.DialTimeout(network, addr, 500*time.Millisecond)
 	if err != nil {
 		return false
 	}

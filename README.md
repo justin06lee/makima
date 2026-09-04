@@ -69,11 +69,22 @@ its address assignment is not wired up yet.
 
 ## Use
 
-On the first machine:
+Pick the machine that will hold the mesh together, and run:
 
 ```sh
 makima up
 ```
+
+**Pick it deliberately.** Every other machine has to be able to reach this one
+to join, so if it is a desktop behind your home NAT, the mesh only works from
+inside your house — a laptop in a café cannot join, and once joined can only
+find its way home through a relay. Put it on anything with a public address —
+a $4 VPS is plenty — and everything works from anywhere. `makima up` tells you
+which of the two you just did.
+
+A public machine automatically becomes the relay as well, so machines that
+cannot reach each other directly still meet there. Nothing at home needs a port
+forwarded either way.
 
 That is the whole thing. There is no mesh yet, so it makes one, puts the
 coordination plane on this machine, turns on names, joins itself, starts the
@@ -464,6 +475,10 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 
 ## Known limits
 
+- **The machine holding the mesh has to be reachable by the others.** That is
+  self-hosting rather than a limitation of makima, but it is the thing most
+  likely to surprise: a coordination plane behind a home NAT makes a mesh that
+  only works from inside that house.
 - **One relay at a time.** Two nodes can only meet on a relay they are both
   connected to, and a relay does not forward to other relays. Registering
   several gives you failover, not load spreading: the control plane picks one
