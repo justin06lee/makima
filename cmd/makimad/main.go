@@ -177,7 +177,7 @@ func run(opts options) error {
 	wgOpts.Verbose = verbose
 	wgOpts.Filter = n.filter.AllowInbound
 
-	if f.Managed() {
+	if f.NeedsPathSelection() {
 		sock, err := magicsock.New(magicsock.Options{
 			Port:     f.ListenPort,
 			NodeKey:  f.NodeKey,
@@ -198,6 +198,9 @@ func run(opts options) error {
 		f.ListenPort = sock.LocalPort()
 
 		n.pm = portmap.New(log.Default())
+	}
+
+	if f.Managed() {
 		n.client = control.NewClient(f.LoginServer, f.ServerKey, f.MachineKey)
 
 		if err := n.register(ctx); err != nil {
@@ -269,6 +272,13 @@ func run(opts options) error {
 
 	if n.client != nil {
 		go n.poll(ctx)
+	}
+	// Endpoint gathering belongs to the socket, not the control plane. A
+	// serverless node needs its own reachable addresses just as much — they
+	// are what a pairing address is mostly made of, and without them two
+	// machines on the same LAN would have to meet at a relay to find each
+	// other three metres apart.
+	if n.sock != nil {
 		go n.gatherEndpoints(ctx)
 	}
 
@@ -575,8 +585,11 @@ func (n *node) logState(iface string) {
 	n.mu.Lock()
 	addr, _ := n.file.Self.Addr()
 	mode := "static"
-	if n.file.Managed() {
+	switch {
+	case n.file.Managed():
 		mode = n.file.LoginServer
+	case n.file.Serverless:
+		mode = "serverless"
 	}
 	name := n.file.Self.Name
 	peers := append([]netmap.Node(nil), n.file.Peers...)

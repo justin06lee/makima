@@ -40,7 +40,8 @@ var Magic = [6]byte{'m', 'a', 'k', 'd', 's', 'c'}
 // the nonce. All three must be readable before decryption is possible.
 const headerLen = len(Magic) + key.Size + key.NonceSize
 
-// MessageType distinguishes the two probe halves.
+// MessageType distinguishes the messages that share the disco socket: the two
+// probe halves, and the two halves of a serverless pairing.
 type MessageType byte
 
 const (
@@ -50,6 +51,14 @@ const (
 	// TypePong answers, echoing the transaction and reporting the address the
 	// ping appeared to come from.
 	TypePong MessageType = 2
+
+	// TypeKnock asks a machine that has published a pairing address to admit
+	// the sender as a peer.
+	TypeKnock MessageType = 3
+
+	// TypeKnocked answers a knock, carrying whatever the knocker still needs
+	// in order to configure the responder as a peer in return.
+	TypeKnocked MessageType = 4
 )
 
 // TxIDLen is the length of a probe's transaction ID.
@@ -82,6 +91,59 @@ type Ping struct {
 type Pong struct {
 	TxID TxID
 	Src  netip.AddrPort
+}
+
+// Knock asks to be admitted to a serverless pairing.
+//
+// It travels on the same socket and under the same seal as a probe, which is
+// what lets it arrive by whichever path exists — through the relay to a
+// machine whose address nobody knows, or straight to a candidate endpoint on
+// the same LAN. Pairing needs no transport of its own because path discovery
+// already had to solve the harder version of the same problem.
+//
+// Every field is inside the sealed payload. Nothing about a knock is readable
+// by the relay carrying it or by anyone watching the wire, including the fact
+// that it is a knock rather than a probe.
+type Knock struct {
+	TxID TxID
+
+	// NodeKey and Addr are what the responder needs to configure the knocker
+	// as a WireGuard peer. Name is what it will be called.
+	NodeKey key.Public
+	Addr    netip.Addr
+	Name    string
+
+	// Token proves the knocker holds the pairing address it is knocking on,
+	// binding any preshared key in that address to this exchange. Without it a
+	// knock would rest entirely on the seal, which a leaked disco key would
+	// defeat.
+	Token []byte
+
+	// Endpoints are where the knocker believes it can be reached, so the
+	// responder can start probing immediately rather than waiting to be
+	// probed. Hints, and treated as such.
+	Endpoints []netip.AddrPort
+}
+
+// Knocked accepts a knock.
+//
+// It repeats what the pairing address already said. That is deliberate: an
+// address may have been minted minutes or days ago, and a machine's endpoints
+// change constantly. The acknowledgement is the first thing in the exchange
+// that is current, so it is what the knocker actually configures from.
+//
+// A refused knock is answered with nothing at all. Saying "no" would confirm
+// to anyone spraying knocks that this machine runs makima and is simply not
+// listening right now, and there is no legitimate caller that benefits from
+// knowing the difference between refused and absent.
+type Knocked struct {
+	TxID TxID
+
+	NodeKey key.Public
+	Addr    netip.Addr
+	Name    string
+
+	Endpoints []netip.AddrPort
 }
 
 // ErrNotDisco reports a packet that is not disco at all.
@@ -133,8 +195,8 @@ func Seal(msg any, recipient key.Public, sender key.Private) ([]byte, error) {
 
 // Open decrypts a disco packet and decodes the message inside.
 //
-// Returns a *Ping or a *Pong. The sender's key is returned too, since it is
-// only trustworthy after the payload has opened under it.
+// Returns a *Ping, *Pong, *Knock or *Knocked. The sender's key is returned
+// too, since it is only trustworthy after the payload has opened under it.
 func Open(b []byte, recipient key.Private) (sender key.Public, msg any, err error) {
 	if !IsDiscoPacket(b) {
 		return key.Public{}, nil, ErrNotDisco
@@ -177,6 +239,23 @@ func encode(msg any) ([]byte, error) {
 		b = appendAddrPort(b, m.Src)
 		return b, nil
 
+	case *Knock:
+		b := []byte{byte(TypeKnock)}
+		b = append(b, m.TxID[:]...)
+		b = append(b, m.NodeKey[:]...)
+		b = appendAddr(b, m.Addr)
+		b = appendBytes(b, []byte(m.Name))
+		b = appendBytes(b, m.Token)
+		return appendEndpoints(b, m.Endpoints), nil
+
+	case *Knocked:
+		b := []byte{byte(TypeKnocked)}
+		b = append(b, m.TxID[:]...)
+		b = append(b, m.NodeKey[:]...)
+		b = appendAddr(b, m.Addr)
+		b = appendBytes(b, []byte(m.Name))
+		return appendEndpoints(b, m.Endpoints), nil
+
 	default:
 		return nil, fmt.Errorf("disco: cannot encode %T", msg)
 	}
@@ -207,9 +286,170 @@ func decode(b []byte) (any, error) {
 		}
 		return &Pong{TxID: tx, Src: addr}, nil
 
+	case TypeKnock:
+		k := &Knock{TxID: tx}
+		var err error
+		if rest, err = takeKey(rest, &k.NodeKey); err != nil {
+			return nil, err
+		}
+		if rest, k.Addr, err = takeAddr(rest); err != nil {
+			return nil, err
+		}
+		var name, token []byte
+		if rest, name, err = takeBytes(rest); err != nil {
+			return nil, err
+		}
+		if rest, token, err = takeBytes(rest); err != nil {
+			return nil, err
+		}
+		k.Name, k.Token = string(name), token
+		if k.Endpoints, err = takeEndpoints(rest); err != nil {
+			return nil, err
+		}
+		return k, nil
+
+	case TypeKnocked:
+		k := &Knocked{TxID: tx}
+		var err error
+		if rest, err = takeKey(rest, &k.NodeKey); err != nil {
+			return nil, err
+		}
+		if rest, k.Addr, err = takeAddr(rest); err != nil {
+			return nil, err
+		}
+		var name []byte
+		if rest, name, err = takeBytes(rest); err != nil {
+			return nil, err
+		}
+		k.Name = string(name)
+		if k.Endpoints, err = takeEndpoints(rest); err != nil {
+			return nil, err
+		}
+		return k, nil
+
 	default:
 		return nil, fmt.Errorf("disco: unknown message type %d", b[0])
 	}
+}
+
+// The knock messages are variable-length, which the fixed-shape probes are
+// not, so they need a few primitives the probe codec never did. All of them
+// are length-tagged and all of them refuse to read past the buffer: a knock
+// arrives from someone who is not yet a peer, so its encoding is the one part
+// of this package that parses genuinely untrusted input.
+
+// appendBytes writes a length-prefixed byte string. Two bytes of length caps a
+// field at 64KiB, which is far more than a hostname or a hash needs and far
+// less than a datagram can carry.
+func appendBytes(b, v []byte) []byte {
+	b = binary.BigEndian.AppendUint16(b, uint16(len(v)))
+	return append(b, v...)
+}
+
+func takeBytes(b []byte) (rest, v []byte, err error) {
+	if len(b) < 2 {
+		return nil, nil, errors.New("disco: truncated length prefix")
+	}
+	n := int(binary.BigEndian.Uint16(b))
+	b = b[2:]
+	if len(b) < n {
+		return nil, nil, errors.New("disco: field claims more bytes than the packet holds")
+	}
+	return b[n:], b[:n], nil
+}
+
+func takeKey(b []byte, dst *key.Public) (rest []byte, err error) {
+	if len(b) < key.Size {
+		return nil, errors.New("disco: truncated key")
+	}
+	copy(dst[:], b[:key.Size])
+	return b[key.Size:], nil
+}
+
+// appendAddr writes a bare IP with no port, length-tagged so v4 and v6 share
+// one format. An invalid address encodes as zero bytes and decodes back to
+// one, since a knock from a node that has no mesh address yet is legitimate.
+func appendAddr(b []byte, a netip.Addr) []byte {
+	if !a.IsValid() {
+		return append(b, 0)
+	}
+	raw := a.Unmap().AsSlice()
+	b = append(b, byte(len(raw)))
+	return append(b, raw...)
+}
+
+func takeAddr(b []byte) (rest []byte, a netip.Addr, err error) {
+	if len(b) < 1 {
+		return nil, netip.Addr{}, errors.New("disco: truncated address")
+	}
+	n := int(b[0])
+	b = b[1:]
+	switch n {
+	case 0:
+		return b, netip.Addr{}, nil
+	case 4, 16:
+	default:
+		return nil, netip.Addr{}, fmt.Errorf("disco: address length %d is neither v4 nor v6", n)
+	}
+	if len(b) < n {
+		return nil, netip.Addr{}, errors.New("disco: truncated address")
+	}
+	addr, ok := netip.AddrFromSlice(b[:n])
+	if !ok {
+		return nil, netip.Addr{}, errors.New("disco: malformed address")
+	}
+	return b[n:], addr, nil
+}
+
+// maxEndpoints caps how many candidate paths one message may carry.
+//
+// A knock is parsed before its sender is anybody, so the count has to be
+// bounded by the format rather than by trust. Sixteen is more interfaces than
+// a machine plausibly has and still leaves the packet comfortably inside a
+// datagram.
+const maxEndpoints = 16
+
+func appendEndpoints(b []byte, eps []netip.AddrPort) []byte {
+	if len(eps) > maxEndpoints {
+		eps = eps[:maxEndpoints]
+	}
+	b = append(b, byte(len(eps)))
+	for _, e := range eps {
+		b = appendAddrPort(b, e)
+	}
+	return b
+}
+
+func takeEndpoints(b []byte) ([]netip.AddrPort, error) {
+	if len(b) < 1 {
+		return nil, errors.New("disco: truncated endpoint list")
+	}
+	n := int(b[0])
+	if n > maxEndpoints {
+		return nil, fmt.Errorf("disco: %d endpoints exceeds the %d-endpoint limit", n, maxEndpoints)
+	}
+	b = b[1:]
+
+	out := make([]netip.AddrPort, 0, n)
+	for range n {
+		// Every entry is a one-byte length, that many address bytes, and two
+		// bytes of port. parseAddrPort validates the first two; the stride has
+		// to be recomputed here because the entries are not fixed-width.
+		if len(b) < 1 {
+			return nil, errors.New("disco: truncated endpoint list")
+		}
+		size := 1 + int(b[0]) + 2
+		if len(b) < size {
+			return nil, errors.New("disco: truncated endpoint list")
+		}
+		ap, err := parseAddrPort(b[:size])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ap)
+		b = b[size:]
+	}
+	return out, nil
 }
 
 // appendAddrPort writes a length-tagged address so v4 and v6 share one format.

@@ -1,12 +1,15 @@
 package localapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/serve"
@@ -20,6 +23,10 @@ type fakeBackend struct {
 	exit    string
 	allowed bool
 	fail    error
+
+	pairingOpen  bool
+	knockedAt    string
+	pairingClose int
 }
 
 func (f *fakeBackend) Status() Status { return f.status }
@@ -36,6 +43,21 @@ func (f *fakeBackend) AddService(s serve.Service) error {
 func (f *fakeBackend) RemoveService(port uint16) error {
 	f.removed = append(f.removed, port)
 	return nil
+}
+func (f *fakeBackend) OpenPairing(seconds int) (PairingState, error) {
+	if f.fail != nil {
+		return PairingState{}, f.fail
+	}
+	f.pairingOpen = true
+	return PairingState{Address: "mkp1_test", Expires: time.Now().Add(time.Duration(seconds) * time.Second)}, nil
+}
+func (f *fakeBackend) ClosePairing() { f.pairingClose++ }
+func (f *fakeBackend) Pair(_ context.Context, address string) (PairedResult, error) {
+	if f.fail != nil {
+		return PairedResult{}, f.fail
+	}
+	f.knockedAt = address
+	return PairedResult{Name: "desktop", Address: netip.MustParseAddr("100.64.0.2")}, nil
 }
 func (f *fakeBackend) SetExitNode(name string) error { f.exit = name; return nil }
 func (f *fakeBackend) AllowFirewall() (netcfg.Report, error) {
@@ -208,5 +230,98 @@ func TestDiagnosisOK(t *testing.T) {
 	// doctor exit non-zero.
 	if !(Diagnosis{Checks: []Check{{OK: false, Warning: true}}}).OK() {
 		t.Error("a warning was treated as a failure")
+	}
+}
+
+// Opening a window with no address is how a machine publishes itself.
+func TestPairOpensAWindow(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	w := post(t, h, "/api/pair", PairRequest{Seconds: 60})
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+
+	var st PairingState
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Address != "mkp1_test" {
+		t.Errorf("address is %q", st.Address)
+	}
+	if !b.pairingOpen {
+		t.Error("the backend was never asked to open a window")
+	}
+}
+
+// The same endpoint with an address knocks instead. One route, because the two
+// are the same operation seen from either end.
+func TestPairKnocksWhenGivenAnAddress(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	w := post(t, h, "/api/pair", PairRequest{Address: "mkp1_somebodyelse"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if b.knockedAt != "mkp1_somebodyelse" {
+		t.Errorf("knocked at %q", b.knockedAt)
+	}
+	if b.pairingOpen {
+		t.Error("knocking at somebody else's address also opened a window here")
+	}
+
+	var res PairedResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Name != "desktop" {
+		t.Errorf("paired with %q", res.Name)
+	}
+}
+
+func TestPairCloseClosesTheWindow(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	if w := post(t, h, "/api/pair/close", nil); w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if b.pairingClose != 1 {
+		t.Errorf("the window was closed %d times, want 1", b.pairingClose)
+	}
+}
+
+// Pairing admits a machine to the data plane, so it must be behind the same
+// gate as everything else that changes state — which in practice means the
+// Unix socket and not a browser tab.
+func TestPairIsRefusedOnAReadOnlyListener(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, false).Handler()
+
+	for _, path := range []string{"/api/pair", "/api/pair/close"} {
+		w := post(t, h, path, PairRequest{})
+		if w.Code == http.StatusOK {
+			t.Errorf("%s was allowed on a read-only listener", path)
+		}
+	}
+	if b.pairingOpen || b.pairingClose != 0 || b.knockedAt != "" {
+		t.Error("a read-only listener reached the backend anyway")
+	}
+}
+
+// A knock that goes unanswered has to surface as an error the person can act
+// on, not a silent success with an empty peer.
+func TestPairReportsAFailedKnock(t *testing.T) {
+	b := &fakeBackend{fail: errors.New("no answer from relay.example:3478")}
+	h := NewServer(b, true).Handler()
+
+	w := post(t, h, "/api/pair", PairRequest{Address: "mkp1_nobody"})
+	if w.Code == http.StatusOK {
+		t.Fatal("a failed knock returned 200")
+	}
+	if !strings.Contains(w.Body.String(), "no answer") {
+		t.Errorf("the error did not reach the client: %s", w.Body)
 	}
 }

@@ -1,14 +1,18 @@
 // Package conf loads and saves a node's on-disk identity.
 //
-// A node runs in one of two modes and the file says which:
+// A node runs in one of three modes and the file says which:
 //
-//	static   no LoginServer. The peer list in this file is the whole mesh,
-//	         maintained by hand. It stays supported because it is the only mode
-//	         that needs no infrastructure at all — and because it is the only
-//	         one where WireGuard gets an ordinary UDP socket.
-//	managed  LoginServer set. The peer list here is only a cache of the last
-//	         netmap the control server sent, so a node that boots while the
-//	         server is unreachable still comes up with the mesh it last knew.
+//	static      no LoginServer, not Serverless. The peer list in this file is
+//	            the whole mesh, maintained by hand. It stays supported because
+//	            it needs no infrastructure at all — and because it is the only
+//	            mode where WireGuard gets an ordinary UDP socket.
+//	serverless  no LoginServer, Serverless set. The peer list is maintained by
+//	            pairing: two machines exchange one pasted address and each
+//	            writes the other in. No server, but a real path-selecting
+//	            socket, because pairing and NAT traversal both need one.
+//	managed     LoginServer set. The peer list here is only a cache of the last
+//	            netmap the control server sent, so a node that boots while the
+//	            server is unreachable still comes up with the mesh it last knew.
 package conf
 
 import (
@@ -45,9 +49,18 @@ type File struct {
 
 	ListenPort uint16 `json:"listen_port"`
 
-	// LoginServer empty means static mode.
+	// LoginServer empty means no control plane: static or serverless.
 	LoginServer string     `json:"login_server,omitempty"`
 	ServerKey   key.Public `json:"server_key,omitzero"`
+
+	// Serverless marks a node that gains peers by pairing rather than by
+	// registering with a control plane.
+	//
+	// It exists as a flag rather than being inferred from the peer list
+	// because it has to be true *before* there are any peers: a machine
+	// running `makima pair` for the first time has nobody, and still needs the
+	// path-selecting socket in order to be knocked on at all.
+	Serverless bool `json:"serverless,omitempty"`
 
 	// AuthKey is a join credential held only between `makima join` and the
 	// daemon's first successful registration, then cleared. It exists because
@@ -105,6 +118,31 @@ func NewIdentity() (nodeKey, machineKey, discoKey key.Private, err error) {
 
 // Managed reports whether a control server owns this node's peer list.
 func (f *File) Managed() bool { return f.LoginServer != "" }
+
+// NeedsPathSelection reports whether this node should be given magicsock
+// rather than an ordinary UDP socket.
+//
+// The distinction is not cosmetic. magicsock attributes an inbound packet to a
+// peer by address or by relay header, and it can only do that where disco keys
+// exist to establish either. A hand-maintained static mesh has none, so giving
+// it the path-selecting socket would break the documented behaviour that
+// whichever machine speaks first teaches the other where it lives.
+//
+// A serverless node is the opposite case: pairing *is* a disco exchange, and a
+// relay is often the only place two machines behind NAT can meet, so it needs
+// the selecting socket from the moment it starts — before it has any peers to
+// infer that from.
+func (f *File) NeedsPathSelection() bool { return f.Managed() || f.Serverless }
+
+// PairedPeer returns the peer with a given node key, and whether it exists.
+func (f *File) PairedPeer(k key.Public) (netmap.Node, bool) {
+	for _, p := range f.Peers {
+		if p.Key == k {
+			return p, true
+		}
+	}
+	return netmap.Node{}, false
+}
 
 // AdvertisedServices renders the local service list into the form the control
 // plane is told about: which mesh ports are open, and nothing else.

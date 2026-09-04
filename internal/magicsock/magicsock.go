@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/justin06lee/makima/internal/disco"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/stun"
@@ -75,6 +76,15 @@ type Conn struct {
 	// contend with the packet path.
 	stunMu sync.Mutex
 	stunTx map[stun.TxID]time.Time
+
+	// pairing is the open serverless pairing window, nil when closed, and
+	// knocks are the pairings this node has started and is awaiting an answer
+	// to. Both are guarded by pairMu, which is again separate from the main
+	// lock: a knock arriving must not contend with the packet path, and
+	// accepting one calls out into the daemon.
+	pairMu  sync.Mutex
+	pairing *Pairing
+	knocks  map[disco.TxID]*pending
 
 	// derived from Options, kept for probing
 	ctx       context.Context

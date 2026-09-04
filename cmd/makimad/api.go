@@ -40,11 +40,12 @@ func (n *node) Status() localapi.Status {
 			AdvertisedRoutes: f.AdvertiseRoutes,
 			AdvertisesExit:   f.AdvertiseExit,
 		},
-		Managed:  f.Managed(),
-		Server:   f.LoginServer,
-		Domain:   f.Domain,
-		ExitNode: f.ExitNode,
-		Since:    n.startedAt,
+		Managed:    f.Managed(),
+		Serverless: f.Serverless,
+		Server:     f.LoginServer,
+		Domain:     f.Domain,
+		ExitNode:   f.ExitNode,
+		Since:      n.startedAt,
 	}
 
 	// The approved half comes back in our own netmap entry rather than from
@@ -118,6 +119,15 @@ func (n *node) Status() localapi.Status {
 		st.Dropped = n.filter.Dropped()
 	}
 	st.DNSActive = n.dns != nil
+
+	// An open pairing window is the one piece of state a person is likely to
+	// be actively waiting on, so status reports it rather than making them
+	// remember whether they left one open.
+	if n.sock != nil && n.sock.PairingOpen() {
+		if address, expires, err := n.pairAddressString(); err == nil {
+			st.Pairing = &localapi.PairingState{Address: address, Expires: expires}
+		}
+	}
 	return st
 }
 
@@ -486,4 +496,27 @@ func (n *node) meshAddr() netip.Addr {
 	defer n.mu.Unlock()
 	a, _ := n.file.Self.Addr()
 	return a
+}
+
+// OpenPairing publishes a pairing address and starts answering knocks on it.
+func (n *node) OpenPairing(seconds int) (localapi.PairingState, error) {
+	ttl := time.Duration(seconds) * time.Second
+	address, expires, err := n.openPairing(ttl)
+	if err != nil {
+		return localapi.PairingState{}, err
+	}
+	return localapi.PairingState{Address: address, Expires: expires}, nil
+}
+
+// ClosePairing stops answering knocks.
+func (n *node) ClosePairing() { n.closePairing() }
+
+// Pair knocks on another machine's published address.
+func (n *node) Pair(ctx context.Context, address string) (localapi.PairedResult, error) {
+	peer, err := n.knock(ctx, address)
+	if err != nil {
+		return localapi.PairedResult{}, err
+	}
+	addr, _ := peer.Addr()
+	return localapi.PairedResult{Name: peer.Name, Address: addr}, nil
 }
