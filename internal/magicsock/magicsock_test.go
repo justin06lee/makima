@@ -423,3 +423,79 @@ func TestLocalPortIsBoundBeforeWireGuardStarts(t *testing.T) {
 		t.Error("the socket has no port before Open; endpoint advertisement would have nothing to publish")
 	}
 }
+
+// PeerStatus has to distinguish "this peer is unknown" from "this peer is
+// known and has no path". A ping that confused the two would report a typo as
+// a connectivity problem.
+func TestPeerStatusReportsUnknownPeers(t *testing.T) {
+	c, _, _ := newConn(t)
+
+	stranger, _ := key.NewPrivate()
+	if _, ok := c.PeerStatus(stranger.Public()); ok {
+		t.Error("a peer the socket has never heard of reported a status")
+	}
+
+	peer, peerDisco := mustKeys(t)
+	c.SetNetwork([]PeerConfig{{NodeKey: peer.Public(), DiscoKey: peerDisco.Public()}}, "", key.Public{})
+
+	st, ok := c.PeerStatus(peer.Public())
+	if !ok {
+		t.Fatal("a configured peer has no status")
+	}
+	if st.DirectOK {
+		t.Error("a peer that has never answered reports a direct path")
+	}
+}
+
+// ProbeNow is what a person typing `makima ping` gets, and it has to be able
+// to say when there was nothing to probe.
+func TestProbeNowReportsUnknownPeers(t *testing.T) {
+	c, _, _ := newConn(t)
+
+	stranger, _ := key.NewPrivate()
+	if c.ProbeNow(stranger.Public()) {
+		t.Error("probing an unknown peer reported success")
+	}
+
+	peer, peerDisco := mustKeys(t)
+	c.SetNetwork([]PeerConfig{{NodeKey: peer.Public(), DiscoKey: peerDisco.Public()}}, "", key.Public{})
+	if !c.ProbeNow(peer.Public()) {
+		t.Error("probing a known peer reported failure")
+	}
+}
+
+// The relayed and direct timings are separate measurements, and the gap
+// between them is the whole argument for hole punching. Folding one into the
+// other would make a relay in another country indistinguishable from a direct
+// path across the room.
+func TestRelayLatencyIsKeptApartFromDirect(t *testing.T) {
+	ps := newPeerState(key.Public{1})
+
+	ps.mu.Lock()
+	ps.relayLatency = 80 * time.Millisecond
+	ps.mu.Unlock()
+	ps.noteDirectRecv(netip.MustParseAddrPort("203.0.113.9:41641"))
+	ps.mu.Lock()
+	ps.latency = 9 * time.Millisecond
+	ps.mu.Unlock()
+
+	st := ps.status()
+	if st.Latency != 9*time.Millisecond {
+		t.Errorf("direct latency is %s", st.Latency)
+	}
+	if st.RelayLatency != 80*time.Millisecond {
+		t.Errorf("relay latency is %s", st.RelayLatency)
+	}
+}
+
+func mustKeys(t *testing.T) (node, disco key.Private) {
+	t.Helper()
+	var err error
+	if node, err = key.NewPrivate(); err != nil {
+		t.Fatal(err)
+	}
+	if disco, err = key.NewPrivate(); err != nil {
+		t.Fatal(err)
+	}
+	return node, disco
+}

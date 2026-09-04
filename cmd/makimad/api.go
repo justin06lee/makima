@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
@@ -519,4 +520,71 @@ func (n *node) Pair(ctx context.Context, address string) (localapi.PairedResult,
 	}
 	addr, _ := peer.Addr()
 	return localapi.PairedResult{Name: peer.Name, Address: addr}, nil
+}
+
+// Ping probes one peer by name and reports the path to it.
+//
+// The probe is fired and the path read immediately afterwards, without waiting
+// for a reply. That is deliberate: a pong may take a round trip to arrive, and
+// blocking here would make one slow peer stall the socket the caller is asking
+// through. The caller polls, which is also what makes `-until-direct` a loop
+// rather than a single long request.
+func (n *node) Ping(name string) (localapi.Ping, error) {
+	n.mu.Lock()
+	var peer netmap.Node
+	found := false
+	bare := strings.TrimSuffix(name, "."+n.file.Domain)
+	for _, p := range n.file.Peers {
+		if p.Name == bare || p.Name == name {
+			peer, found = p, true
+			break
+		}
+	}
+	known := make([]string, 0, len(n.file.Peers))
+	for _, p := range n.file.Peers {
+		known = append(known, p.Name)
+	}
+	n.mu.Unlock()
+
+	if !found {
+		if len(known) == 0 {
+			return localapi.Ping{}, fmt.Errorf("no peer named %q — this machine has no peers yet", name)
+		}
+		return localapi.Ping{}, fmt.Errorf("no peer named %q — this machine can see %s", name, strings.Join(known, ", "))
+	}
+
+	addr, _ := peer.Addr()
+	out := localapi.Ping{Name: peer.Name, Address: addr, Path: "no path", RelayURL: peer.RelayURL}
+
+	if n.sock == nil {
+		// A static mesh has one fixed path per peer and nothing to select
+		// between, so there is no probing to do and nothing to wait for.
+		if len(peer.Endpoints) > 0 {
+			out.Direct = true
+			out.Path = "direct " + peer.Endpoints[0].String()
+		}
+		return out, nil
+	}
+
+	n.sock.ProbeNow(peer.Key)
+
+	st, ok := n.sock.PeerStatus(peer.Key)
+	if !ok {
+		return out, nil
+	}
+
+	out.Direct = st.DirectOK
+	out.Latency = st.Latency
+	out.RelayLatency = st.RelayLatency
+	out.Candidates = st.Candidates
+	if st.RelayURL != "" {
+		out.RelayURL = st.RelayURL
+	}
+	switch {
+	case st.DirectOK:
+		out.Path = "direct " + st.Direct.String()
+	case st.RelayURL != "":
+		out.Path = "relay " + st.RelayURL
+	}
+	return out, nil
 }

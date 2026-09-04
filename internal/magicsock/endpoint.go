@@ -134,6 +134,15 @@ type peerState struct {
 	// latency is the smoothed round-trip time of the direct path, or zero when
 	// unmeasured.
 	latency time.Duration
+
+	// relayLatency is the same measurement for the relayed path.
+	//
+	// Kept separately rather than folded into latency because the two are
+	// answers to different questions, and the gap between them is the entire
+	// argument for hole punching. A relay in another country and a direct path
+	// across the room are both "the peer is reachable"; only showing both makes
+	// the difference visible.
+	relayLatency time.Duration
 }
 
 // probe is one outstanding disco ping.
@@ -205,13 +214,21 @@ func (ps *peerState) pathDescription() string {
 	return "no path"
 }
 
-// PeerStatus is a snapshot of one peer's connectivity, for `makima status`.
+// PeerStatus is a snapshot of one peer's connectivity, for `makima status`
+// and `makima ping`.
 type PeerStatus struct {
-	NodeKey    key.Public
-	Direct     netip.AddrPort
-	DirectOK   bool
-	Latency    time.Duration
-	RelayURL   string
+	NodeKey  key.Public
+	Direct   netip.AddrPort
+	DirectOK bool
+	Latency  time.Duration
+
+	RelayURL string
+
+	// RelayLatency is the round-trip time through the relay, zero when
+	// unmeasured. Reported alongside Latency rather than instead of it: the
+	// gap between the two is what a direct path is worth.
+	RelayLatency time.Duration
+
 	Candidates []netip.AddrPort
 	LastRelay  time.Time
 }
@@ -222,12 +239,13 @@ func (ps *peerState) status() PeerStatus {
 
 	addr, ok := ps.directPathLocked()
 	return PeerStatus{
-		NodeKey:    ps.nodeKey,
-		Direct:     addr,
-		DirectOK:   ok,
-		Latency:    ps.latency,
-		RelayURL:   ps.relayURL,
-		Candidates: append([]netip.AddrPort(nil), ps.candidates...),
-		LastRelay:  ps.lastRelayAt,
+		NodeKey:      ps.nodeKey,
+		Direct:       addr,
+		DirectOK:     ok,
+		Latency:      ps.latency,
+		RelayURL:     ps.relayURL,
+		RelayLatency: ps.relayLatency,
+		Candidates:   append([]netip.AddrPort(nil), ps.candidates...),
+		LastRelay:    ps.lastRelayAt,
 	}
 }

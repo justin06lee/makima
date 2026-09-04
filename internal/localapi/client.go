@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -244,4 +245,11 @@ func (c *Client) Pair(address string, wait time.Duration) (PairedResult, error) 
 	// one, which would only be able to say "deadline exceeded".
 	err := c.withTimeout(wait+5*time.Second).call("POST", "/api/pair", PairRequest{Address: address}, &res)
 	return res, err
+}
+
+// Ping probes one peer and reports how this node is currently reaching it.
+func (c *Client) Ping(name string) (Ping, error) {
+	var p Ping
+	err := c.call(http.MethodGet, "/api/ping?peer="+url.QueryEscape(name), nil, &p)
+	return p, err
 }

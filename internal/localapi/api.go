@@ -128,6 +128,34 @@ type PairedResult struct {
 	Address netip.Addr `json:"address"`
 }
 
+// Ping is one probe of one peer, and what came back.
+//
+// Deliberately a snapshot of the path rather than a single round trip. The
+// question people actually have is not "is the peer up" — `makima status`
+// answers that — but "am I going through a relay, and will that ever stop",
+// so both timings are reported and Direct is the headline.
+type Ping struct {
+	Name    string     `json:"name"`
+	Address netip.Addr `json:"address"`
+
+	// Direct says the tunnel is currently taking a direct path, and Path
+	// renders it the way status does.
+	Direct bool   `json:"direct"`
+	Path   string `json:"path"`
+
+	// Latency is the direct round trip, RelayLatency the relayed one. Either
+	// may be zero, meaning unmeasured rather than instantaneous.
+	Latency      time.Duration `json:"latency"`
+	RelayLatency time.Duration `json:"relay_latency"`
+
+	RelayURL string `json:"relay_url,omitempty"`
+
+	// Candidates are the addresses being tried. Shown when nothing has worked
+	// yet, because "which addresses did it even attempt" is the next question
+	// after "it is not connecting".
+	Candidates []netip.AddrPort `json:"candidates,omitempty"`
+}
+
 // Check is one diagnostic result.
 type Check struct {
 	Name   string `json:"name"`
@@ -174,6 +202,9 @@ type Backend interface {
 	ClosePairing()
 	Pair(ctx context.Context, address string) (PairedResult, error)
 
+	// Ping probes one peer and reports the path to it.
+	Ping(name string) (Ping, error)
+
 	SetExitNode(name string) error
 	AllowFirewall() (netcfg.Report, error)
 }
@@ -202,6 +233,23 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.backend.Status())
+	})
+
+	// A GET, because probing changes nothing an observer could see. It is on
+	// the read-only listener for the same reason status is: knowing whether
+	// your own path is direct is not a privilege.
+	mux.HandleFunc("GET /api/ping", func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("peer")
+		if name == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("ping needs a peer name"))
+			return
+		}
+		p, err := s.backend.Ping(name)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, p)
 	})
 
 	mux.HandleFunc("GET /api/doctor", func(w http.ResponseWriter, r *http.Request) {
