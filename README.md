@@ -55,17 +55,46 @@ café and a home network. See [Known limits](#known-limits).
 ## Install
 
 ```sh
-make
+curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/install.sh | sh
 ```
 
-Builds all four binaries and installs them to `/usr/local/bin`. `make update`
-stops a running daemon, replaces the binaries, and leaves you ready to start
-again. `make service` installs a systemd unit or launchd plist so the daemon
-survives a reboot — kept separate from `make` because a VPN that enables itself
-at boot on a machine you were only trying out is a surprise.
+One archive, verified against the release's published `SHA256SUMS`, and four
+binaries in `/usr/local/bin`. It starts nothing, enables nothing at boot, and
+touches no network configuration.
 
-Requires Go 1.25 or newer. Linux and macOS today; Windows cross-compiles but
-its address assignment is not wired up yet.
+<details>
+<summary>Other ways</summary>
+
+```sh
+brew install justin06lee/makima/makima     # macOS and Linux
+yay -S makima                              # Arch
+nix run github:justin06lee/makima          # Nix
+go install github.com/justin06lee/makima/cmd/makima@latest
+docker run -p 3478:3478 ghcr.io/justin06lee/makima   # a relay
+```
+
+From source, which is what a contributor wants:
+
+```sh
+make          # build all four binaries and install them to /usr/local/bin
+make update   # stop the daemon, replace the binaries, ready to start again
+make check    # fmt, vet, test, and the race detector
+make release  # cross-built archives and checksums, in dist/release
+```
+
+Requires Go 1.25 or newer.
+
+</details>
+
+Then, without changing anything on the machine and without a password:
+
+```sh
+makima try -serve 8080
+```
+
+Linux and macOS today. Windows cross-compiles and can reach a mesh, but its
+address assignment is not wired up yet, and the built-in SSH server does not
+run there.
 
 ## Use
 
@@ -753,6 +782,11 @@ internal/policy     who may talk to whom, and the filter nodes enforce
 internal/dnsserver  mesh name resolution
 internal/netcfg     per-platform addresses, routes, resolvers, and NAT
 internal/conf       on-disk node identity
+
+dist/install.sh     one archive, one checksum, four binaries
+dist/packaging      homebrew formula, PKGBUILD, Dockerfile
+dist/*.service      systemd units and a launchd plist, installed on request
+flake.nix           the Nix build
 ```
 
 ## License

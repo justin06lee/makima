@@ -1,0 +1,47 @@
+# Maintainer: justin06lee <tenet.sh@gmail.com>
+#
+# Arch package, built from source rather than from a release archive: the AUR
+# prefers it, Go makes it cheap, and it means the package tracks whatever Go
+# the user has rather than whatever the release was built with.
+pkgname=makima
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Every machine you own, on one private network"
+arch=('x86_64' 'aarch64' 'armv7h')
+url="https://github.com/justin06lee/makima"
+license=('MIT')
+makedepends=('go>=1.25')
+backup=('etc/makima/node.json')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CGO_ENABLED=0
+  export GOFLAGS="-trimpath -mod=readonly -modcacherw"
+  for b in makima makimad makima-server makima-relay; do
+    go build -ldflags "-s -w -X main.version=v$pkgver" -o "build/$b" "./cmd/$b"
+  done
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  go test ./...
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+
+  for b in makima makimad makima-server makima-relay; do
+    install -Dm755 "build/$b" "$pkgdir/usr/bin/$b"
+  done
+
+  # Units are installed but not enabled. A VPN that takes over an interface at
+  # boot on a machine somebody was only trying out is a surprise.
+  install -Dm644 dist/makimad.service "$pkgdir/usr/lib/systemd/system/makimad.service"
+  install -Dm644 dist/makima-server.service "$pkgdir/usr/lib/systemd/system/makima-server.service"
+  install -Dm644 dist/makima-relay.service "$pkgdir/usr/lib/systemd/system/makima-relay.service"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
