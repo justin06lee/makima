@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"strings"
 	"time"
@@ -191,8 +192,8 @@ func (n *node) Diagnose() localapi.Diagnosis {
 	if addrErr != nil {
 		add(localapi.Check{
 			Name:   "Tunnel",
-			Detail: "this node has no mesh address yet, so nothing can reach it",
-			Fix:    "makima-server authkey   # then: sudo makima join -server ... -authkey ...",
+			Detail: "this device has no address on the network yet, so nothing can reach it",
+			Fix:    "makima join <invite>   # get an invite from the device that started the network: makima invite",
 		})
 	} else {
 		add(localapi.Check{
@@ -202,7 +203,24 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		})
 	}
 
-	// 2. The host firewall — the single most common reason a home server is
+	// 2. Another VPN on the same addresses. Tailscale hands out the same
+	// 100.64.0.0/10 that makima does, and while it runs it claims the whole
+	// range for itself: on Linux with a firewall rule that drops every packet
+	// from that range not arriving on its own interface, on macOS with a
+	// route. Either way the symptom is a tunnel that is up, addresses that
+	// are right, and nothing getting through — which is exactly what a
+	// person who is trying makima instead of Tailscale will see first.
+	if others := otherCGNATInterfaces(listInterfaces(), iface); len(others) > 0 {
+		add(localapi.Check{
+			Name: "Another VPN",
+			Detail: fmt.Sprintf(
+				"%s also uses makima's address range (100.64.0.0/10) — that is Tailscale's range too, and while both run, the other one can swallow makima's traffic",
+				strings.Join(others, ", ")),
+			Fix: "quit Tailscale (or whichever VPN that is) while using makima",
+		})
+	}
+
+	// 3. The host firewall — the single most common reason a home server is
 	// unreachable after the tunnel is genuinely working.
 	if n.firewall != nil {
 		r := n.firewall.Status()
@@ -215,7 +233,7 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		})
 	}
 
-	// 3. Published services whose target is not actually running. The second
+	// 4. Published services whose target is not actually running. The second
 	// most common cause, and the one that looks most like a network fault from
 	// the far end: the connection is accepted and then nothing answers.
 	if n.serve != nil {
@@ -248,35 +266,35 @@ func (n *node) Diagnose() localapi.Diagnosis {
 			OK:      true,
 			Warning: true,
 			Detail:  "nothing is published from this machine",
-			Fix:     "sudo makima serve 11434   # publishes a local port on the mesh",
+			Fix:     "makima allow 11434   # publishes a local port on the network",
 		})
 	}
 
-	// 4. The control plane.
+	// 5. The network's server.
 	if managed {
 		switch {
 		case pollErr != nil:
 			add(localapi.Check{
-				Name:   "Control plane",
-				Detail: "last netmap poll failed: " + pollErr.Error(),
-				Fix:    "check the control server is running and reachable",
+				Name:   "Network server",
+				Detail: "cannot reach the device holding the network: " + pollErr.Error(),
+				Fix:    "check that device is on and reachable from here — new devices cannot join until it is, but existing ones keep working",
 			})
 		case lastPoll.IsZero():
 			add(localapi.Check{
-				Name:    "Control plane",
+				Name:    "Network server",
 				Warning: true,
-				Detail:  "no netmap received yet",
+				Detail:  "waiting for the first update from the device holding the network",
 			})
 		default:
 			add(localapi.Check{
-				Name:   "Control plane",
+				Name:   "Network server",
 				OK:     true,
-				Detail: fmt.Sprintf("netmap current, last heard %s ago", time.Since(lastPoll).Round(time.Second)),
+				Detail: fmt.Sprintf("in touch, last heard %s ago", time.Since(lastPoll).Round(time.Second)),
 			})
 		}
 	}
 
-	// 5. Paths to peers.
+	// 6. Paths to peers.
 	if n.sock != nil && len(peers) > 0 {
 		direct, relayed, stranded := 0, 0, 0
 		for _, s := range n.sock.Status() {
@@ -314,29 +332,29 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		}
 	}
 
-	// 6. Mesh names.
+	// 7. Names.
 	if domain != "" {
 		add(localapi.Check{
-			Name:    "Mesh names",
+			Name:    "Names",
 			OK:      n.dns != nil,
 			Warning: n.dns == nil,
 			Detail: map[bool]string{
 				true:  fmt.Sprintf("*.%s resolves on this machine", domain),
-				false: fmt.Sprintf("*.%s is enabled on the mesh but this node's resolver is not running", domain),
+				false: fmt.Sprintf("*.%s is on for the network but this device's resolver is not running", domain),
 			}[n.dns != nil],
-			Fix: "check nothing else holds port 53 on the mesh address",
+			Fix: "check nothing else holds port 53 on this device's makima address",
 		})
 	}
 
-	// 7. An exit node that was selected but is not usable.
+	// 8. An exit node that was selected but is not usable.
 	if exitNode != "" {
 		peer, found := findPeer(peers, exitNode)
 		switch {
 		case !found:
 			add(localapi.Check{
 				Name:   "Exit node",
-				Detail: fmt.Sprintf("%q is selected but is not in this node's netmap", exitNode),
-				Fix:    "sudo makima set -exit-node \"\"   # or check the name",
+				Detail: fmt.Sprintf("%q is selected but is not on this network", exitNode),
+				Fix:    "makima set -exit-node \"\"   # or check the name",
 			})
 		case !peer.OffersExit():
 			add(localapi.Check{
@@ -361,9 +379,68 @@ func firewallFix(r netcfg.Report) string {
 		return ""
 	}
 	if r.Automatic {
-		return "sudo makima firewall allow"
+		return "makima firewall allow"
 	}
 	return r.Manual
+}
+
+// ifaceAddrs is one interface and the addresses on it, as much as the
+// address-range check needs — and a shape a test can build by hand.
+type ifaceAddrs struct {
+	name  string
+	addrs []netip.Prefix
+}
+
+// listInterfaces reads the machine's interfaces and their addresses.
+func listInterfaces() []ifaceAddrs {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	out := make([]ifaceAddrs, 0, len(ifaces))
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		entry := ifaceAddrs{name: iface.Name}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			addr, ok := netip.AddrFromSlice(ipnet.IP)
+			if !ok {
+				continue
+			}
+			ones, _ := ipnet.Mask.Size()
+			entry.addrs = append(entry.addrs, netip.PrefixFrom(addr.Unmap(), ones))
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// otherCGNATInterfaces names every interface other than makima's own that
+// holds an address in makima's range. One name per interface, in the order
+// the system lists them.
+func otherCGNATInterfaces(ifaces []ifaceAddrs, self string) []string {
+	var out []string
+	for _, iface := range ifaces {
+		if iface.name == self {
+			continue
+		}
+		for _, p := range iface.addrs {
+			if netcfg.CGNATRange.Contains(p.Addr()) {
+				out = append(out, iface.name)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // AddService publishes a local port on the mesh.
