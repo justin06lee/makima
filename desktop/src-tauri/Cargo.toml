@@ -1,6 +1,6 @@
 [package]
 name = "makima-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "makima — every machine you own, on one private network"
 authors = ["justin06lee"]
 edition = "2021"
