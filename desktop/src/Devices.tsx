@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, fqdn, inTauri, ms, openExternal, openFolder, pathLabel, type Environment, type Peer, type Ping, type Status } from "./api";
 import type { Act } from "./App";
-import { Button, Card, CopyButton, Dot, Input, Row, Search, Section, Spinner } from "./ui";
+import { Button, Card, CopyButton, Dot, Input, Row, Search, Section, Spinner, Toggle } from "./ui";
 import { Icon } from "./icons";
 import { useDrop } from "./useDrop";
 
@@ -466,6 +466,29 @@ function SelfDetail({ status, env, busy, act }: { status: Status; env: Environme
                   Open
                 </Button>
               ) : undefined
+            }
+          />
+        </Card>
+      </Section>
+
+      <Section title="Exit node">
+        <Card>
+          <Row
+            value="Offer this device as an exit node"
+            caption={
+              status.node.advertises_exit
+                ? status.node.exit_approved
+                  ? "Other devices can send all their internet traffic through this one, if they choose to."
+                  : "Offered; waiting for the network to confirm."
+                : "Let other devices browse from here — a laptop on café wifi, through your home connection."
+            }
+            right={
+              <Toggle
+                on={status.node.advertises_exit}
+                busy={busy}
+                label="Offer this device as an exit node"
+                onChange={(next) => act({ kind: "advertise-exit", on: next })}
+              />
             }
           />
         </Card>

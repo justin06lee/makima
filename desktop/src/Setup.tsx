@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Environment } from "./api";
+import { looksLikeInvite, type Environment } from "./api";
 import type { Act } from "./App";
 import { Button, Input, Notice } from "./ui";
 import { Icon } from "./icons";
@@ -29,8 +29,8 @@ export function Setup({
   const [invite, setInvite] = useState("");
   const [which, setWhich] = useState<"start" | "join" | null>(null);
 
-  const cleaned = invite.trim().replace(/^makima\s+(join|up)\s+/, "");
-  const valid = /^mk1_[A-Za-z0-9_-]{16,}$/.test(cleaned);
+  const cleaned = invite.trim().replace(/^makima\s+(join|up)\s+/i, "");
+  const valid = looksLikeInvite(cleaned);
 
   async function start() {
     setWhich("start");
@@ -73,13 +73,13 @@ export function Setup({
 
           <Choice
             title="Join a network"
-            body="There is one already. Paste the invite from the device that started it."
+            body="There is one already. Type the fifteen words the first device shows, or paste its invite."
           >
             <div className="flex w-full flex-col gap-2">
               <Input
                 value={invite}
                 onChange={setInvite}
-                placeholder="mk1_…"
+                placeholder="fifteen words, or mk1_…"
                 mono
                 onEnter={join}
                 autoFocus

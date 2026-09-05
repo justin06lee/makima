@@ -115,6 +115,7 @@ export type Action =
   | { kind: "allow"; port: number }
   | { kind: "deny"; port: number }
   | { kind: "exit-node"; name: string }
+  | { kind: "advertise-exit"; on: boolean }
   | { kind: "invite" }
   | { kind: "pair" }
   | { kind: "link-cli" };
@@ -169,7 +170,15 @@ export const api = {
   act: async (action: Action): Promise<Outcome> => {
     if (inTauri) return invoke<Outcome>("act", { action });
     await browser.wait(700);
-    if (action.kind === "invite") return { ok: true, output: "mk1_eyJzIjoiaHR0cDovLzEwMC42NC4wLjE6ODA4MCIsImEiOiJta2F1dGgtZGV2LWV4YW1wbGUiLCJrIjoiZGV2In0" };
+    if (action.kind === "invite") {
+      return {
+        ok: true,
+        output: JSON.stringify({
+          words: "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve",
+          invite: "mk1_eyJzIjoiaHR0cDovLzEwMC42NC4wLjE6ODA4MCIsImEiOiJta2F1dGgtZGV2LWV4YW1wbGUiLCJrIjoiZGV2In0",
+        }),
+      };
+    }
     if (action.kind === "join" || action.kind === "up") {
       window.location.search = "?state=on";
     }
@@ -221,6 +230,42 @@ export function ms(ns: number): string {
 /// A device's name with the mesh suffix, when names are on.
 export function fqdn(name: string, status: Status): string | null {
   return status.dns_active && status.domain ? `${name}.${status.domain}` : null;
+}
+
+/// An invite as the CLI prints it with -json: the words to type, and the
+/// string to paste. Older output — the bare string — is read too.
+export type Invite = { words?: string; invite: string };
+
+export function parseInvite(out: string): Invite | null {
+  try {
+    const j = JSON.parse(out.trim());
+    if (j && typeof j.invite === "string") return { words: typeof j.words === "string" ? j.words : undefined, invite: j.invite };
+  } catch {
+    // Not JSON: fall through to the bare string.
+  }
+  const found = out.match(/mk[a-z0-9]*_[A-Za-z0-9_-]+/);
+  return found ? { invite: found[0] } : null;
+}
+
+/// Whether text is something Join can take: the pasted string, or the words
+/// — fifteen of them, or a typed server address followed by ten.
+export function looksLikeInvite(text: string): boolean {
+  const cleaned = text.trim().replace(/^makima\s+(join|up)\s+/i, "");
+  if (/^mk1_[A-Za-z0-9_-]{16,}$/.test(cleaned)) return true;
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  return words.length >= 11 && words.length <= 40 && words.every((w) => /^[A-Za-z0-9.:/\[\]-]+$/.test(w));
+}
+
+/// Whether a server URL points at a private address — a network that only
+/// works from inside the building.
+export function isPrivateServer(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname;
+    return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host) || host === "localhost";
+  } catch {
+    return false;
+  }
 }
 
 /// One phrase for how a peer is being reached.

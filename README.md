@@ -117,8 +117,8 @@ Two devices, two steps. On the first one, **Start a network** — in the app, or
 makima up
 ```
 
-On every device after that, **Join a network** and paste the invite the first
-one showed — or:
+On every device after that, **Join a network** and type the fifteen words the
+first one showed — or paste its invite:
 
 ```sh
 makima join mk1_...
@@ -165,17 +165,21 @@ device is on the network from the moment it powers on until `makima down`,
 which takes the registration away again. Nobody has to know there is a daemon,
 because nobody has to start one.
 
-On every machine after, paste what it printed:
+On every machine after, type what it printed into the app, or paste it:
 
 ```sh
 makima join mk1_...
+makima join abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve
 ```
 
-One string, because the three things a machine needs to join — where the
-coordination plane is, a credential, and the plane's public key — are three
-things to get right and one thing to paste. The key travelling *with* the
-invite is the point: a node that has to fetch it over the connection it is
-about to trust cannot tell an impostor from the real server.
+Two forms of the same thing. The string is for a machine you can paste to.
+The fifteen words are for one you cannot — the laptop that is not on the
+network yet — and the first four letters of each word are enough. Five of the
+words say where the network's server is, ten are a secret, and the server
+proves its own public key to whoever holds them; so neither form ever asks a
+joining machine to trust a key it fetched over the connection it is about to
+trust, which is what makes an impostor in the middle detectable rather than
+invisible.
 
 ```sh
 makima invite        # another one, for the next machine
@@ -449,7 +453,8 @@ Remove beside each, and where incoming files go.
 **The first run** asks one question: is this the first device, or is there a
 network already? *Start a network* is `makima up`. *Join a network* takes a
 pasted invite. *Add device*, in the title bar of the machine holding the
-network, mints the invite for the next one and shows the command to paste.
+network, shows fifteen words to type into the next one, and the string to
+paste for a machine that can be pasted to.
 Either answer asks for your password once; after that the device stays
 connected, restarts included, until you disconnect.
 
@@ -541,20 +546,26 @@ a compromised sender will not filter itself.
 A machine can offer to route a subnet, or to carry general internet traffic:
 
 ```sh
-sudo makima set -advertise-routes 192.168.1.0/24
-sudo makima set -advertise-exit-node true
+makima set -advertise-routes 192.168.1.0/24
+makima set -advertise-exit-node true
 ```
 
-Offering is not enabling. A node can claim any prefix it likes, including one
-that would hijack the whole internet, so nothing is installed anywhere until
-somebody approves it:
+Offering a subnet is not enabling it. A node can claim any prefix it likes,
+including one that would hijack the whole internet, so a route is installed
+nowhere until somebody approves it:
 
 ```sh
 makima-server routes ls
 makima-server routes approve -name nas -all
 ```
 
-To use an exit node: `sudo makima set -exit-node gateway`.
+An exit-node offer is different and is accepted as it arrives: it changes
+nothing until a person on another device picks that node by name, so the
+decision is theirs, made in the open. In the app it is a switch under *This
+device*; `makima-server routes revoke -name gateway -exit` withdraws one, and
+it stays withdrawn.
+
+To use an exit node: `makima set -exit-node gateway`, or pick it in the app.
 
 ### Not trusting your own control server
 
@@ -868,7 +879,7 @@ internal/magicsock  path selection: relay, direct, and the upgrade between
 internal/relay      the forwarder, its client, and its wire format
 internal/disco      the probe protocol that finds direct paths, and knocks
 internal/pair       serverless pairing addresses: two machines, no server
-internal/invite     one pasteable string that carries a whole join
+internal/invite     a whole join as one pasteable string, or as fifteen words
 internal/stun       asking a public server what address we appear to come from
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/serve      publishing a local port on the mesh, and nowhere else
