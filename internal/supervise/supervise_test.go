@@ -205,7 +205,7 @@ func TestStartReportsAMissingBinary(t *testing.T) {
 	}
 	// The message has to point somewhere useful; "not found in $PATH" alone
 	// leaves somebody who has never installed it with nothing to do.
-	if !strings.Contains(err.Error(), "make install") {
+	if !strings.Contains(err.Error(), "not fully installed") {
 		t.Fatalf("unhelpful error: %v", err)
 	}
 }

@@ -47,14 +47,27 @@ const (
 
 func serverSocket() string { return filepath.Join(runDir, "control.sock") }
 
+// daemonFor is the node daemon, registered with the machine so it is back
+// after a reboot. It carries the name of whoever ran makima, because a daemon
+// launchd starts at boot has no sudo behind it to say so, and the daemon needs
+// to know whose desktop socket to open and whose Downloads to put files in.
 func daemonFor(configPath string) supervise.Daemon {
-	return supervise.Daemon{
+	d := supervise.Daemon{
 		Name:    "makimad",
 		Args:    []string{"-config", configPath},
 		Socket:  localapi.SocketPath(configPath),
 		PIDFile: filepath.Join(runDir, "makimad.pid"),
 		LogFile: filepath.Join(logDir, "makimad.log"),
+		Service: supervise.Service{
+			Label:       "sh.makima.makimad",
+			Unit:        "makimad",
+			Description: "makima: this machine's tunnel",
+		},
 	}
+	if u := invokerFromEnv(); u != nil && u.Username != "" {
+		d.Env = map[string]string{"MAKIMA_OWNER": u.Username}
+	}
+	return d
 }
 
 func controlDaemon() supervise.Daemon {
@@ -64,6 +77,11 @@ func controlDaemon() supervise.Daemon {
 		Socket:  serverSocket(),
 		PIDFile: filepath.Join(runDir, "makima-server.pid"),
 		LogFile: filepath.Join(logDir, "makima-server.log"),
+		Service: supervise.Service{
+			Label:       "sh.makima.server",
+			Unit:        "makima-server",
+			Description: "makima: the network's server",
+		},
 	}
 }
 
@@ -78,7 +96,7 @@ func upCmd(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	path := fs.String("config", conf.DefaultPath, "config path")
 	name := fs.String("name", "", "this machine's name on the mesh (defaults to the hostname)")
-	advertise := fs.String("advertise", "", "where other machines reach this one's coordination plane: a host, host:port, or full URL")
+	advertise := fs.String("advertise", "", "where other machines reach this one: a host, host:port, or full URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -119,7 +137,7 @@ func upCmd(args []string) error {
 // the first machine the one that holds it — and saying so — turns an
 // architecture decision into a sentence they can read afterwards.
 func bootstrap(ctx context.Context, path, name, advertise string) error {
-	fmt.Println("No mesh here yet — making one, and putting the coordination plane on this machine.")
+	fmt.Println("No network here yet — starting one. This machine holds it; the others join through it.")
 
 	server := controlDaemon()
 	if err := server.Start(ctx, startWait); err != nil {
@@ -128,7 +146,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 
 	admin, ok := control.DialAdmin(serverSocket())
 	if !ok {
-		return fmt.Errorf("the coordination plane started but is not answering on %s", serverSocket())
+		return fmt.Errorf("the network's server started but is not answering on %s", serverSocket())
 	}
 
 	serverKey, err := admin.ServerKey()
@@ -168,7 +186,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Add another machine — run this on it:")
+	fmt.Println("Add another device — run this on it:")
 	fmt.Printf("  makima join %s\n", inv)
 	fmt.Println()
 	fmt.Println("Or open the makima app on it, choose Join a network, and paste the invite.")
@@ -225,6 +243,8 @@ func bringUp(ctx context.Context, path string) error {
 		// The first netmap decides which peers exist, and arriving a moment
 		// later would print an empty mesh to somebody who just joined one.
 		waitForPeers(path, 5*time.Second)
+		fmt.Println("Up. It stays up — after a restart too — until 'makima down'.")
+		fmt.Println()
 	}
 	return status([]string{"-config", path})
 }
@@ -232,7 +252,7 @@ func bringUp(ctx context.Context, path string) error {
 // inviteCmd prints a fresh invite for the next machine.
 func inviteCmd(args []string) error {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
-	advertise := fs.String("advertise", "", "where the joining machine reaches this one's coordination plane: a host, host:port, or full URL")
+	advertise := fs.String("advertise", "", "where the joining machine reaches this one: a host, host:port, or full URL")
 	quiet := fs.Bool("q", false, "print only the invite, for another program to read")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -240,7 +260,7 @@ func inviteCmd(args []string) error {
 
 	admin, ok := control.DialAdmin(serverSocket())
 	if !ok {
-		return errors.New("this machine does not hold the mesh — run 'makima invite' on the one that does")
+		return errors.New("this device does not hold the network — run 'makima invite' on the one that started it")
 	}
 
 	serverKey, err := admin.ServerKey()
@@ -276,7 +296,7 @@ func inviteCmd(args []string) error {
 func downCmd(args []string) error {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	path := fs.String("config", conf.DefaultPath, "config path")
-	all := fs.Bool("all", false, "also stop the coordination plane, if this machine holds it")
+	all := fs.Bool("all", false, "also stop the network's server, if this machine holds it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -287,22 +307,30 @@ func downCmd(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
+	// Stop is called whether or not the daemon is answering: one that is
+	// registered with launchd or systemd and merely not running at this
+	// moment would otherwise be started again at the next boot, and "down"
+	// has to mean down.
 	d := daemonFor(*path)
-	if !d.Running() {
-		fmt.Println("Already down.")
-	} else if err := d.Stop(ctx, stopWait); err != nil {
+	was := d.Running()
+	if err := d.Stop(ctx, stopWait); err != nil {
 		return err
+	}
+	if was {
+		fmt.Println("Down, and staying down across restarts until 'makima up'. Interface, routes, resolver and firewall rule put back.")
 	} else {
-		fmt.Println("Down. Interface, routes, resolver and firewall rule put back.")
+		fmt.Println("Already down.")
 	}
 
 	if *all {
-		s := controlDaemon()
-		if s.Running() {
-			if err := s.Stop(ctx, stopWait); err != nil {
+		for _, extra := range []supervise.Daemon{controlDaemon(), relayDaemon()} {
+			was := extra.Running()
+			if err := extra.Stop(ctx, stopWait); err != nil {
 				return err
 			}
-			fmt.Println("Coordination plane stopped — no machine can join or leave until it is back.")
+			if was && extra.Name == "makima-server" {
+				fmt.Println("The network's server is stopped — no device can join or leave until it is back.")
+			}
 		}
 	}
 	return nil
@@ -334,7 +362,7 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 	const listenPort = 51820
 
 	if _, err := conf.Load(path); err == nil {
-		return fmt.Errorf("this machine is already on a mesh — 'makima down' first, or remove %s to start over", path)
+		return fmt.Errorf("this machine is already on a network — 'makima down' first, or remove %s to start over", path)
 	}
 
 	nodeKey, machineKey, discoKey, err := conf.NewIdentity()
@@ -398,7 +426,7 @@ func mustBeRoot() error {
 		self = os.Args[0]
 	}
 
-	fmt.Fprintln(os.Stderr, "makima needs root to create the tunnel — asking sudo.")
+	fmt.Fprintln(os.Stderr, "This needs root — asking sudo.")
 
 	cmd := exec.Command(sudo, append([]string{self}, os.Args[1:]...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -447,7 +475,7 @@ func warnIfUnreachable(addr string) {
 		return
 	}
 	fmt.Println()
-	fmt.Printf("  ⚠ This mesh only works from inside this network.\n\n")
+	fmt.Printf("  ⚠ This network only works from inside this building's network.\n\n")
 	fmt.Printf("    %s is a private address. A machine somewhere else cannot reach it, so\n", addr)
 	fmt.Println("    'makima join' will fail from anywhere but here — a laptop has to be on this")
 	fmt.Println("    network to be added, and once added it can only find its way back home")
@@ -641,6 +669,11 @@ func relayDaemon() supervise.Daemon {
 		TCPAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(relay.DefaultPort)),
 		PIDFile: filepath.Join(runDir, "makima-relay.pid"),
 		LogFile: filepath.Join(logDir, "makima-relay.log"),
+		Service: supervise.Service{
+			Label:       "sh.makima.relay",
+			Unit:        "makima-relay",
+			Description: "makima: the relay",
+		},
 	}
 }
 

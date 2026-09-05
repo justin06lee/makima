@@ -11,14 +11,16 @@ the system web view that is already running on both platforms. macOS and Linux.
 ## Running it
 
 ```sh
-make app        # build a real bundle — .app and .dmg, or .deb/.rpm/.AppImage
+make app        # build it, put it in /Applications (or install the .deb/.rpm/AppImage), open it
 make app-dev    # develop against a pretend mesh, no root and no tunnel
 ```
 
-Both build the four Go binaries first and drop them in `src-tauri/binaries/`,
-named for the target triple, which is how Tauri bundles "sidecars". The app
-runs the `makima` beside its own executable, so a downloaded bundle works with
-nothing else installed.
+`make` on its own does the same whenever Rust and bun are present, so the app
+on the machine is never older than the code. Both targets build the four Go
+binaries first and drop them in `src-tauri/binaries/`, named for the target
+triple, which is how Tauri bundles "sidecars". The app runs the `makima`
+beside its own executable, so a downloaded bundle works with nothing else
+installed.
 
 `make app-dev` needs a status server to talk to, in another terminal:
 
@@ -47,7 +49,11 @@ drop zone that sends a file to that device's inbox. *Exit nodes* picks one.
 network's particulars.
 
 **The first run** has no daemon and no configuration, so it asks the one
-question that matters: start a network, or join one with a pasted invite.
+question that matters: start a network, or join one with a pasted invite. That
+is the one time it asks for a password. `makima up` registers the daemon with
+launchd or systemd, so from then on the device is connected whenever it is on,
+and the app becomes a login item so the menu bar is there too; Disconnect
+takes the registration away, and Settings turns the login item off.
 
 ## How it talks to the daemon
 

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/netip"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -33,6 +35,9 @@ func set(args []string) error {
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if len(set) == 0 {
 		return fmt.Errorf("set needs something to set (try -advertise-routes, -exit-node, or -advertise-exit-node)")
+	}
+	if err := mustBeRoot(); err != nil {
+		return err
 	}
 
 	// An exit node on its own is something the running daemon can switch
@@ -106,12 +111,24 @@ func set(args []string) error {
 		fmt.Printf("%s\n", c)
 	}
 
-	// The daemon reads this file at startup and republishes on registration, so
-	// a change made while it is running needs it restarted. Saying so is worth
-	// more than silently leaving the operator to wonder.
-	fmt.Print("\nrestart the daemon for this to take effect: sudo pkill makimad && sudo makimad\n")
+	// The daemon reads this file at startup and republishes on registration,
+	// so a change made while it is running needs it restarted. Done here, not
+	// described: "restart the daemon" is a sentence that assumes somebody
+	// knows there is one.
+	d := daemonFor(*path)
+	if d.Running() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := d.Stop(ctx, stopWait); err != nil {
+			return fmt.Errorf("restart makima so this takes effect: %w", err)
+		}
+		if err := d.Start(ctx, startWait); err != nil {
+			return fmt.Errorf("restart makima so this takes effect: %w", err)
+		}
+		fmt.Print("\nrestarted makima so this takes effect.\n")
+	}
 	if f.AdvertiseExit || len(f.AdvertiseRoutes) > 0 {
-		fmt.Print("then approve it on the control server:\n")
+		fmt.Print("approve it on the device holding the network:\n")
 		fmt.Printf("  makima-server routes approve -name %s -all\n", f.Self.Name)
 	}
 	return nil
@@ -218,7 +235,7 @@ func status(args []string) error {
 	// is actually using — that is decided per packet inside the daemon and
 	// changes as paths come and go. Saying so prevents the table above from
 	// being read as a claim it does not make.
-	fmt.Print("\npaths are what each peer advertises. the daemon picks between them,\n")
+	fmt.Print("\npaths are what each peer advertises. makima picks between them,\n")
 	fmt.Print("and falls back to the relay when none of them answers.\n")
 	return nil
 }
