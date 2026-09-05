@@ -176,6 +176,34 @@ pub struct Environment {
     pub app_version: &'static str,
 }
 
+/// Whether the network's server runs on this machine.
+///
+/// The server's own socket would be the honest answer, but it sits in
+/// /var/lib/makima, which only root may look inside — and this app runs as
+/// the person, to whom a path they cannot stat does not exist. What they can
+/// see is the service definition `makima up` registers, in a directory that
+/// is made to be read: the LaunchDaemon on a Mac, the unit on a systemd
+/// machine. The names are the ones cmd/makima/up.go gives the service, and a
+/// test there pins them to these. A Linux machine without systemd gets the
+/// server started directly, and there the process is the only evidence.
+fn holds_mesh() -> bool {
+    if Path::new("/Library/LaunchDaemons/sh.makima.server.plist").exists()
+        || Path::new("/etc/systemd/system/makima-server.service").exists()
+    {
+        return true;
+    }
+    if cfg!(target_os = "linux") && !Path::new("/run/systemd/system").is_dir() {
+        return std::process::Command::new("pgrep")
+            .args(["-x", "makima-server"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+    false
+}
+
 pub fn environment() -> Environment {
     // A developer pointing the app at a pretend mesh has no /etc/makima and
     // still wants to see the connected screen, or the off screen, on demand.
@@ -184,7 +212,7 @@ pub fn environment() -> Environment {
     Environment {
         cli: crate::privileged::makima_binary().map(|p| p.to_string_lossy().to_string()),
         member,
-        holds_mesh: Path::new("/var/lib/makima/control.sock").exists(),
+        holds_mesh: holds_mesh(),
         linked: crate::privileged::cli_on_path(),
         platform: std::env::consts::OS,
         app_version: env!("CARGO_PKG_VERSION"),

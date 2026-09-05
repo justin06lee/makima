@@ -46,7 +46,13 @@ const (
 	stopWait  = 15 * time.Second
 )
 
-func serverSocket() string { return filepath.Join(runDir, "control.sock") }
+// serverSocket is where the network's server answers admin requests.
+//
+// Asked of the control package rather than spelled out here: the server names
+// its own socket, and a second spelling of that name in this file is how
+// `makima up` once spent twenty seconds waiting on a path nothing listened on,
+// then took down a server that had been up the whole time.
+func serverSocket() string { return control.SocketPath(serverStatePath) }
 
 // daemonFor is the node daemon, registered with the machine so it is back
 // after a reboot. It carries the name of whoever ran makima, because a daemon
