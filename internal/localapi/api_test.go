@@ -91,6 +91,7 @@ func (f *fakeBackend) Pair(_ context.Context, address string) (PairedResult, err
 	return PairedResult{Name: "desktop", Address: netip.MustParseAddr("100.64.0.2")}, nil
 }
 func (f *fakeBackend) SetExitNode(name string) error { f.exit = name; return nil }
+func (f *fakeBackend) SetAdvertiseExit(bool) error   { return nil }
 func (f *fakeBackend) AllowFirewall() (netcfg.Report, error) {
 	f.allowed = true
 	return netcfg.Report{Backend: netcfg.BackendFirewalld, Trusted: true}, nil

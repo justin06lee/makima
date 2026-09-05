@@ -40,6 +40,8 @@ pub enum Action {
     Deny { port: u16 },
     /// Route this machine's traffic through a peer, or stop doing so.
     ExitNode { name: String },
+    /// Offer this machine as an exit node for the others, or stop offering.
+    AdvertiseExit { on: bool },
     /// Mint an invite for the next machine.
     Invite,
     /// Publish a pairing address and listen for one machine.
@@ -61,7 +63,10 @@ impl Action {
             // An empty name is how "stop using an exit node" is spelled, and
             // `set -exit-node ""` is what the CLI expects for it.
             Action::ExitNode { name } => vec![s("set"), s("-exit-node"), name.clone()],
-            Action::Invite => vec![s("invite"), s("-q")],
+            Action::AdvertiseExit { on } => {
+                vec![s("set"), s("-advertise-exit-node"), s(if *on { "true" } else { "false" })]
+            }
+            Action::Invite => vec![s("invite"), s("-json")],
             Action::Pair => vec![s("pair")],
             Action::LinkCli => vec![s("link-cli"), s("-q")],
         }
@@ -82,6 +87,8 @@ impl Action {
             Action::ExitNode { name } => {
                 format!("makima needs to route this machine's traffic through {name}")
             }
+            Action::AdvertiseExit { on: true } => "makima needs to offer this machine as an exit node".into(),
+            Action::AdvertiseExit { on: false } => "makima needs to stop offering this machine as an exit node".into(),
             Action::Invite => "makima needs to create an invite".into(),
             Action::Pair => "makima needs to publish a pairing address".into(),
             Action::LinkCli => "makima needs to put its command in /usr/local/bin".into(),
@@ -96,17 +103,30 @@ impl Action {
     fn validate(&self) -> Result<(), String> {
         match self {
             Action::Join { invite } => {
-                let body = invite
-                    .strip_prefix("mk1_")
-                    .ok_or("that is not an invite — it should start with mk1_")?;
-                if body.is_empty() || body.len() > 4096 {
-                    return Err("that invite is not the right length".into());
+                // Two shapes: the pasted mk1_ string, or the fifteen words —
+                // possibly with a typed address in front of ten of them.
+                if let Some(body) = invite.strip_prefix("mk1_") {
+                    if body.is_empty() || body.len() > 4096 {
+                        return Err("that invite is not the right length".into());
+                    }
+                    if !body
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    {
+                        return Err("that invite has characters in it that an invite never has — check the paste".into());
+                    }
+                    return Ok(());
                 }
-                if !body
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                {
-                    return Err("that invite has characters in it that an invite never has — check the paste".into());
+                let words: Vec<&str> = invite.split_whitespace().collect();
+                if words.len() < 11 || words.len() > 40 || invite.len() > 512 {
+                    return Err("that is not an invite — paste the mk1_ string, or type all fifteen words".into());
+                }
+                if !words.iter().all(|w| {
+                    w.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || b == b'.' || b == b':' || b == b'/' || b == b'-' || b == b'[' || b == b']'
+                    })
+                }) {
+                    return Err("those words have characters in them that an invite never has".into());
                 }
                 Ok(())
             }
@@ -171,6 +191,17 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Quote a string as an AppleScript literal.
+///
+/// AppleScript strings are double-quoted, with backslash and double quote the
+/// only characters that need escaping. The shell command inside is already
+/// single-quoted for the shell; this is the second, outer layer, and getting
+/// it wrong is a syntax error before anything runs — which is exactly what
+/// the app's Connect button used to show.
+fn applescript_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// The person this app is running for, by name.
 ///
 /// Told to the daemon as MAKIMA_OWNER, because the shell behind the admin
@@ -211,8 +242,8 @@ pub async fn run(action: Action) -> Result<Outcome, String> {
         // become part of the script.
         let script = format!(
             "do shell script {} with prompt {} with administrator privileges",
-            shell_quote(&command),
-            shell_quote(&reason),
+            applescript_quote(&command),
+            applescript_quote(&reason),
         );
         Command::new("osascript")
             .arg("-e")
@@ -316,5 +347,37 @@ fn tidy(stdout: &str, stderr: &str) -> String {
         "it did not say why".into()
     } else {
         line.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_quote_makes_everything_literal() {
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(r#"x"y"#), r#"'x"y'"#);
+    }
+
+    #[test]
+    fn applescript_quote_escapes_only_what_applescript_needs() {
+        assert_eq!(applescript_quote("plain"), r#""plain""#);
+        assert_eq!(applescript_quote(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(applescript_quote(r"back\slash"), r#""back\\slash""#);
+        // A shell-quoted argument with a single quote survives both layers.
+        assert_eq!(applescript_quote(&shell_quote("it's")), r#""'it'\\''s'""#);
+    }
+
+    #[test]
+    fn join_accepts_both_shapes() {
+        assert!(Action::Join { invite: "mk1_abcDEF123-_".into() }.validate().is_ok());
+        let words = "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve";
+        assert!(Action::Join { invite: words.into() }.validate().is_ok());
+        let hosted = "makima.example.dev abandon ability able about above absent absorb abstract absurd abuse";
+        assert!(Action::Join { invite: hosted.into() }.validate().is_ok());
+        assert!(Action::Join { invite: "just three words".into() }.validate().is_err());
+        assert!(Action::Join { invite: "mk1_has spaces".into() }.validate().is_err());
     }
 }

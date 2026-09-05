@@ -1,6 +1,6 @@
 import { ms, type Status } from "./api";
 import type { Act } from "./App";
-import { Card, Code, Dot } from "./ui";
+import { Card, Dot } from "./ui";
 import { Icon } from "./icons";
 
 /// Pick a device to carry all of this one's internet traffic, or none.
@@ -47,19 +47,15 @@ export function ExitNodes({ status, busy, act }: { status: Status; busy: boolean
       </Card>
 
       {offering.length === 0 && (
-        <div className="space-y-2 text-[13px] leading-relaxed text-dim">
-          <p>No device is offering to be an exit node yet. On the one that should, run:</p>
-          <Code>makima set -advertise-exit-node true</Code>
-          <p>
-            then approve it on the device holding the network with{" "}
-            <span className="font-mono">makima-server routes approve</span>.
-          </p>
-        </div>
+        <p className="text-[13px] leading-relaxed text-dim">
+          No device is offering to be an exit node yet. On the one that should, open makima, choose <b className="font-medium text-ink">This device</b>, and
+          turn on <b className="font-medium text-ink">Offer this device as an exit node</b>.
+        </p>
       )}
 
       {status.node.advertises_exit && (
         <p className="text-[12.5px] text-dim">
-          This device offers to be an exit node{status.node.exit_approved ? "." : ", and is waiting to be approved."}
+          This device offers to be an exit node{status.node.exit_approved ? "; other devices can pick it." : ", and the network has not confirmed it yet."}
         </p>
       )}
     </div>

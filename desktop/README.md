@@ -49,7 +49,8 @@ drop zone that sends a file to that device's inbox. *Exit nodes* picks one.
 network's particulars.
 
 **The first run** has no daemon and no configuration, so it asks the one
-question that matters: start a network, or join one with a pasted invite. That
+question that matters: start a network, or join one by typing the fifteen
+words the first device shows (or pasting its invite). That
 is the one time it asks for a password. `makima up` registers the daemon with
 launchd or systemd, so from then on the device is connected whenever it is on,
 and the app becomes a login item so the menu bar is there too; Disconnect

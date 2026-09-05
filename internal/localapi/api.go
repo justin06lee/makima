@@ -280,6 +280,12 @@ type Backend interface {
 	SetSSH(on bool, keys []string, user string) error
 
 	SetExitNode(name string) error
+
+	// SetAdvertiseExit offers this machine as an exit node for the others,
+	// or withdraws the offer. Takes effect on the next registration, which
+	// the daemon performs at once.
+	SetAdvertiseExit(on bool) error
+
 	AllowFirewall() (netcfg.Report, error)
 }
 
@@ -457,6 +463,22 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, okBody())
 	})
 
+	mux.HandleFunc("POST /api/advertise-exit", func(w http.ResponseWriter, r *http.Request) {
+		if !s.write(w) {
+			return
+		}
+		var req AdvertiseExitRequest
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.backend.SetAdvertiseExit(req.On); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, okBody())
+	})
+
 	mux.HandleFunc("POST /api/firewall/allow", func(w http.ResponseWriter, r *http.Request) {
 		if !s.write(w) {
 			return
@@ -515,6 +537,11 @@ func (r ServeRequest) Service() (serve.Service, error) {
 // ExitNodeRequest selects an exit node, or clears one when Name is empty.
 type ExitNodeRequest struct {
 	Name string `json:"name"`
+}
+
+// AdvertiseExitRequest offers this machine as an exit node, or stops.
+type AdvertiseExitRequest struct {
+	On bool `json:"on"`
 }
 
 func decode(r *http.Request, v any) error {

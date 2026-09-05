@@ -3,7 +3,10 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,38 +48,78 @@ func NewClient(baseURL string, serverKey key.Public, machineKey key.Private) *Cl
 // answers becomes the control plane. Pin the key in the join command when the
 // server is reachable over anything you do not control.
 func FetchServerKey(ctx context.Context, baseURL string) (key.Public, error) {
+	kr, err := fetchKey(ctx, baseURL, "")
+	if err != nil {
+		return key.Public{}, err
+	}
+	return kr.ServerKey, nil
+}
+
+// FetchServerKeyVerified fetches the key on behalf of somebody holding an
+// invite's words, and refuses one the server cannot vouch for.
+//
+// This is the words' answer to the question the mk1_ string answered by
+// carrying the key: a machine in the middle can hand over any key it likes,
+// but it cannot produce a MAC under a key it has never seen.
+func FetchServerKeyVerified(ctx context.Context, baseURL, handle string, macKey []byte) (key.Public, error) {
+	kr, err := fetchKey(ctx, baseURL, handle)
+	if err != nil {
+		return key.Public{}, err
+	}
+	m := hmac.New(sha256.New, macKey)
+	m.Write(kr.ServerKey[:])
+	if !hmac.Equal(m.Sum(nil), kr.MAC) {
+		return key.Public{}, errors.New("the server at " + baseURL + " is not the one these words are for — something between here and there answered in its place")
+	}
+	return kr.ServerKey, nil
+}
+
+func fetchKey(ctx context.Context, baseURL, handle string) (keyResponse, error) {
 	u, err := url.JoinPath(strings.TrimRight(baseURL, "/"), "key")
 	if err != nil {
-		return key.Public{}, fmt.Errorf("build key URL: %w", err)
+		return keyResponse{}, fmt.Errorf("build key URL: %w", err)
+	}
+	if handle != "" {
+		u += "?invite=" + url.QueryEscape(handle)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return key.Public{}, err
+		return keyResponse{}, err
 	}
 
 	c := &http.Client{Timeout: 15 * time.Second}
 	resp, err := c.Do(req)
 	if err != nil {
-		return key.Public{}, fmt.Errorf("reach control server: %w", err)
+		return keyResponse{}, fmt.Errorf("reach control server: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body := io.LimitReader(resp.Body, 1<<16)
+	if resp.StatusCode == http.StatusNotFound && handle != "" {
+		var e struct {
+			Error string `json:"error"`
+		}
+		if json.NewDecoder(body).Decode(&e) == nil && e.Error != "" {
+			return keyResponse{}, errors.New(e.Error)
+		}
+		return keyResponse{}, errors.New("this network does not know that invite")
+	}
 	if resp.StatusCode != http.StatusOK {
-		return key.Public{}, fmt.Errorf("control server returned %s", resp.Status)
+		return keyResponse{}, fmt.Errorf("control server returned %s", resp.Status)
 	}
 
 	var kr keyResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&kr); err != nil {
-		return key.Public{}, fmt.Errorf("decode server key: %w", err)
+	if err := json.NewDecoder(body).Decode(&kr); err != nil {
+		return keyResponse{}, fmt.Errorf("decode server key: %w", err)
 	}
 	if kr.Version != ProtocolVersion {
-		return key.Public{}, fmt.Errorf("server speaks protocol %d, we speak %d", kr.Version, ProtocolVersion)
+		return keyResponse{}, fmt.Errorf("server speaks protocol %d, we speak %d", kr.Version, ProtocolVersion)
 	}
 	if kr.ServerKey.IsZero() {
-		return key.Public{}, fmt.Errorf("server returned an empty key")
+		return keyResponse{}, fmt.Errorf("server returned an empty key")
 	}
-	return kr.ServerKey, nil
+	return kr, nil
 }
 
 // Register joins or updates this node.

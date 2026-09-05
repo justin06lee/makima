@@ -455,3 +455,41 @@ func TestDiscoKeyReachesPeers(t *testing.T) {
 		t.Error("the peer's disco key did not reach the netmap; probing would be impossible")
 	}
 }
+
+// An offer to be an exit node is accepted as it arrives: nothing changes for
+// anybody until a person on another device picks it by name, so there is no
+// decision for an operator to make first. A revoke, though, has to stick —
+// otherwise the node's next check-in would undo it.
+func TestExitOfferIsAcceptedUntilRevoked(t *testing.T) {
+	s := newStore(t)
+
+	auth, _ := s.MintAuthKey(true, 0)
+	machine, _ := key.NewPrivate()
+	node, _ := key.NewPrivate()
+	req := &RegisterRequest{Name: "gateway", NodeKey: node.Public(), AuthKey: auth.Secret, AdvertiseExit: true}
+
+	if _, err := s.Register(machine.Public(), req); err != nil {
+		t.Fatal(err)
+	}
+	viewer, _ := joinNamed(t, s, "laptop")
+	if resp, _ := s.NetMapFor(viewer.Public()); !resp.Peers[0].OffersExit() {
+		t.Fatal("a fresh exit offer was not accepted")
+	}
+
+	if err := s.RevokeRoutes("gateway", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Register(machine.Public(), req); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := s.NetMapFor(viewer.Public()); resp.Peers[0].OffersExit() {
+		t.Fatal("a revoked offer came back on re-registration")
+	}
+
+	if err := s.ApproveRoutes("gateway", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := s.NetMapFor(viewer.Public()); !resp.Peers[0].OffersExit() {
+		t.Fatal("approving after a revoke did not take")
+	}
+}

@@ -111,6 +111,11 @@ func (c *Client) SetExitNode(name string) error {
 	return c.call(http.MethodPost, "/api/exit-node", ExitNodeRequest{Name: name}, nil)
 }
 
+// SetAdvertiseExit offers this machine as an exit node, or withdraws the offer.
+func (c *Client) SetAdvertiseExit(on bool) error {
+	return c.call(http.MethodPost, "/api/advertise-exit", AdvertiseExitRequest{On: on}, nil)
+}
+
 // AllowFirewall asks the daemon to trust the tunnel interface.
 func (c *Client) AllowFirewall() (netcfg.Report, error) {
 	var r netcfg.Report
