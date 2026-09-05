@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -28,7 +29,8 @@ import (
 
 // Daemon is one process this package can bring up and take down.
 type Daemon struct {
-	// Name is the binary to run, looked up on PATH.
+	// Name is the binary to run, found by Locate: beside this program first,
+	// then on PATH.
 	Name string
 
 	// Args are passed to it.
@@ -79,9 +81,9 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 		return nil
 	}
 
-	bin, err := exec.LookPath(d.Name)
+	bin, err := Locate(d.Name)
 	if err != nil {
-		return fmt.Errorf("cannot find %s on PATH — is makima installed? (try: make install)", d.Name)
+		return err
 	}
 
 	logw, err := d.openLog()
@@ -228,4 +230,51 @@ func pidByName(name string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// Locate finds one of makima's binaries.
+//
+// Beside the running executable first, then on PATH, then in the places
+// things get installed. The order matters for two reasons. The desktop app
+// carries all four binaries inside its bundle and runs the CLI from there, so
+// "the makimad next to this makima" is the one built and shipped with it. And
+// the shell behind a graphical admin prompt — osascript on macOS, pkexec on
+// Linux — has a PATH so short that /usr/local/bin is not on it, which used to
+// make the app's Connect button fail with advice about running make.
+func Locate(name string) (string, error) {
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+
+	if self, err := os.Executable(); err == nil {
+		// A symlink in /usr/local/bin pointing into an app bundle should find
+		// the daemons in the bundle, not in /usr/local/bin.
+		if resolved, err := filepath.EvalSymlinks(self); err == nil {
+			self = resolved
+		}
+		if p := filepath.Join(filepath.Dir(self), name); runnable(p) {
+			return p, nil
+		}
+	}
+
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+
+	for _, dir := range []string{"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"} {
+		if p := filepath.Join(dir, name); runnable(p) {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf("cannot find %s beside this program or on PATH — is makima installed? (try: make install)", name)
+}
+
+// runnable reports whether a path is a file somebody could execute.
+func runnable(p string) bool {
+	fi, err := os.Stat(p)
+	if err != nil || fi.IsDir() {
+		return false
+	}
+	return runtime.GOOS == "windows" || fi.Mode()&0o111 != 0
 }

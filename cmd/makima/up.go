@@ -170,8 +170,11 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	fmt.Println()
 	fmt.Println("Add another machine — run this on it:")
 	fmt.Printf("  makima join %s\n", inv)
+	fmt.Println()
+	fmt.Println("Or open the makima app on it, choose Join a network, and paste the invite.")
 	warnIfUnreachable(reachable)
 	installDieAlias()
+	linkCLIQuietly()
 	return nil
 }
 
@@ -207,6 +210,7 @@ func joinWith(ctx context.Context, path string, inv invite.Invite, name string) 
 		return err
 	}
 	installDieAlias()
+	linkCLIQuietly()
 	return nil
 }
 
@@ -229,6 +233,7 @@ func bringUp(ctx context.Context, path string) error {
 func inviteCmd(args []string) error {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
 	advertise := fs.String("advertise", "", "where the joining machine reaches this one's coordination plane: a host, host:port, or full URL")
+	quiet := fs.Bool("q", false, "print only the invite, for another program to read")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -253,8 +258,15 @@ func inviteCmd(args []string) error {
 		return err
 	}
 
+	if *quiet {
+		fmt.Println(inv)
+		return nil
+	}
+
 	fmt.Println("Run this on the machine you are adding:")
 	fmt.Printf("  makima join %s\n", inv)
+	fmt.Println()
+	fmt.Println("Or open the makima app on it, choose Join a network, and paste the invite.")
 	fmt.Printf("\nGood for %s.\n", inviteTTL)
 	warnIfUnreachable(reachable)
 	return nil
