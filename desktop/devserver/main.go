@@ -169,6 +169,7 @@ func (f *fake) Diagnose() localapi.Diagnosis {
 func (f *fake) AddService(serve.Service) error        { return errReadOnly }
 func (f *fake) RemoveService(uint16) error            { return errReadOnly }
 func (f *fake) SetExitNode(string) error              { return errReadOnly }
+func (f *fake) SetAdvertiseExit(bool) error           { return errReadOnly }
 func (f *fake) AllowFirewall() (netcfg.Report, error) { return netcfg.Report{}, errReadOnly }
 func (f *fake) SetInbox(string, bool) error           { return errReadOnly }
 func (f *fake) SetSSH(bool, []string, string) error   { return errReadOnly }

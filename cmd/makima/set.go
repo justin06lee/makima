@@ -40,19 +40,35 @@ func set(args []string) error {
 		return err
 	}
 
-	// An exit node on its own is something the running daemon can switch
-	// live — it rewrites the route and saves the file itself — so when it is
-	// up, ask it, and nobody has to restart anything. Routes and offers still
-	// go through the file, because they are republished at registration.
-	if len(set) == 1 && set["exit-node"] {
+	// Choosing an exit node and offering to be one are both things the
+	// running daemon can do live — it rewrites the route, or tells the
+	// network — so when it is up, ask it, and nobody has to restart anything.
+	// Subnet routes still go through the file and a restart.
+	if !set["advertise-routes"] {
 		if c, err := dialDaemon(*path); err == nil {
-			if err := c.SetExitNode(*exitNode); err != nil {
-				return err
+			if set["advertise-exit-node"] {
+				on, err := parseBool(*advertiseExit)
+				if err != nil {
+					return err
+				}
+				if err := c.SetAdvertiseExit(on); err != nil {
+					return err
+				}
+				if on {
+					fmt.Println("offering to be an exit node — other devices can pick this one now")
+				} else {
+					fmt.Println("no longer offering to be an exit node")
+				}
 			}
-			if *exitNode == "" {
-				fmt.Println("no longer using an exit node")
-			} else {
-				fmt.Printf("routing through %s\n", *exitNode)
+			if set["exit-node"] {
+				if err := c.SetExitNode(*exitNode); err != nil {
+					return err
+				}
+				if *exitNode == "" {
+					fmt.Println("no longer using an exit node")
+				} else {
+					fmt.Printf("routing through %s\n", *exitNode)
+				}
 			}
 			return nil
 		}
@@ -82,15 +98,15 @@ func set(args []string) error {
 	}
 
 	if set["advertise-exit-node"] {
-		switch strings.ToLower(*advertiseExit) {
-		case "true", "yes", "on", "1":
-			f.AdvertiseExit = true
+		on, err := parseBool(*advertiseExit)
+		if err != nil {
+			return err
+		}
+		f.AdvertiseExit = on
+		if on {
 			changed = append(changed, "offering to be an exit node")
-		case "false", "no", "off", "0":
-			f.AdvertiseExit = false
+		} else {
 			changed = append(changed, "no longer offering to be an exit node")
-		default:
-			return fmt.Errorf("-advertise-exit-node takes true or false, got %q", *advertiseExit)
 		}
 	}
 
@@ -127,11 +143,21 @@ func set(args []string) error {
 		}
 		fmt.Print("\nrestarted makima so this takes effect.\n")
 	}
-	if f.AdvertiseExit || len(f.AdvertiseRoutes) > 0 {
-		fmt.Print("approve it on the device holding the network:\n")
+	if len(f.AdvertiseRoutes) > 0 {
+		fmt.Print("approve the routes on the device holding the network:\n")
 		fmt.Printf("  makima-server routes approve -name %s -all\n", f.Self.Name)
 	}
 	return nil
+}
+
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(s) {
+	case "true", "yes", "on", "1":
+		return true, nil
+	case "false", "no", "off", "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("-advertise-exit-node takes true or false, got %q", s)
 }
 
 func status(args []string) error {

@@ -65,6 +65,7 @@ func (b *liveBackend) RemoveService(port uint16) error {
 }
 
 func (b *liveBackend) SetExitNode(string) error              { return nil }
+func (b *liveBackend) SetAdvertiseExit(bool) error           { return nil }
 func (b *liveBackend) AllowFirewall() (netcfg.Report, error) { return netcfg.Report{}, nil }
 
 // Pairing has no part in this test — it exercises the publish-and-reach chain

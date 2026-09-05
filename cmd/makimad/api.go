@@ -589,6 +589,35 @@ func (n *node) SetExitNode(name string) error {
 	return nil
 }
 
+// SetAdvertiseExit offers this machine as an exit node, or withdraws the
+// offer, and tells the network at once.
+//
+// Live, like SetExitNode, so that a switch in the app is a switch and not a
+// restart. The offer is accepted by the server as it arrives; from then on
+// any other device can pick this one by name.
+func (n *node) SetAdvertiseExit(on bool) error {
+	n.mu.Lock()
+	n.file.AdvertiseExit = on
+	err := conf.Save(n.cfgPath, n.file)
+	n.mu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("save configuration: %w", err)
+	}
+	if n.client == nil {
+		return fmt.Errorf("this machine has no network server to offer itself to")
+	}
+	// Synchronous, with the same patience a registration usually gets: the
+	// caller is a person who just flipped a switch, and the next status they
+	// read should already say the offer was accepted.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := n.register(ctx); err != nil {
+		return fmt.Errorf("the offer is saved, but the network could not be told yet: %w", err)
+	}
+	return nil
+}
+
 // AllowFirewall makes the host firewall accept tunnel traffic.
 func (n *node) AllowFirewall() (netcfg.Report, error) {
 	if n.firewall == nil {
