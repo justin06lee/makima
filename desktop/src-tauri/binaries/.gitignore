@@ -1,0 +1,4 @@
+# The four Go binaries, built for the host by `make sidecars` and bundled into
+# the app by Tauri. Build output, never source.
+*
+!.gitignore

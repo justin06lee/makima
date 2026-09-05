@@ -84,12 +84,8 @@ func appendAliasBlock(rc string) (added bool, err error) {
 
 // invokingUser is the person who ran the command, not the root it became.
 func invokingUser() (home string, ok bool) {
-	if sudo := os.Getenv("SUDO_USER"); sudo != "" && sudo != "root" {
-		u, err := user.Lookup(sudo)
-		if err != nil {
-			return "", false
-		}
-		return u.HomeDir, true
+	if u := invokerFromEnv(); u != nil {
+		return u.HomeDir, u.HomeDir != ""
 	}
 
 	u, err := user.Current()
@@ -104,14 +100,35 @@ func invokingUser() (home string, ok bool) {
 	return u.HomeDir, true
 }
 
+// invokerFromEnv is the person behind this root, by whichever variable says
+// so: SUDO_USER from a terminal, PKEXEC_UID from the Linux app's polkit
+// prompt, MAKIMA_OWNER from the macOS app's. Nil when nobody is.
+func invokerFromEnv() *user.User {
+	if sudo := os.Getenv("SUDO_USER"); sudo != "" && sudo != "root" {
+		if u, err := user.Lookup(sudo); err == nil {
+			return u
+		}
+	}
+	if uid := os.Getenv("PKEXEC_UID"); uid != "" && uid != "0" {
+		if u, err := user.LookupId(uid); err == nil {
+			return u
+		}
+	}
+	if who := os.Getenv("MAKIMA_OWNER"); who != "" && who != "root" && who != "0" {
+		if u, err := user.LookupId(who); err == nil {
+			return u
+		}
+		if u, err := user.Lookup(who); err == nil {
+			return u
+		}
+	}
+	return nil
+}
+
 // invokingIDs are the numeric ids to hand a file created under sudo back to.
 func invokingIDs() (uid, gid int, ok bool) {
-	sudo := os.Getenv("SUDO_USER")
-	if sudo == "" || sudo == "root" {
-		return 0, 0, false
-	}
-	u, err := user.Lookup(sudo)
-	if err != nil {
+	u := invokerFromEnv()
+	if u == nil {
 		return 0, 0, false
 	}
 	if _, err := fmt.Sscanf(u.Uid, "%d", &uid); err != nil {

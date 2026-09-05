@@ -32,6 +32,7 @@ import (
 
 func main() {
 	sock := flag.String("socket", "/tmp/makima-dev.sock", "where to listen")
+	httpAddr := flag.String("http", "127.0.0.1:8099", "also answer over TCP here, for the interface in a plain browser; empty for none")
 	flag.Parse()
 
 	ln, err := localapi.ListenSocket(*sock)
@@ -49,6 +50,18 @@ func main() {
 
 	log.Printf("serving a pretend mesh on %s", *sock)
 	log.Printf("point the app at it:  MAKIMA_GUI_SOCKET=%s bun run tauri dev", *sock)
+
+	// The same handler over loopback TCP, so `bun run dev` in a browser can
+	// show the interface with no Tauri at all — vite proxies /api here. The
+	// browser cannot run the CLI, so actions are pretended on that side.
+	if *httpAddr != "" {
+		go func() {
+			log.Printf("and on http://%s — open http://localhost:5183 after 'bun run dev'", *httpAddr)
+			if err := http.ListenAndServe(*httpAddr, srv.Handler); err != nil {
+				log.Print(err)
+			}
+		}()
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

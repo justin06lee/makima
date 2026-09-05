@@ -7,6 +7,12 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   clearScreen: false,
-  server: { port: 5183, strictPort: true },
+  server: {
+    port: 5183,
+    strictPort: true,
+    // In a plain browser the app reads the devserver over TCP instead of the
+    // socket; see api.ts. Same handler, same types.
+    proxy: { "/api": "http://127.0.0.1:8099" },
+  },
   build: { outDir: "dist", emptyOutDir: true, target: "safari15" },
 });

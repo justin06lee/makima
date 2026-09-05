@@ -25,6 +25,16 @@ import (
 // to anything else that can go wrong here.
 var ErrNoDaemon = errors.New("no makimad is running")
 
+// ErrNeedsRoot is a change refused because it was asked for over the
+// read-only socket — that is, by somebody who is not root.
+var ErrNeedsRoot = errors.New("this changes the tunnel, which needs root — run it again with sudo")
+
+// ReadOnly reports whether this client is on the desktop socket, which can
+// answer questions but not act on anything.
+func (c *Client) ReadOnly() bool {
+	return filepath.Base(c.path) == filepath.Base(GUISocketPath(""))
+}
+
 // Client talks to a running daemon.
 type Client struct {
 	http *http.Client
@@ -132,6 +142,12 @@ func (c *Client) call(method, path string, body, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// A refusal from the read-only socket means one thing to a person at
+		// a terminal: they are not root. Say that, rather than repeating the
+		// daemon's description of its own listeners.
+		if resp.StatusCode == http.StatusForbidden && c.ReadOnly() {
+			return ErrNeedsRoot
+		}
 		var e struct {
 			Error string `json:"error"`
 		}
@@ -283,6 +299,16 @@ func ListenUserSocket(path string, uid, gid int) (net.Listener, error) {
 	if err := os.Chown(path, uid, gid); err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("give %s to uid %d: %w", path, uid, err)
+	}
+
+	// The socket sits in a directory only root may enter, which would make
+	// chowning it pointless: a path the owner cannot traverse is a path they
+	// cannot open. Execute-only on the directory lets them reach a name they
+	// already know and nothing more — the listing stays root's, and every
+	// file inside stays 0600.
+	if err := os.Chmod(filepath.Dir(path), 0o711); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("open %s to its owner: %w", filepath.Dir(path), err)
 	}
 	return ln, nil
 }

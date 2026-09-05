@@ -13,28 +13,24 @@
     "windows": [
       {
         "title": "makima",
-        "width": 880,
-        "height": 660,
-        "minWidth": 620,
-        "minHeight": 460,
+        "width": 920,
+        "height": 620,
+        "minWidth": 760,
+        "minHeight": 500,
         "resizable": true,
-        "visible": true,
+        "visible": false,
         "decorations": true,
         "transparent": false,
-        "backgroundColor": "#0a0b10",
+        "backgroundColor": "#ffffff",
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "dragDropEnabled": true
       }
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost"
     },
-    "macOSPrivateApi": false,
-    "trayIcon": {
-      "id": "makima",
-      "iconPath": "icons/tray.png",
-      "iconAsTemplate": true
-    }
+    "macOSPrivateApi": false
   },
   "bundle": {
     "active": true,
@@ -64,6 +60,12 @@
     },
     "macOS": {
       "minimumSystemVersion": "11.0"
-    }
+    },
+    "externalBin": [
+      "binaries/makima",
+      "binaries/makimad",
+      "binaries/makima-server",
+      "binaries/makima-relay"
+    ]
   }
 }

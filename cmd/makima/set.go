@@ -35,6 +35,24 @@ func set(args []string) error {
 		return fmt.Errorf("set needs something to set (try -advertise-routes, -exit-node, or -advertise-exit-node)")
 	}
 
+	// An exit node on its own is something the running daemon can switch
+	// live — it rewrites the route and saves the file itself — so when it is
+	// up, ask it, and nobody has to restart anything. Routes and offers still
+	// go through the file, because they are republished at registration.
+	if len(set) == 1 && set["exit-node"] {
+		if c, err := dialDaemon(*path); err == nil {
+			if err := c.SetExitNode(*exitNode); err != nil {
+				return err
+			}
+			if *exitNode == "" {
+				fmt.Println("no longer using an exit node")
+			} else {
+				fmt.Printf("routing through %s\n", *exitNode)
+			}
+			return nil
+		}
+	}
+
 	f, err := conf.Load(*path)
 	if err != nil {
 		return err

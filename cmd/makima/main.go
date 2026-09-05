@@ -59,6 +59,8 @@ func main() {
 		err = serveCmd(os.Args[2:])
 	case "deny":
 		err = denyCmd(os.Args[2:])
+	case "link-cli":
+		err = linkCmd(os.Args[2:])
 
 	case "genkey":
 		err = genkey(os.Args[2:])
@@ -139,6 +141,7 @@ everything else:
   makima firewall      status | allow
   makima sshd          let other machines ssh in, without an sshd
   makima ui            open the web interface
+  makima link-cli      put this command on PATH, when it came with the app
   makima init          start a mesh you maintain by hand
   makima peer          add and remove its peers
   makima genkey        generate a keypair and print it (-psk for a preshared key)

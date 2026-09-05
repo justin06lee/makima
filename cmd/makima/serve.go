@@ -26,13 +26,31 @@ import (
 // there is not one.
 func dialDaemon(configPath string) (*localapi.Client, error) {
 	c, err := localapi.Dial(localapi.SocketPath(configPath))
-	if err != nil {
-		if errors.Is(err, localapi.ErrNoDaemon) {
-			return nil, fmt.Errorf("%w — start it with: sudo makimad", err)
-		}
-		return nil, err
+	if err == nil {
+		return c, nil
 	}
-	return c, nil
+
+	// Not root, most likely. The daemon keeps a second, read-only socket for
+	// the person who started it, and everything that only asks — status,
+	// ping, cp — works over that one just as well. Anything that changes
+	// something is refused there with a message that says to use sudo: the
+	// right answer, arriving after the question was actually asked rather
+	// than before.
+	if os.Geteuid() != 0 {
+		if g, gerr := localapi.Dial(localapi.GUISocketPath(configPath)); gerr == nil {
+			return g, nil
+		}
+		// The root socket is there but out of reach: the daemon is running,
+		// and this account is not the one that started it.
+		if _, serr := os.Stat(localapi.SocketPath(configPath)); serr == nil {
+			return nil, errors.New("makima is running, but this account cannot reach it — run it again with sudo")
+		}
+	}
+
+	if errors.Is(err, localapi.ErrNoDaemon) {
+		return nil, fmt.Errorf("%w — start it with: makima up", err)
+	}
+	return nil, err
 }
 
 func serveCmd(args []string) error {

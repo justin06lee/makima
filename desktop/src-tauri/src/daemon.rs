@@ -12,7 +12,7 @@
 //! made visible instead of implicit. A web view cannot reconfigure a VPN by
 //! accident, because the web view was never able to.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use http_body_util::{BodyExt, Empty};
@@ -45,7 +45,18 @@ fn socket_path() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    PathBuf::from(CONFIG_DIR).join(GUI_SOCKET)
+    let real = PathBuf::from(CONFIG_DIR).join(GUI_SOCKET);
+    // A debug build with no real daemon falls back to the devserver's socket,
+    // so the app can be launched from Finder or a script — anything that
+    // cannot set an environment variable — while it is being worked on. A
+    // release build never looks in /tmp for a socket to trust.
+    if cfg!(debug_assertions) && !real.exists() {
+        let dev = PathBuf::from("/tmp/makima-dev.sock");
+        if dev.exists() {
+            return dev;
+        }
+    }
+    real
 }
 
 /// What the app knows about the daemon at any moment.
@@ -143,4 +154,39 @@ pub async fn ping(peer: &str) -> Result<serde_json::Value, String> {
         })
         .collect();
     get(&format!("/api/ping?peer={encoded}")).await
+}
+
+/// What is true about this machine before the daemon says anything.
+///
+/// The window has to choose a first screen — set up, connect, or the mesh —
+/// and it has to do so when nothing is running, which is exactly when the
+/// socket cannot tell it. These are the facts on disk that decide it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Environment {
+    /// The CLI this app will run, if it found one.
+    pub cli: Option<String>,
+    /// This machine is on a mesh already: its identity is written down.
+    pub member: bool,
+    /// The coordination plane runs here, so this is the machine that mints
+    /// invites.
+    pub holds_mesh: bool,
+    /// `makima` is on PATH for a terminal, not only inside this bundle.
+    pub linked: bool,
+    pub platform: &'static str,
+    pub app_version: &'static str,
+}
+
+pub fn environment() -> Environment {
+    // A developer pointing the app at a pretend mesh has no /etc/makima and
+    // still wants to see the connected screen, or the off screen, on demand.
+    let dev_member = std::env::var("MAKIMA_DEV_MEMBER").map(|v| !v.is_empty()).unwrap_or(false);
+    let member = dev_member || Path::new(CONFIG_DIR).join("node.json").exists();
+    Environment {
+        cli: crate::privileged::makima_binary().map(|p| p.to_string_lossy().to_string()),
+        member,
+        holds_mesh: Path::new("/var/lib/makima/control.sock").exists(),
+        linked: crate::privileged::cli_on_path(),
+        platform: std::env::consts::OS,
+        app_version: env!("CARGO_PKG_VERSION"),
+    }
 }
