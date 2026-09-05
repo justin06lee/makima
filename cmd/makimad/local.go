@@ -82,6 +82,12 @@ func (n *node) serveLocalAPI(ctx context.Context, opts options) (func(), error) 
 	}()
 	logf("local socket %s", sockPath)
 
+	// A second socket for a desktop app: read-only, and owned by the person
+	// who started makima rather than by root. Skipped silently when there is
+	// no such person — a daemon started by systemd at boot has no human
+	// attached to it, and inventing one would be a guess.
+	guiSrv, guiLn := n.serveGUISocket(opts.configPath)
+
 	var uiSrv *http.Server
 	if opts.uiAddr != "" {
 		uiLn, err := net.Listen("tcp", opts.uiAddr)
@@ -113,10 +119,45 @@ func (n *node) serveLocalAPI(ctx context.Context, opts options) (func(), error) 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = sockSrv.Shutdown(shutdownCtx)
+		if guiSrv != nil {
+			_ = guiSrv.Shutdown(shutdownCtx)
+			_ = guiLn.Close()
+		}
 		if uiSrv != nil {
 			_ = uiSrv.Shutdown(shutdownCtx)
 		}
 	}, nil
+}
+
+// serveGUISocket opens the read-only socket a desktop app reads status from.
+//
+// Failures here are reported and shrugged off. A machine with no desktop app
+// on it is the common case, and a daemon that refused to bring up a tunnel
+// because it could not create a socket for a GUI would have its priorities
+// backwards.
+func (n *node) serveGUISocket(configPath string) (*http.Server, net.Listener) {
+	_, owner, ok := invokingUser()
+	if !ok || owner == nil {
+		return nil, nil
+	}
+
+	path := localapi.GUISocketPath(configPath)
+	ln, err := localapi.ListenUserSocket(path, owner.UID, owner.GID)
+	if err != nil {
+		logf("desktop socket: %v", err)
+		return nil, nil
+	}
+
+	// allowWrite false: this socket can be read and nothing else. Everything
+	// the app can change, it changes by running the CLI.
+	srv := &http.Server{Handler: localapi.NewServer(n, false).Handler()}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logf("desktop socket: %v", err)
+		}
+	}()
+	logf("desktop socket %s", path)
+	return srv, ln
 }
 
 // loopbackOnly reports whether an address can only be reached from this

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the window is allowed to reach. Deliberately short: the app's own four commands, the clipboard, opening a URL, and nothing else. Every capability here is one the UI genuinely uses — a permission granted 'just in case' is one nobody audits later.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "clipboard-manager:allow-write-text",
+    "opener:allow-open-url"
+  ]
+}

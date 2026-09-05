@@ -29,6 +29,23 @@ import (
 	"github.com/justin06lee/makima/internal/serve"
 )
 
+// GUISocketPath is a second socket, beside the first, for a desktop app.
+//
+// It exists because the two callers want opposite things from the same API.
+// The CLI runs as root and may change anything; a menu-bar app runs as a
+// person and must not be able to reconfigure their VPN because a web view
+// rendered something unexpected. Rather than weaken the socket that already
+// works, the daemon opens another one that is read-only by construction, owned
+// by the human who started makima, and reachable by nobody else.
+//
+// Actions the app offers — connect, disconnect, change an exit node — are not
+// smuggled through here. They run the CLI with a graphical authentication
+// prompt, which is the same permission boundary a person would cross by
+// typing sudo, made visible instead of implicit.
+func GUISocketPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "makimad-gui.sock")
+}
+
 // SocketPath is where the daemon listens for local requests.
 //
 // Beside the node configuration rather than in /var/run, so the socket and the

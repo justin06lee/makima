@@ -263,3 +263,26 @@ func (c *Client) SetInbox(dir string, off bool) error {
 func (c *Client) SetSSH(on bool, keys []string, user string) error {
 	return c.call("POST", "/api/ssh", SSHRequest{On: on, Keys: keys, User: user}, nil)
 }
+
+// ListenUserSocket opens a socket a named user can read.
+//
+// The daemon runs as root, so a socket it creates is root's. A desktop app
+// running as a person cannot open that, and the two obvious fixes are both
+// wrong: widening the mode to 0666 publishes every peer name, address and
+// service to any local account, and running the app as root to read a status
+// page is worse than the problem.
+//
+// Chowning one socket to one user is the narrow version. It is still 0600 —
+// exactly one account can reach it, and that account is the one that already
+// ran makima with sudo.
+func ListenUserSocket(path string, uid, gid int) (net.Listener, error) {
+	ln, err := ListenSocket(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("give %s to uid %d: %w", path, uid, err)
+	}
+	return ln, nil
+}

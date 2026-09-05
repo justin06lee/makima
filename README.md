@@ -393,6 +393,32 @@ A relay holds no WireGuard key and decrypts nothing. Running one costs you
 nothing in confidentiality, which is why it is reasonable to put one on a cheap
 VPS and forget about it.
 
+### The desktop app
+
+`makima up` and `makima status` are a fine way to run a network and a poor way
+to glance at one. The app is the glance: a window and a tray icon showing which
+machines are reachable, whether each one is direct or relayed, and what they
+publish — with the things you actually change from a menu rather than a
+terminal.
+
+```sh
+make app        # a real bundle: .app and .dmg, or .deb/.rpm/.AppImage
+```
+
+macOS and Linux, built with Tauri — about 4 MB, using the web view already
+running on the machine rather than shipping another browser.
+
+It reads over a **second Unix socket** the daemon opens beside its own:
+read-only by construction, and owned by whoever ran `makima up`, so exactly one
+account can reach it and nothing sent down it can change anything. Everything
+the app *changes* runs the CLI behind the platform's own authentication prompt
+— Authorization Services on macOS, polkit on Linux — so switching an exit node
+crosses the same boundary as typing `sudo`, made visible instead of implicit. A
+window rendering HTML was never able to reconfigure your network.
+
+See `desktop/README.md` for the Linux build dependencies and how to work on the
+interface without root.
+
 ### The web interface
 
 ```sh
@@ -799,6 +825,9 @@ internal/policy     who may talk to whom, and the filter nodes enforce
 internal/dnsserver  mesh name resolution
 internal/netcfg     per-platform addresses, routes, resolvers, and NAT
 internal/conf       on-disk node identity
+
+desktop/            the Tauri app: a window and a tray over the local API
+desktop/devserver   a pretend mesh, so the UI can be built without root
 
 dist/install.sh     one archive, one checksum, four binaries
 dist/packaging      homebrew formula, PKGBUILD, Dockerfile
