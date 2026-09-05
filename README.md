@@ -54,6 +54,16 @@ café and a home network. See [Known limits](#known-limits).
 
 ## Install
 
+**The app.** Download it, open it, click. It carries the four binaries inside
+its bundle, so nothing else has to be installed, and the first time it brings
+a tunnel up it puts the `makima` command on PATH so the terminal works too.
+
+```sh
+make app        # macOS: .app and .dmg — Linux: .deb, .rpm and .AppImage
+```
+
+**The command line.**
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/install.sh | sh
 ```
@@ -97,6 +107,22 @@ address assignment is not wired up yet, and the built-in SSH server does not
 run there.
 
 ## Use
+
+Two devices, two steps. On the first one, **Start a network** — in the app, or:
+
+```sh
+makima up
+```
+
+On every device after that, **Join a network** and paste the invite the first
+one showed — or:
+
+```sh
+makima join mk1_...
+```
+
+That is the whole setup. The rest of this section is what the two steps do and
+what to decide about the first one.
 
 Pick the machine that will hold the mesh together, and run:
 
@@ -396,25 +422,43 @@ VPS and forget about it.
 ### The desktop app
 
 `makima up` and `makima status` are a fine way to run a network and a poor way
-to glance at one. The app is the glance: a window and a tray icon showing which
-machines are reachable, whether each one is direct or relayed, and what they
-publish — with the things you actually change from a menu rather than a
-terminal.
+to glance at one. The app is the glance, and for most people the whole
+program: a menu bar item and a window in the shape every mesh VPN app has
+settled on, because it is the right shape.
+
+**The menu bar.** A switch, this device's address, every other device with a
+green or grey dot beside it — click one to copy its address — and the exit
+node, as a radio group. The window is one click further.
+
+**The window.** Devices down the left, with a search box. Pick one and the
+right-hand pane shows its name and address to copy, the services it publishes
+with an Open button beside anything a browser can reach, an SSH button that
+opens a shell in your terminal, and a place to drop a file — which lands in
+that device's inbox. This device's own pane lists what it publishes, with a
+Remove beside each, and where incoming files go.
+
+**The first run** asks one question: is this the first device, or is there a
+network already? *Start a network* is `makima up`. *Join a network* takes a
+pasted invite. *Add device*, in the title bar of the machine holding the
+network, mints the invite for the next one and shows the command to paste.
 
 ```sh
 make app        # a real bundle: .app and .dmg, or .deb/.rpm/.AppImage
 ```
 
-macOS and Linux, built with Tauri — about 4 MB, using the web view already
-running on the machine rather than shipping another browser.
+macOS and Linux, built with Tauri — about 4 MB of its own, plus the four
+binaries it carries, using the web view already running on the machine rather
+than shipping another browser. It follows the system's light or dark
+appearance, and can open at login from Settings.
 
 It reads over a **second Unix socket** the daemon opens beside its own:
-read-only by construction, and owned by whoever ran `makima up`, so exactly one
-account can reach it and nothing sent down it can change anything. Everything
-the app *changes* runs the CLI behind the platform's own authentication prompt
-— Authorization Services on macOS, polkit on Linux — so switching an exit node
-crosses the same boundary as typing `sudo`, made visible instead of implicit. A
-window rendering HTML was never able to reconfigure your network.
+read-only by construction, and owned by whoever brought the tunnel up, so
+exactly one account can reach it and nothing sent down it can change anything.
+Everything the app *changes* runs the CLI behind the platform's own
+authentication prompt — Authorization Services on macOS, polkit on Linux — so
+switching an exit node crosses the same boundary as typing `sudo`, made
+visible instead of implicit. A window rendering HTML was never able to
+reconfigure your network.
 
 See `desktop/README.md` for the Linux build dependencies and how to work on the
 interface without root.
@@ -826,7 +870,7 @@ internal/dnsserver  mesh name resolution
 internal/netcfg     per-platform addresses, routes, resolvers, and NAT
 internal/conf       on-disk node identity
 
-desktop/            the Tauri app: a window and a tray over the local API
+desktop/            the Tauri app: a menu bar item and a window over the local API
 desktop/devserver   a pretend mesh, so the UI can be built without root
 
 dist/install.sh     one archive, one checksum, four binaries

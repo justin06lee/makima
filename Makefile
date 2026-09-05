@@ -14,7 +14,7 @@ PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 linux/arm windows
 
 RELEASE := dist/release
 
-.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean app app-dev
+.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean sidecars app app-dev
 
 all: build install restart
 
@@ -109,12 +109,28 @@ release: release-clean
 # Kept out of `make` on purpose. It needs Rust, bun and — on Linux — GTK and
 # webkit2gtk, none of which the four binaries require, and somebody building a
 # VPN from source should not have to install a UI toolchain to get one.
-app:
+#
+# The app carries the four binaries inside its bundle, so that downloading it
+# is the whole install: Tauri calls these "sidecars" and wants them named for
+# the target triple. `sidecars` builds them for this machine; the app target
+# bundles whatever is there.
+TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+SIDECARS := desktop/src-tauri/binaries
+
+sidecars:
+	@test -n "$(TRIPLE)" || { echo "rustc not found; the app needs a Rust toolchain"; exit 1; }
+	@mkdir -p $(SIDECARS)
+	@for b in $(BINS); do \
+		echo "  sidecar $$b-$(TRIPLE)"; \
+		CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(SIDECARS)/$$b-$(TRIPLE) ./cmd/$$b || exit 1; \
+	done
+
+app: sidecars
 	@cd desktop && bun install --frozen-lockfile && bun run tauri build
 
 # The app against a pretend mesh, so the interface can be worked on without
 # root and without a tunnel. Two processes; this runs the second.
-app-dev:
+app-dev: sidecars
 	@echo "  run 'go run ./desktop/devserver' in another terminal first"
 	@cd desktop && MAKIMA_GUI_SOCKET=/tmp/makima-dev.sock bun run tauri dev
 

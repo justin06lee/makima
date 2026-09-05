@@ -42,9 +42,6 @@ export type ServiceStatus = {
   error?: string;
   active: number;
   total: number;
-  /// How many connections could not reach the target. The number worth
-  /// looking at: a published port with nothing behind it refuses every
-  /// attempt, and that is the usual misconfiguration.
   failed: number;
   target_up: boolean;
 };
@@ -84,6 +81,16 @@ export type Snapshot = {
   status?: Status;
 };
 
+/// What is true about this machine before the daemon says anything.
+export type Environment = {
+  cli?: string;
+  member: boolean;
+  holds_mesh: boolean;
+  linked: boolean;
+  platform: string;
+  app_version: string;
+};
+
 export type Check = { name: string; ok: boolean; detail: string; fix?: string; warning?: boolean };
 
 export type Ping = {
@@ -103,24 +110,123 @@ export type Outcome = { ok: boolean; output: string };
 /// adding one means touching both sides on purpose.
 export type Action =
   | { kind: "up" }
+  | { kind: "join"; invite: string }
   | { kind: "down" }
   | { kind: "allow"; port: number }
   | { kind: "deny"; port: number }
   | { kind: "exit-node"; name: string }
   | { kind: "invite" }
-  | { kind: "pair" };
+  | { kind: "pair" }
+  | { kind: "link-cli" };
 
-export const api = {
-  status: () => invoke<Snapshot>("status"),
-  doctor: () => invoke<{ checks: Check[] }>("doctor"),
-  ping: (peer: string) => invoke<Ping>("ping", { peer }),
-  act: (action: Action) => invoke<Outcome>("act", { action }),
+/// Whether this is running inside the Tauri window at all.
+///
+/// It is not when the interface is opened in a plain browser from `bun run
+/// dev`, which is how it gets worked on: vite proxies /api to the devserver,
+/// and everything the CLI would do is pretended. Nothing in that mode can
+/// change a machine, because there is no machine — only a mesh being shown.
+export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+const browser = {
+  /// ?state=setup|off|on decides which screen; ?holds=0 makes this a joined
+  /// device rather than the one holding the network.
+  params: () => new URLSearchParams(window.location.search),
+  async get<T>(path: string): Promise<T> {
+    const r = await fetch(path);
+    if (!r.ok) throw new Error(`${path}: ${r.status}`);
+    return r.json();
+  },
+  wait: (ms: number) => new Promise((r) => setTimeout(r, ms)),
 };
 
+export const api = {
+  status: async (): Promise<Snapshot> => {
+    if (inTauri) return invoke<Snapshot>("status");
+    if (browser.params().get("state") === "setup" || browser.params().get("state") === "off") {
+      return { running: false, error: "no makimad is running" };
+    }
+    try {
+      return { running: true, status: await browser.get<Status>("/api/status") };
+    } catch (e) {
+      return { running: false, error: String(e) };
+    }
+  },
+  environment: async (): Promise<Environment> => {
+    if (inTauri) return invoke<Environment>("environment");
+    const p = browser.params();
+    return {
+      cli: "/usr/local/bin/makima",
+      member: p.get("state") !== "setup",
+      holds_mesh: p.get("holds") !== "0",
+      linked: p.get("linked") !== "0",
+      platform: p.get("platform") ?? "macos",
+      app_version: "dev",
+    };
+  },
+  doctor: () => (inTauri ? invoke<{ checks: Check[] }>("doctor") : browser.get<{ checks: Check[] }>("/api/doctor")),
+  ping: (peer: string) =>
+    inTauri ? invoke<Ping>("ping", { peer }) : browser.get<Ping>(`/api/ping?peer=${encodeURIComponent(peer)}`),
+  act: async (action: Action): Promise<Outcome> => {
+    if (inTauri) return invoke<Outcome>("act", { action });
+    await browser.wait(700);
+    if (action.kind === "invite") return { ok: true, output: "mk1_eyJzIjoiaHR0cDovLzEwMC42NC4wLjE6ODA4MCIsImEiOiJta2F1dGgtZGV2LWV4YW1wbGUiLCJrIjoiZGV2In0" };
+    if (action.kind === "join" || action.kind === "up") {
+      window.location.search = "?state=on";
+    }
+    if (action.kind === "down") window.location.search = "?state=off";
+    return { ok: true, output: "" };
+  },
+  sendFile: async (peer: string, path: string): Promise<Outcome> => {
+    if (inTauri) return invoke<Outcome>("send_file", { peer, path });
+    await browser.wait(900);
+    return { ok: true, output: "" };
+  },
+};
+
+/// Open a URL in whatever handles it — a browser, or the terminal for ssh://.
+export async function openExternal(url: string): Promise<void> {
+  if (inTauri) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  } else {
+    window.open(url, "_blank");
+  }
+}
+
+/// Reveal a folder in the file manager.
+export async function openFolder(path: string): Promise<void> {
+  if (!inTauri) return;
+  const { openPath } = await import("@tauri-apps/plugin-opener");
+  await openPath(path);
+}
+
+/// Put text on the clipboard.
+export async function copyText(text: string): Promise<void> {
+  if (inTauri) {
+    const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+    await writeText(text);
+  } else {
+    await navigator.clipboard.writeText(text);
+  }
+}
+
 /// Go durations arrive as nanoseconds. Rendered blank when unmeasured, because
-/// "0ms" reads as instantaneous, which is the opposite of the truth.
+/// "0 ms" reads as instantaneous, which is the opposite of the truth.
 export function ms(ns: number): string {
   if (!ns) return "";
   const v = ns / 1e6;
-  return v < 10 ? `${v.toFixed(1)}ms` : `${Math.round(v)}ms`;
+  return v < 10 ? `${v.toFixed(1)} ms` : `${Math.round(v)} ms`;
+}
+
+/// A device's name with the mesh suffix, when names are on.
+export function fqdn(name: string, status: Status): string | null {
+  return status.dns_active && status.domain ? `${name}.${status.domain}` : null;
+}
+
+/// One phrase for how a peer is being reached.
+export function pathLabel(p: { direct: boolean; relay_url?: string; online: boolean }): string {
+  if (!p.online) return "Offline";
+  if (p.direct) return "Direct";
+  if (p.relay_url) return "Via relay";
+  return "No path";
 }

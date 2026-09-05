@@ -1,24 +1,96 @@
 @import "tailwindcss";
 
-/* The palette is the banner's and the daemon's web UI's: near-black ground,
-   gold for the control plane, crimson for the data path. Nothing else gets a
-   colour, so when something turns red it means something. */
-@theme {
-  --color-bg: #0a0b10;
-  --color-panel: #12131a;
-  --color-panel-2: #171822;
-  --color-line: #23242f;
-  --color-line-2: #2e3040;
-  --color-ink: #e8e6e3;
-  --color-dim: #8e8f9c;
-  --color-dimmer: #6a6b78;
-  --color-gold: #e0a94a;
-  --color-gold-dim: #8a6a2e;
-  --color-crimson: #c4353f;
-  --color-crimson-dim: #7a2229;
-  --color-green: #4caf7d;
+/* The palette is the platform's, not makima's. A menu bar app lives next to
+   Finder and System Settings and should look like it came from the same
+   place: white, one blue for the thing that is on, green for the thing that
+   is reachable, and grey for everything else. It follows the system's
+   appearance because every other window on the screen does. */
+:root {
+  --bg: #ffffff;
+  --sidebar: #f4f4f6;
+  --card: #f5f5f7;
+  --card-2: #ececef;
+  --ink: #1d1d1f;
+  --dim: #6e6e73;
+  --dimmer: #a3a3a8;
+  --line: #e6e6ea;
+  --line-2: #d2d2d7;
+  --accent: #3b6fe0;
+  --accent-ink: #ffffff;
+  --green: #34c759;
+  --grey: #c7c7cc;
+  --red: #e5484d;
+  --amber: #f0a020;
+  --focus: rgba(59, 111, 224, 0.35);
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  color-scheme: light;
+}
 
-  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+/* `.dark` on <html> forces the dark palette; the app never sets it, but the
+   browser preview does with ?dark=1 so both appearances can be looked at
+   without changing the system. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e20;
+    --sidebar: #29292c;
+    --card: #2b2b2e;
+    --card-2: #353538;
+    --ink: #f2f2f4;
+    --dim: #9a9aa0;
+    --dimmer: #6c6c72;
+    --line: #38383c;
+    --line-2: #47474c;
+    --accent: #4f7ce8;
+    --accent-ink: #ffffff;
+    --green: #30d158;
+    --grey: #5a5a5f;
+    --red: #ff5d62;
+    --amber: #ffb340;
+    --focus: rgba(79, 124, 232, 0.45);
+    --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    color-scheme: dark;
+  }
+}
+
+:root.dark {
+  --bg: #1e1e20;
+  --sidebar: #29292c;
+  --card: #2b2b2e;
+  --card-2: #353538;
+  --ink: #f2f2f4;
+  --dim: #9a9aa0;
+  --dimmer: #6c6c72;
+  --line: #38383c;
+  --line-2: #47474c;
+  --accent: #4f7ce8;
+  --accent-ink: #ffffff;
+  --green: #30d158;
+  --grey: #5a5a5f;
+  --red: #ff5d62;
+  --amber: #ffb340;
+  --focus: rgba(79, 124, 232, 0.45);
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-card: var(--card);
+  --color-card-2: var(--card-2);
+  --color-ink: var(--ink);
+  --color-dim: var(--dim);
+  --color-dimmer: var(--dimmer);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-green: var(--green);
+  --color-grey: var(--grey);
+  --color-red: var(--red);
+  --color-amber: var(--amber);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", monospace;
 }
 
@@ -27,9 +99,10 @@ html, body, #root {
 }
 
 body {
-  background: var(--color-bg);
-  color: var(--color-ink);
+  background: var(--bg);
+  color: var(--ink);
   font-family: var(--font-sans);
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
   /* A desktop app is not a document: dragging the background around like a
      web page makes it feel like a web page. */
@@ -45,21 +118,45 @@ body {
 }
 
 ::selection {
-  background: color-mix(in oklab, var(--color-crimson) 45%, transparent);
-  color: #fff;
+  background: var(--focus);
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-line-2) transparent;
+  scrollbar-color: var(--line-2) transparent;
 }
 
-@keyframes pulse-ring {
-  0%, 100% { opacity: 0.35 }
-  50%      { opacity: 0.9 }
+/* In the base layer, so a utility on the element still wins: an unlayered
+   rule here would outrank every text-* class on every button. */
+@layer base {
+  input, button {
+    font: inherit;
+    color: inherit;
+  }
+
+  button:focus-visible, input:focus-visible, [role="radio"]:focus-visible, [role="option"]:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--focus);
+  }
 }
-.pulse { animation: pulse-ring 2.4s ease-in-out infinite }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px) }
+  to   { opacity: 1; transform: none }
+}
+.fade-in { animation: fade-in 160ms ease-out both }
+
+@keyframes spin {
+  to { transform: rotate(360deg) }
+}
+.spin { animation: spin 0.9s linear infinite }
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4 }
+  50%      { opacity: 1 }
+}
+.pulse { animation: pulse 2s ease-in-out infinite }
 
 @media (prefers-reduced-motion: reduce) {
-  .pulse { animation: none }
+  .fade-in, .pulse { animation: none }
 }
