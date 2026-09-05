@@ -58,6 +58,13 @@ type AuthKeyRequest struct {
 	Reusable bool          `json:"reusable"`
 	TTL      time.Duration `json:"ttl"`
 	Tags     []string      `json:"tags,omitempty"`
+
+	// Secret, Handle and MACKey are set for an invite given as words: the
+	// credential and its verification material were derived by the CLI from
+	// the words, and the server stores them rather than choosing its own.
+	Secret string `json:"secret,omitempty"`
+	Handle string `json:"handle,omitempty"`
+	MACKey []byte `json:"mac_key,omitempty"`
 }
 
 // ForgetRequest removes a node.
@@ -83,7 +90,13 @@ func (s *Server) AdminHandler() http.Handler {
 			writeJSON(w, http.StatusBadRequest, adminError{err.Error()})
 			return
 		}
-		a, err := s.store.MintAuthKeyTagged(req.Reusable, req.TTL, req.Tags)
+		var a *AuthKey
+		var err error
+		if req.Secret != "" {
+			a, err = s.store.MintInviteKey(req.Secret, req.Handle, req.MACKey, req.TTL)
+		} else {
+			a, err = s.store.MintAuthKeyTagged(req.Reusable, req.TTL, req.Tags)
+		}
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, adminError{err.Error()})
 			return
@@ -193,6 +206,16 @@ func (c *AdminClient) MintAuthKey(reusable bool, ttl time.Duration) (*AuthKey, e
 func (c *AdminClient) MintAuthKeyTagged(reusable bool, ttl time.Duration, tags []string) (*AuthKey, error) {
 	var a AuthKey
 	if err := c.call(http.MethodPost, "/admin/authkey", AuthKeyRequest{Reusable: reusable, TTL: ttl, Tags: tags}, &a); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// MintInviteKey stores a credential derived from words. See invite.EncodeWords.
+func (c *AdminClient) MintInviteKey(secret, handle string, macKey []byte, ttl time.Duration) (*AuthKey, error) {
+	var a AuthKey
+	req := AuthKeyRequest{TTL: ttl, Secret: secret, Handle: handle, MACKey: macKey}
+	if err := c.call(http.MethodPost, "/admin/authkey", req, &a); err != nil {
 		return nil, err
 	}
 	return &a, nil

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -222,5 +223,39 @@ func TestForgetPropagates(t *testing.T) {
 	}
 	if len(after.Peers) != 0 {
 		t.Errorf("forgotten node still present: %+v", after.Peers)
+	}
+}
+
+// Fifteen words carry no server key. The joining machine fetches one by the
+// invite's handle and gets a MAC it can check — and an impostor's key fails.
+func TestFetchServerKeyVerifiedByInvite(t *testing.T) {
+	store, url := testMesh(t)
+
+	secret := []byte("fourteen bytes")
+	handle, macKey := "handle-1", []byte("mac key material, 32 bytes long!")
+	if _, err := store.MintInviteKey("makima_"+string(secret)+"padding-to-length", handle, macKey, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FetchServerKeyVerified(context.Background(), url, handle, macKey)
+	if err != nil {
+		t.Fatalf("verified fetch: %v", err)
+	}
+	if got != store.ServerKey().Public() {
+		t.Fatal("verified fetch returned a different key")
+	}
+
+	// The wrong words: the MAC does not verify.
+	if _, err := FetchServerKeyVerified(context.Background(), url, handle, []byte("somebody else's mac key material")); err == nil {
+		t.Fatal("a key verified under the wrong MAC key")
+	}
+	// An unknown handle is refused by the server, and the reason is legible.
+	_, err = FetchServerKeyVerified(context.Background(), url, "no-such-handle", macKey)
+	if err == nil || !strings.Contains(err.Error(), "does not know") {
+		t.Fatalf("unknown handle: %v", err)
+	}
+	// The plain fetch still works, without a MAC.
+	if _, err := FetchServerKey(context.Background(), url); err != nil {
+		t.Fatal(err)
 	}
 }

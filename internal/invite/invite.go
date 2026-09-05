@@ -58,6 +58,47 @@ type Invite struct {
 	// Nonce makes two invites minted for the same mesh in the same second
 	// differ, so nobody has to wonder whether they pasted a stale one.
 	Nonce string `json:"n,omitempty"`
+
+	// handle and macKey are set when the invite came as words, which carry
+	// no server key: the joining machine fetches one and checks it against
+	// the MAC the server produces under macKey. Never serialised.
+	handle string
+	macKey []byte
+}
+
+// FromWords turns decoded words into an invite with everything but the
+// server key, plus what it takes to fetch and verify one.
+func FromWords(w WordInvite) Invite {
+	return Invite{
+		Server:  w.Server,
+		AuthKey: AuthKey(w.Secret),
+		handle:  Handle(w.Secret),
+		macKey:  MACKey(w.Secret),
+	}
+}
+
+// Verifier is how to check a fetched server key, for an invite that came as
+// words. ok is false for an invite that carried the key itself.
+func (i Invite) Verifier() (handle string, macKey []byte, ok bool) {
+	return i.handle, i.macKey, i.handle != ""
+}
+
+// Parse reads an invite in either form: the pasted mk1_ string, or the words.
+func Parse(s string) (Invite, error) {
+	trimmed := strings.TrimSpace(strings.Trim(strings.TrimSpace(s), `"'`))
+	if len(trimmed) > len(Prefix) && strings.EqualFold(trimmed[:len(Prefix)], Prefix) {
+		return Decode(trimmed)
+	}
+	if w, ok, err := DecodeWords(trimmed); ok {
+		if err != nil {
+			return Invite{}, err
+		}
+		return FromWords(w), nil
+	}
+	if trimmed == "" {
+		return Invite{}, errors.New("invite: empty")
+	}
+	return Invite{}, fmt.Errorf("invite: %q is not an invite — paste the mk1_ string, or type the fifteen words", elide(trimmed))
 }
 
 // Encode renders an invite as the single string a person pastes.

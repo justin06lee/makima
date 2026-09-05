@@ -183,6 +183,7 @@ func (s *Store) ApproveRoutes(name string, routes []netip.Prefix, exit bool) err
 			return fmt.Errorf("%s has not offered to be an exit node", name)
 		}
 		n.ExitApproved = true
+		n.ExitRevoked = false
 	}
 
 	if err := s.save(); err != nil {
@@ -213,6 +214,7 @@ func (s *Store) RevokeRoutes(name string, routes []netip.Prefix, exit bool) erro
 	}
 	if exit {
 		n.ExitApproved = false
+		n.ExitRevoked = true
 	}
 
 	if err := s.save(); err != nil {

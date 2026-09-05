@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -101,12 +102,13 @@ func upCmd(args []string) error {
 		return err
 	}
 
-	// A pasted invite is the whole argument. Accepting it here as well as
-	// under `join` means neither one is the wrong guess.
+	// A pasted invite is the whole argument, and typed words are several.
+	// Accepting either here as well as under `join` means neither one is the
+	// wrong guess.
 	var inv invite.Invite
 	if rest := fs.Args(); len(rest) > 0 {
 		var err error
-		if inv, err = checkInvite(rest[0]); err != nil {
+		if inv, err = checkInvite(strings.Join(rest, " ")); err != nil {
 			return err
 		}
 	}
@@ -171,6 +173,10 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	if err != nil {
 		return err
 	}
+	words, err := mintWords(admin, serverURL)
+	if err != nil {
+		return err
+	}
 
 	// A machine with a public address is the only kind that can hold a mesh
 	// usable from outside the house, and it is also the only kind that can be
@@ -186,22 +192,20 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Add another device — run this on it:")
-	fmt.Printf("  makima join %s\n", inv)
-	fmt.Println()
-	fmt.Println("Or open the makima app on it, choose Join a network, and paste the invite.")
+	printInvite(words, inv)
 	warnIfUnreachable(reachable)
 	installDieAlias()
 	linkCLIQuietly()
 	return nil
 }
 
-// checkInvite decodes a pasted invite and says why it is unusable.
+// checkInvite decodes a pasted invite, or typed words, and says why it is
+// unusable.
 //
 // Called before anything asks for a password. Being prompted for root and then
 // told the string was mistyped is a bad trade, and the check costs nothing.
 func checkInvite(raw string) (invite.Invite, error) {
-	inv, err := invite.Decode(raw)
+	inv, err := invite.Parse(raw)
 	if err != nil {
 		return invite.Invite{}, err
 	}
@@ -253,7 +257,8 @@ func bringUp(ctx context.Context, path string) error {
 func inviteCmd(args []string) error {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
 	advertise := fs.String("advertise", "", "where the joining machine reaches this one: a host, host:port, or full URL")
-	quiet := fs.Bool("q", false, "print only the invite, for another program to read")
+	quiet := fs.Bool("q", false, "print only the pasteable invite, for another program to read")
+	asJSON := fs.Bool("json", false, "print both forms as JSON, for the app")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -277,19 +282,49 @@ func inviteCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	words, err := mintWords(admin, controlURL(reachable))
+	if err != nil {
+		return err
+	}
 
 	if *quiet {
 		fmt.Println(inv)
 		return nil
 	}
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{"words": words, "invite": inv})
+	}
 
-	fmt.Println("Run this on the machine you are adding:")
-	fmt.Printf("  makima join %s\n", inv)
-	fmt.Println()
-	fmt.Println("Or open the makima app on it, choose Join a network, and paste the invite.")
-	fmt.Printf("\nGood for %s.\n", inviteTTL)
+	printInvite(words, inv)
+	fmt.Printf("\nGood for one device, for %s.\n", inviteTTL)
 	warnIfUnreachable(reachable)
 	return nil
+}
+
+// printInvite shows both forms of an invite: the words to type, and the
+// string to paste.
+func printInvite(words, inv string) {
+	fmt.Println("On the device you are adding, open makima, choose Join a network, and type:")
+	fmt.Println()
+	fmt.Printf("  %s\n", words)
+	fmt.Println()
+	fmt.Println("Or paste this there, or into a terminal:")
+	fmt.Printf("  makima join %s\n", inv)
+}
+
+// mintWords mints a second credential for the same machine, given as words.
+//
+// A separate credential from the mk1_ one, so that whichever form is used,
+// the other stops working with it — an invite is for one machine.
+func mintWords(admin *control.AdminClient, serverURL string) (string, error) {
+	secret, err := invite.NewSecret()
+	if err != nil {
+		return "", err
+	}
+	if _, err := admin.MintInviteKey(invite.AuthKey(secret), invite.Handle(secret), invite.MACKey(secret), inviteTTL); err != nil {
+		return "", fmt.Errorf("mint a credential: %w", err)
+	}
+	return invite.EncodeWords(serverURL, secret)
 }
 
 // downCmd stops the tunnel and puts the machine back the way it was.
@@ -363,6 +398,17 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 
 	if _, err := conf.Load(path); err == nil {
 		return fmt.Errorf("this machine is already on a network — 'makima down' first, or remove %s to start over", path)
+	}
+
+	// Words carry no server key. Fetch one, and refuse it unless the server
+	// can vouch for it under the words — see invite.EncodeWords for why that
+	// is as good as having carried it.
+	if handle, macKey, ok := inv.Verifier(); ok && inv.ServerKey.IsZero() {
+		k, err := control.FetchServerKeyVerified(ctx, inv.Server, handle, macKey)
+		if err != nil {
+			return err
+		}
+		inv.ServerKey = k
 	}
 
 	nodeKey, machineKey, discoKey, err := conf.NewIdentity()
@@ -618,22 +664,30 @@ func resolvePeer(name string) (string, error) {
 // every one of those references at once would be its own kind of unfriendly.
 func joinCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("paste the invite: makima join mk1_...  (get one with 'makima invite' on the machine holding the mesh)")
+		return errors.New("paste the invite, or type its words: makima join mk1_...  (get one with 'makima invite' on the device that started the network)")
 	}
 	if strings.HasPrefix(args[0], "-") {
 		return joinNode(args)
 	}
 
+	// The invite is every leading argument that is not a flag: one pasted
+	// string, or fifteen typed words.
+	var raw []string
+	for len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		raw = append(raw, args[0])
+		args = args[1:]
+	}
+
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	path := fs.String("config", conf.DefaultPath, "config path")
 	name := fs.String("name", "", "this machine's name on the mesh (defaults to the hostname)")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	// Before sudo, not after: being asked for a password and then told the
 	// invite was mistyped is the wrong order to find that out in.
-	inv, err := checkInvite(args[0])
+	inv, err := checkInvite(strings.Join(raw, " "))
 	if err != nil {
 		return err
 	}

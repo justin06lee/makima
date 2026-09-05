@@ -43,6 +43,12 @@ func (s *Server) Handler() http.Handler {
 type keyResponse struct {
 	Version   int        `json:"version"`
 	ServerKey key.Public `json:"server_key"`
+
+	// MAC is present when the key was asked for with an invite handle: a
+	// MAC over the key under that invite's MAC key, which only the words can
+	// derive. It is what lets a joining machine that holds the words, and
+	// not the key, tell this server from an impostor.
+	MAC []byte `json:"mac,omitempty"`
 }
 
 // handleKey publishes the control plane's public key so a joining node can
@@ -51,10 +57,21 @@ type keyResponse struct {
 // that one round trip, which is why the join flow prefers it pinned in the
 // invitation.
 func (s *Server) handleKey(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, keyResponse{
+	resp := keyResponse{
 		Version:   ProtocolVersion,
 		ServerKey: s.store.ServerKey().Public(),
-	})
+	}
+	if handle := r.URL.Query().Get("invite"); handle != "" {
+		mac, ok := s.store.InviteMAC(handle)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": "this network does not know that invite — it may have expired, or been used already",
+			})
+			return
+		}
+		resp.MAC = mac
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

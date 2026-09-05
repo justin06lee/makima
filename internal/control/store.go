@@ -1,13 +1,16 @@
 package control
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +89,12 @@ type Node struct {
 	// installed anywhere until an operator approves it.
 	AdvertisedRoutes []netip.Prefix `json:"advertised_routes,omitempty"`
 
+	// ExitRevoked records that an operator withdrew this node's exit-node
+	// approval on purpose. An offer is otherwise accepted as it arrives —
+	// see Register — and without this a revoke would be undone the next time
+	// the node checked in.
+	ExitRevoked bool `json:"exit_revoked,omitempty"`
+
 	// ApprovedRoutes are the subset an operator has accepted. Only these
 	// appear in anyone's netmap.
 	ApprovedRoutes []netip.Prefix `json:"approved_routes,omitempty"`
@@ -141,6 +150,15 @@ type AuthKey struct {
 	// the only arrangement where a tag means anything: a node that could name
 	// its own tags could grant itself whatever access the policy gives them.
 	Tags []string `json:"tags,omitempty"`
+
+	// Handle and MACKey exist for an invite given as words. The joining
+	// machine, holding the words, asks for the server's key by handle; the
+	// server answers with the key and a MAC over it under MACKey, which only
+	// the words can derive. That is how fifteen words verify a server without
+	// carrying its key. Both are derived from the words; the words themselves
+	// are never stored anywhere.
+	Handle string `json:"handle,omitempty"`
+	MACKey []byte `json:"mac_key,omitempty"`
 }
 
 // Valid reports whether the key may still be redeemed.
@@ -350,6 +368,9 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		existing.AdvertisedRoutes = req.AdvertiseRoutes
 		existing.AdvertisesExit = req.AdvertiseExit
 		existing.Services = req.Services
+		if req.AdvertiseExit && !existing.ExitRevoked {
+			existing.ExitApproved = true
+		}
 
 		// An approval only ever covers a route the node is still advertising.
 		// Without this, a node could advertise 10.0.0.0/24, have it approved,
@@ -397,6 +418,15 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		AdvertisedRoutes: req.AdvertiseRoutes,
 		AdvertisesExit:   req.AdvertiseExit,
 		Services:         req.Services,
+		// An exit-node offer is accepted as it arrives. Unlike a subnet route,
+		// which every node installs the moment it is approved, an exit node
+		// changes nothing until a person on another machine chooses it by
+		// name — the decision is theirs, made in the open. Requiring an
+		// operator to approve the offer first meant a command on a third
+		// machine, and for a network of machines one person owns that was a
+		// step with no decision in it. `makima-server routes revoke -exit`
+		// still withdraws one, and stays withdrawn.
+		ExitApproved: req.AdvertiseExit,
 	}
 	s.state.NextID++
 	s.state.Nodes = append(s.state.Nodes, n)
@@ -619,21 +649,35 @@ func (s *Store) MintAuthKey(reusable bool, ttl time.Duration) (*AuthKey, error) 
 
 // MintAuthKeyTagged creates a credential that also assigns policy tags.
 func (s *Store) MintAuthKeyTagged(reusable bool, ttl time.Duration, tags []string) (*AuthKey, error) {
-	if ttl < 0 {
-		return nil, fmt.Errorf("auth key lifetime cannot be negative (got %s); pass 0 for a key that never expires", ttl)
-	}
-
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return nil, fmt.Errorf("read entropy: %w", err)
 	}
-
-	a := &AuthKey{
+	return s.mint(&AuthKey{
 		Secret:   "makima_" + base64.RawURLEncoding.EncodeToString(raw[:]),
 		Reusable: reusable,
-		Created:  time.Now().UTC(),
 		Tags:     tags,
+	}, ttl)
+}
+
+// MintInviteKey stores a credential that was derived from words, together
+// with the handle and MAC key derived from the same words. Single-use: an
+// invite is for one machine.
+func (s *Store) MintInviteKey(secret, handle string, macKey []byte, ttl time.Duration) (*AuthKey, error) {
+	if !strings.HasPrefix(secret, "makima_") || len(secret) < 24 {
+		return nil, fmt.Errorf("that is not an auth key")
 	}
+	if handle == "" || len(macKey) < 16 {
+		return nil, fmt.Errorf("an invite key needs a handle and a MAC key")
+	}
+	return s.mint(&AuthKey{Secret: secret, Handle: handle, MACKey: macKey}, ttl)
+}
+
+func (s *Store) mint(a *AuthKey, ttl time.Duration) (*AuthKey, error) {
+	if ttl < 0 {
+		return nil, fmt.Errorf("auth key lifetime cannot be negative (got %s); pass 0 for a key that never expires", ttl)
+	}
+	a.Created = time.Now().UTC()
 	if ttl > 0 {
 		a.Expires = a.Created.Add(ttl)
 	}
@@ -691,6 +735,25 @@ func (s *Store) findByMachineKey(k key.Public) *Node {
 		}
 	}
 	return nil
+}
+
+// InviteMAC vouches for the server's key to whoever holds the words behind a
+// handle. Nothing for a handle that is unknown, spent or expired — the
+// joining machine is told the invite is no good before it types anything
+// else.
+func (s *Store) InviteMAC(handle string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for _, a := range s.state.AuthKeys {
+		if a.Handle == handle && a.Handle != "" && a.Valid(now) {
+			m := hmac.New(sha256.New, a.MACKey)
+			pub := s.state.ServerKey.Public()
+			m.Write(pub[:])
+			return m.Sum(nil), true
+		}
+	}
+	return nil, false
 }
 
 func (s *Store) findAuthKey(secret string) *AuthKey {
