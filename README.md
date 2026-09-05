@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/makima.svg" alt="makima" width="440" />
+<img src="assets/makima.svg" alt="makima" width="400" />
 
 # makima
 
@@ -17,9 +17,9 @@ do not administer.
 
 It is built the way Tailscale is built, because that architecture is right: a
 central service that decides *who may talk to whom*, and direct encrypted paths
-that carry the traffic without passing through it. The banner above is the whole
-design — gold chains from the centre to every node, crimson paths straight
-between them.
+that carry the traffic without passing through it. [How it fits
+together](#how-it-fits-together) draws it: gold chains from the centre to every
+node, crimson paths straight between them.
 
 ## Status
 
@@ -710,6 +710,12 @@ coexists with Tailscale on the same machine: a `/32` wins over Tailscale's
 `/10` by longest-prefix match.
 
 ## How it fits together
+
+<img src="assets/architecture.svg" alt="The control plane holds a chain to every node; traffic goes straight between them" width="600" />
+
+The whole design in one picture: gold chains from the centre to every node,
+crimson paths straight between them. The centre decides who may speak to whom;
+it never carries a packet.
 
 **Data plane.** A userspace WireGuard device on a TUN interface. Userspace
 rather than the kernel module even on Linux, for one reason: it lets the engine
