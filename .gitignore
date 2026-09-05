@@ -6,9 +6,18 @@ build/
 /makima
 /makimad
 /makima-server
+/makima-relay
+/devserver
 
 # Node and control-plane state, which hold private keys.
 node.json
 control.json
 *.sock
 dist/release/
+
+# Desktop app build output. The Rust target directory is enormous and the
+# bundles are rebuilt from source by `make app`.
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/

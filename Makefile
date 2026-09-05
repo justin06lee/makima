@@ -14,7 +14,7 @@ PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 linux/arm windows
 
 RELEASE := dist/release
 
-.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean
+.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean app app-dev
 
 all: build install restart
 
@@ -103,6 +103,20 @@ release: release-clean
 	done
 	@cd $(RELEASE) && (sha256sum *.tar.gz *.zip 2>/dev/null || shasum -a 256 *.tar.gz *.zip) > SHA256SUMS && \
 		echo "  checksums              $(RELEASE)/SHA256SUMS"
+
+# The desktop app.
+#
+# Kept out of `make` on purpose. It needs Rust, bun and — on Linux — GTK and
+# webkit2gtk, none of which the four binaries require, and somebody building a
+# VPN from source should not have to install a UI toolchain to get one.
+app:
+	@cd desktop && bun install --frozen-lockfile && bun run tauri build
+
+# The app against a pretend mesh, so the interface can be worked on without
+# root and without a tunnel. Two processes; this runs the second.
+app-dev:
+	@echo "  run 'go run ./desktop/devserver' in another terminal first"
+	@cd desktop && MAKIMA_GUI_SOCKET=/tmp/makima-dev.sock bun run tauri dev
 
 release-clean:
 	@rm -rf $(RELEASE)

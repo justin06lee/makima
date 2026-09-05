@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/* The palette is the banner's and the daemon's web UI's: near-black ground,
+   gold for the control plane, crimson for the data path. Nothing else gets a
+   colour, so when something turns red it means something. */
+@theme {
+  --color-bg: #0a0b10;
+  --color-panel: #12131a;
+  --color-panel-2: #171822;
+  --color-line: #23242f;
+  --color-line-2: #2e3040;
+  --color-ink: #e8e6e3;
+  --color-dim: #8e8f9c;
+  --color-dimmer: #6a6b78;
+  --color-gold: #e0a94a;
+  --color-gold-dim: #8a6a2e;
+  --color-crimson: #c4353f;
+  --color-crimson-dim: #7a2229;
+  --color-green: #4caf7d;
+
+  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", monospace;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* A desktop app is not a document: dragging the background around like a
+     web page makes it feel like a web page. */
+  overscroll-behavior: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* Anything that is genuinely text can still be selected and copied. */
+.selectable {
+  user-select: text;
+  cursor: text;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-crimson) 45%, transparent);
+  color: #fff;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-2) transparent;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { opacity: 0.35 }
+  50%      { opacity: 0.9 }
+}
+.pulse { animation: pulse-ring 2.4s ease-in-out infinite }
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none }
+}
