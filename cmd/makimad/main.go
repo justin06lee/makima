@@ -163,7 +163,7 @@ type options struct {
 
 func run(opts options) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("must run as root to create a TUN device (try: sudo %s)", os.Args[0])
+		return errors.New("makima needs root to create its network interface — run 'makima up', which asks for it")
 	}
 
 	configPath, ifaceName, mtu, verbose := opts.configPath, opts.iface, opts.mtu, opts.verbose

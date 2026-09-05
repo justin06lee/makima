@@ -168,7 +168,7 @@ func ensureServerless(path, name, relayURL, relayKey string) error {
 	switch {
 	case err == nil:
 		if f.Managed() {
-			return errors.New("this machine belongs to a mesh with a coordination plane; add machines with 'makima invite' instead of pairing")
+			return errors.New("this machine is on a network with a server; add machines with 'makima invite' instead of pairing")
 		}
 		if !f.Serverless {
 			// A hand-maintained static mesh predates pairing and gets an
@@ -240,7 +240,7 @@ func initServerless(path, name, relayURL, relayKey string) error {
 	if err := conf.Save(path, f); err != nil {
 		return err
 	}
-	fmt.Printf("This machine is %s at %s. No coordination plane — it pairs directly.\n", name, addr)
+	fmt.Printf("This machine is %s at %s. No server — it pairs directly.\n", name, addr)
 	return nil
 }
 

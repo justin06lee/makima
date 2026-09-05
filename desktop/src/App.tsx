@@ -77,6 +77,7 @@ export default function App() {
           if (out.output !== "cancelled") setNotice(out.output);
           return null;
         }
+        if (action.kind === "up" || action.kind === "join") void openAtLoginOnce();
         await refresh();
         return out.output ?? "";
       } catch (e) {
@@ -133,6 +134,26 @@ export default function App() {
       )}
     </div>
   );
+}
+
+/// The first time a network is started or joined from this window, the app
+/// becomes a login item, so the menu bar has makima in it from the next login
+/// on. Once: the switch in Settings is the person's from then on, and turning
+/// it off has to stick. The tunnel itself does not depend on this — it is
+/// registered with the system and comes back on its own — this is only the
+/// menu bar coming back with it.
+async function openAtLoginOnce() {
+  if (!inTauri) return;
+  const key = "makima:open-at-login-offered";
+  if (localStorage.getItem(key)) return;
+  localStorage.setItem(key, "1");
+  try {
+    const a = await import("@tauri-apps/plugin-autostart");
+    if (!(await a.isEnabled())) await a.enable();
+  } catch {
+    // A login item that could not be made is not worth an error in the
+    // window; Settings still has the switch.
+  }
 }
 
 function Splash() {
@@ -239,14 +260,14 @@ function Off({ snap, busy, act }: { snap: Snapshot; busy: boolean; act: Act }) {
             take it over.
           </p>
         ) : (
-          <p>Your other devices are unreachable until you connect.</p>
+          <p>Your other devices are unreachable until you connect. Once connected, this device stays on the network — after a restart too — until you disconnect.</p>
         )}
         <div className="mt-4">
           <Button variant="primary" size="lg" busy={busy} onClick={() => act({ kind: "up" })}>
             Connect
           </Button>
         </div>
-        {snap.error && !permission && !snap.error.includes("no makimad") && (
+        {snap.error && !permission && !snap.error.includes("not running") && (
           <p className="selectable mt-4 font-mono text-[11px] text-dimmer">{snap.error}</p>
         )}
       </Empty>

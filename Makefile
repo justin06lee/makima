@@ -1,6 +1,9 @@
-# makima — build, install, and restart the node daemon.
+# makima — build, install, and restart the node daemon, and the app with it.
 #
 # `make` alone does the whole golden path. Nothing else needs to be run by hand.
+# Where a Rust toolchain and bun are present, that includes the desktop app:
+# built, put in /Applications (or installed as a package on Linux), and
+# relaunched — so the app on the machine is never older than the code.
 
 BINDIR  := /usr/local/bin
 BINS    := makima makimad makima-server makima-relay
@@ -14,9 +17,16 @@ PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 linux/arm windows
 
 RELEASE := dist/release
 
-.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean sidecars app app-dev
+# The desktop app needs Rust and bun, which the four binaries do not. It joins
+# the golden path when both are here, and is skipped with a note when not, so
+# that somebody building a VPN from source is never told to install a UI
+# toolchain first.
+TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-all: build install restart
+.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean sidecars app app-build app-install app-skip app-dev
+
+all: build install $(if $(HAVE_APP),app,app-skip) restart
 
 build:
 	@mkdir -p $(BUILD)
@@ -34,15 +44,33 @@ install: build
 # The daemon holds a TUN device open, so a new binary means nothing until the
 # old process lets go of the interface. stop/restart exist so that is never a
 # manual step.
+#
+# `makima down` rather than pkill: the daemon is registered with launchd or
+# systemd, which would start it straight back up if it were merely killed.
+# The old binary is used to stop, since it is the one that registered it.
 stop:
-	@sudo pkill -x makimad 2>/dev/null && echo "  stopped makimad" || true
+	@if [ -x $(BINDIR)/makima ] && [ -f /etc/makima/node.json ]; then \
+		sudo $(BINDIR)/makima down >/dev/null 2>&1 && echo "  stopped makima" || sudo pkill -x makimad 2>/dev/null || true; \
+	else \
+		sudo pkill -x makimad 2>/dev/null && echo "  stopped makimad" || true; \
+	fi
 
-restart: stop
-	@echo "  makima installed. bring the tunnel up with: sudo makimad"
+# Back up with the new binary, if this machine is on a network at all. A
+# machine that is not is left alone: `makima up` on it would start a network,
+# and that is a thing to be asked for.
+restart:
+	@if [ -f /etc/makima/node.json ]; then \
+		echo "  bringing makima back up"; sudo $(BINDIR)/makima up; \
+	else \
+		echo "  makima installed. start with: makima up"; \
+	fi
 
 update: stop
 	@for b in $(BINS); do sudo rm -f $(BINDIR)/$$b; done
 	@$(MAKE) --no-print-directory install
+	@if [ -n "$(HAVE_APP)" ] && [ -d /Applications/makima.app -o -x /usr/bin/makima-desktop ]; then \
+		$(MAKE) --no-print-directory app; \
+	fi
 	@$(MAKE) --no-print-directory restart
 
 check: fmt vet test race
@@ -106,16 +134,16 @@ release: release-clean
 
 # The desktop app.
 #
-# Kept out of `make` on purpose. It needs Rust, bun and — on Linux — GTK and
-# webkit2gtk, none of which the four binaries require, and somebody building a
-# VPN from source should not have to install a UI toolchain to get one.
+# It needs Rust, bun and — on Linux — GTK and webkit2gtk, none of which the
+# four binaries require, so it is part of `make` only where those are found.
 #
 # The app carries the four binaries inside its bundle, so that downloading it
 # is the whole install: Tauri calls these "sidecars" and wants them named for
 # the target triple. `sidecars` builds them for this machine; the app target
 # bundles whatever is there.
-TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 SIDECARS := desktop/src-tauri/binaries
+BUNDLE   := desktop/src-tauri/target/release/bundle
+APP      := /Applications/makima.app
 
 sidecars:
 	@test -n "$(TRIPLE)" || { echo "rustc not found; the app needs a Rust toolchain"; exit 1; }
@@ -125,8 +153,35 @@ sidecars:
 		CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(SIDECARS)/$$b-$(TRIPLE) ./cmd/$$b || exit 1; \
 	done
 
-app: sidecars
+# Build it and put it where apps go, then open it — so `make` ends with the
+# new app in the menu bar, not with a bundle in a target directory.
+app: app-build app-install
+
+app-build: sidecars
 	@cd desktop && bun install --frozen-lockfile && bun run tauri build
+
+app-install:
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		echo "  install $(APP)"; \
+		osascript -e 'quit app "makima"' >/dev/null 2>&1 || true; \
+		rm -rf $(APP); \
+		cp -R $(BUNDLE)/macos/makima.app $(APP); \
+		open $(APP); \
+	elif command -v dpkg >/dev/null 2>&1 && ls $(BUNDLE)/deb/*.deb >/dev/null 2>&1; then \
+		echo "  install $$(ls $(BUNDLE)/deb/*.deb | tail -1)"; \
+		sudo dpkg -i $$(ls $(BUNDLE)/deb/*.deb | tail -1); \
+	elif command -v rpm >/dev/null 2>&1 && ls $(BUNDLE)/rpm/*.rpm >/dev/null 2>&1; then \
+		echo "  install $$(ls $(BUNDLE)/rpm/*.rpm | tail -1)"; \
+		sudo rpm -U --replacepkgs $$(ls $(BUNDLE)/rpm/*.rpm | tail -1); \
+	elif ls $(BUNDLE)/appimage/*.AppImage >/dev/null 2>&1; then \
+		echo "  install /usr/local/bin/makima-desktop"; \
+		sudo install -m 0755 $$(ls $(BUNDLE)/appimage/*.AppImage | tail -1) /usr/local/bin/makima-desktop; \
+	else \
+		echo "  the app is built under $(BUNDLE); nothing here knows how to install it"; \
+	fi
+
+app-skip:
+	@echo "  app     skipped: needs rustc and bun (see desktop/README.md)"
 
 # The app against a pretend mesh, so the interface can be worked on without
 # root and without a tunnel. Two processes; this runs the second.
@@ -139,8 +194,8 @@ release-clean:
 
 clean: release-clean
 	@rm -rf $(BUILD)
-# Service units. Installed on request rather than by `make`, because a daemon
-# that enables itself at boot on a machine somebody was only trying out is a
-# surprise, and this one takes over an interface and the routing table.
+# Service units, by hand. `makima up` registers the daemon with launchd or
+# systemd itself; this installs the hardened units in dist/ instead, for a
+# server somebody administers themselves.
 service:
 	@sh dist/install-service.sh

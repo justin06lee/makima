@@ -52,6 +52,16 @@ type Daemon struct {
 	// LogFile receives the process's output, since a detached daemon has no
 	// terminal to write to and a silent failure is the worst kind.
 	LogFile string
+
+	// Service is how this daemon is registered with launchd or systemd, so it
+	// survives a reboot. Leave it empty for a process that should only last
+	// as long as the session.
+	Service Service
+
+	// Env is handed to the process on top of the environment it inherits —
+	// and written into its service definition, which is how a daemon started
+	// at boot still knows who it is running for.
+	Env map[string]string
 }
 
 // Running reports whether the daemon is up and answering.
@@ -76,6 +86,12 @@ func (d Daemon) Running() bool {
 //
 // A no-op if it is already up, so `makima up` is safe to run twice — which
 // people do constantly, because it is the command they remember.
+//
+// Where the machine has a service manager and the daemon names a service, it
+// is registered there and started by it, so that it is back after a reboot
+// without anybody remembering to bring it back. Where that is not possible —
+// no manager, not root, or the manager refuses — it is started directly, and
+// lasts until the machine restarts.
 func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 	if d.Running() {
 		return nil
@@ -86,6 +102,27 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 		return err
 	}
 
+	if m, ok := available(d); ok {
+		if err := m.register(d, bin); err == nil {
+			if err := d.waitUntil(ctx, true, wait); err == nil {
+				return nil
+			}
+			// Registered, but never answered. Left in place, the manager
+			// would keep restarting something that does not work, and the
+			// next `makima up` would find a service that looks installed and
+			// a daemon that is not there.
+			_ = m.unregister(d)
+			return fmt.Errorf("%s did not come up within %s — see %s", d.Name, wait, d.logFor())
+		} else {
+			fmt.Fprintf(os.Stderr, "note: %s will not come back after a reboot: %s could not register it (%v)\n", d.Name, m.name(), err)
+		}
+	}
+
+	return d.spawn(ctx, bin, wait)
+}
+
+// spawn starts the daemon as a detached child of this process.
+func (d Daemon) spawn(ctx context.Context, bin string, wait time.Duration) error {
 	logw, err := d.openLog()
 	if err != nil {
 		return err
@@ -95,6 +132,7 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 	cmd := exec.Command(bin, d.Args...)
 	cmd.Stdout = logw
 	cmd.Stderr = logw
+	cmd.Env = append(os.Environ(), d.envList()...)
 	// Its own process group, so it survives the shell that started it and does
 	// not take a Ctrl-C aimed at the CLI with it.
 	cmd.SysProcAttr = detachAttrs()
@@ -110,7 +148,7 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 	d.writePID(pid)
 
 	if err := d.waitUntil(ctx, true, wait); err != nil {
-		return fmt.Errorf("%s did not come up within %s — see %s", d.Name, wait, d.LogFile)
+		return fmt.Errorf("%s did not come up within %s — see %s", d.Name, wait, d.logFor())
 	}
 	return nil
 }
@@ -121,7 +159,24 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 // the routing table, the resolver and the firewall back the way it found them,
 // and killing it outright would leave a machine that blackholes mesh addresses
 // until the next reboot.
+//
+// A daemon registered with the service manager is taken out of it as well —
+// otherwise the manager would start it again immediately, and again at the
+// next boot, and "down" would mean nothing.
 func (d Daemon) Stop(ctx context.Context, wait time.Duration) error {
+	if m, ok := available(d); ok && m.registered(d) {
+		if err := m.unregister(d); err != nil {
+			return fmt.Errorf("stop %s: %w", d.Name, err)
+		}
+		if err := d.waitUntil(ctx, false, wait); err == nil {
+			d.clearPID()
+			return nil
+		}
+		// Still answering: the running process was not the manager's after
+		// all — started by hand, or by an older makima — so it is stopped
+		// the direct way below.
+	}
+
 	if !d.Running() {
 		d.clearPID()
 		return nil
@@ -267,7 +322,7 @@ func Locate(name string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("cannot find %s beside this program or on PATH — is makima installed? (try: make install)", name)
+	return "", fmt.Errorf("%s is missing, so makima is not fully installed here — reinstall the app, or run the install script from https://github.com/justin06lee/makima", name)
 }
 
 // runnable reports whether a path is a file somebody could execute.

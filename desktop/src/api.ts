@@ -143,7 +143,7 @@ export const api = {
   status: async (): Promise<Snapshot> => {
     if (inTauri) return invoke<Snapshot>("status");
     if (browser.params().get("state") === "setup" || browser.params().get("state") === "off") {
-      return { running: false, error: "no makimad is running" };
+      return { running: false, error: "makima is not running" };
     }
     try {
       return { running: true, status: await browser.get<Status>("/api/status") };

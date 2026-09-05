@@ -23,7 +23,7 @@ import (
 // A distinct error because it is by far the most common one, and because the
 // right response to it — "start the daemon" — is different from the response
 // to anything else that can go wrong here.
-var ErrNoDaemon = errors.New("no makimad is running")
+var ErrNoDaemon = errors.New("makima is not running")
 
 // ErrNeedsRoot is a change refused because it was asked for over the
 // read-only socket — that is, by somebody who is not root.

@@ -107,7 +107,8 @@ func usage() {
 	fmt.Fprint(os.Stderr, `makima — every machine you own, on one private network
 
 getting started:
-  makima up                        start. the first machine makes the mesh.
+  makima up                        start. the first machine makes the network,
+                                   and every machine stays up across restarts.
   makima invite                    print an invite for the next machine
   makima join <invite>             run this on that machine
   makima down                      stop, and put this machine back
@@ -320,7 +321,7 @@ func joinNode(args []string) error {
 	fmt.Printf("joined %s\n", *server)
 	fmt.Printf("node   %s at %s (id %d)\n", *name, resp.Address.Addr(), resp.NodeID)
 	fmt.Printf("wrote  %s\n\n", *path)
-	fmt.Print("bring the tunnel up with: sudo makimad\n")
+	fmt.Print("bring the tunnel up with: makima up\n")
 	return nil
 }
 

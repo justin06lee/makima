@@ -92,9 +92,9 @@ export function Setup({
         </div>
 
         <p className="mt-8 max-w-md text-center text-[12px] leading-relaxed text-dimmer">
-          You will be asked for your password: makima creates a network interface, which needs it.
-          {" "}Get an invite on the first device with <span className="font-mono">Add device</span>, or{" "}
-          <span className="font-mono">makima invite</span> in a terminal.
+          You will be asked for your password once: makima creates a network interface, which needs it.
+          {" "}From then on this device stays connected, after restarts too, until you disconnect.
+          {" "}Get an invite on the first device with <span className="font-mono">Add device</span>.
         </p>
       </div>
     </div>

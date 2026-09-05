@@ -55,11 +55,13 @@ café and a home network. See [Known limits](#known-limits).
 ## Install
 
 **The app.** Download it, open it, click. It carries the four binaries inside
-its bundle, so nothing else has to be installed, and the first time it brings
-a tunnel up it puts the `makima` command on PATH so the terminal works too.
+its bundle, so nothing else has to be installed. The first time it brings a
+tunnel up it asks for your password once, registers the tunnel with the system
+so it is back after every restart, and puts the `makima` command on PATH so
+the terminal works too.
 
 ```sh
-make app        # macOS: .app and .dmg — Linux: .deb, .rpm and .AppImage
+make app        # build it and put it in /Applications — or install the .deb, .rpm or AppImage
 ```
 
 **The command line.**
@@ -70,7 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/inst
 
 One archive, verified against the release's published `SHA256SUMS`, and four
 binaries in `/usr/local/bin`. It starts nothing, enables nothing at boot, and
-touches no network configuration.
+touches no network configuration — `makima up` does all of that, when asked.
 
 <details>
 <summary>Other ways</summary>
@@ -86,13 +88,14 @@ docker run -p 3478:3478 ghcr.io/justin06lee/makima   # a relay
 From source, which is what a contributor wants:
 
 ```sh
-make          # build all four binaries and install them to /usr/local/bin
-make update   # stop the daemon, replace the binaries, ready to start again
+make          # build and install the four binaries, and the app if Rust and bun are here
+make update   # take the tunnel down, replace everything, bring it back up
 make check    # fmt, vet, test, and the race detector
 make release  # cross-built archives and checksums, in dist/release
 ```
 
-Requires Go 1.25 or newer.
+Requires Go 1.25 or newer. The app needs Rust and bun as well, and `make`
+skips it with a note when they are absent.
 
 </details>
 
@@ -156,6 +159,12 @@ coordination plane on this machine, turns on names, joins itself, starts the
 daemon, and prints an invite. It asks for sudo when it needs it rather than
 failing with advice about it.
 
+It also stays up. Every process `makima up` starts is registered with launchd
+on macOS or systemd on Linux — started at boot, restarted if it dies — so a
+device is on the network from the moment it powers on until `makima down`,
+which takes the registration away again. Nobody has to know there is a daemon,
+because nobody has to start one.
+
 On every machine after, paste what it printed:
 
 ```sh
@@ -171,7 +180,7 @@ about to trust cannot tell an impostor from the real server.
 ```sh
 makima invite        # another one, for the next machine
 makima status        # what this machine can see, and anything wrong
-makima down          # stop, and put this machine back
+makima down          # stop, and stay stopped across restarts, until up again
 ```
 
 Each node is handed an address from `100.64.0.0/10` and learns about the others
@@ -441,15 +450,19 @@ Remove beside each, and where incoming files go.
 network already? *Start a network* is `makima up`. *Join a network* takes a
 pasted invite. *Add device*, in the title bar of the machine holding the
 network, mints the invite for the next one and shows the command to paste.
+Either answer asks for your password once; after that the device stays
+connected, restarts included, until you disconnect.
 
 ```sh
-make app        # a real bundle: .app and .dmg, or .deb/.rpm/.AppImage
+make app        # build it, put it in /Applications (or install the package), open it
 ```
 
 macOS and Linux, built with Tauri — about 4 MB of its own, plus the four
 binaries it carries, using the web view already running on the machine rather
 than shipping another browser. It follows the system's light or dark
-appearance, and can open at login from Settings.
+appearance. It opens at login once a network has been started or joined from
+it — the tunnel is up anyway, and this is the menu bar coming back with it —
+and Settings turns that off.
 
 It reads over a **second Unix socket** the daemon opens beside its own:
 read-only by construction, and owned by whoever brought the tunnel up, so
@@ -875,7 +888,7 @@ desktop/devserver   a pretend mesh, so the UI can be built without root
 
 dist/install.sh     one archive, one checksum, four binaries
 dist/packaging      homebrew formula, PKGBUILD, Dockerfile
-dist/*.service      systemd units and a launchd plist, installed on request
+dist/*.service      hardened service units for servers run by hand; `makima up` registers its own
 flake.nix           the Nix build
 ```
 

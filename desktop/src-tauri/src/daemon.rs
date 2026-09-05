@@ -81,9 +81,9 @@ async fn get(path: &str) -> Result<serde_json::Value, String> {
         .await
         .map_err(|_| format!("{} did not answer", sock.display()))?
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => "no makimad is running".to_string(),
+            std::io::ErrorKind::NotFound => "makima is not running".to_string(),
             std::io::ErrorKind::PermissionDenied => format!(
-                "{} is not readable by this account — makimad gives it to whoever ran 'makima up'",
+                "{} is not readable by this account — makima was started by somebody else on this machine",
                 sock.display()
             ),
             _ => e.to_string(),
@@ -109,7 +109,7 @@ async fn get(path: &str) -> Result<serde_json::Value, String> {
 
     let resp = tokio::time::timeout(READ_TIMEOUT, sender.send_request(req))
         .await
-        .map_err(|_| "the daemon stopped answering".to_string())?
+        .map_err(|_| "makima stopped answering".to_string())?
         .map_err(|e| e.to_string())?;
 
     let status = resp.status();
@@ -121,7 +121,7 @@ async fn get(path: &str) -> Result<serde_json::Value, String> {
         .to_bytes();
 
     if !status.is_success() {
-        return Err(format!("daemon returned {status}"));
+        return Err(format!("makima answered with {status}"));
     }
     serde_json::from_slice(&body).map_err(|e| e.to_string())
 }

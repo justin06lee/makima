@@ -1,9 +1,12 @@
 #!/bin/sh
-# Install makima as a service that survives a reboot.
+# Install makima's hardened service units, by hand.
 #
-# Separate from `make` on purpose. Enabling a daemon at boot on a machine
-# somebody was only trying out is a surprise, and this one takes over a network
-# interface and edits the routing table. It should be asked for.
+# `makima up` already registers the daemon with launchd or systemd, so that it
+# is back after a reboot; nobody has to run this to get that. What this installs
+# instead are the units in this directory — narrowed capabilities, a protected
+# home, a dynamic user for the control server — for a machine somebody
+# administers themselves and wants locked down that way. Running it replaces
+# whatever `makima up` registered.
 set -eu
 
 die() { echo "install-service: $*" >&2; exit 1; }
