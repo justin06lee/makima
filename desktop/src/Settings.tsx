@@ -31,7 +31,7 @@ export function Settings({ status, env, busy, act }: { status: Status; env: Envi
         <Card>
           <Row
             value={env.holds_mesh ? "This device holds the network" : status.serverless ? "No server — devices are paired directly" : status.server ?? "Static network"}
-            caption={env.holds_mesh ? "Invites are created here. Keep it running for devices to join or leave." : status.serverless ? "Add devices with makima pair" : "Where this device checks in"}
+            caption={env.holds_mesh ? "Invites are created here. It runs whenever this device is on, so others can join or leave." : status.serverless ? "Add devices with makima pair" : "The device that started the network"}
           />
           {status.relay.url && (
             <Row value={status.relay.url} caption={status.relay.connected ? "Relay, connected — used when a direct path cannot be found" : "Relay, not connected"} mono />
@@ -68,8 +68,8 @@ export function Settings({ status, env, busy, act }: { status: Status; env: Envi
   );
 }
 
-/// Start at login. Off by default: a VPN that starts itself is a thing to be
-/// asked for.
+/// Start at login. Switched on the first time a network is started or joined
+/// from this window (see App.tsx), and the person's to switch off from then on.
 function LoginItem() {
   const [on, setOn] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);

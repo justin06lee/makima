@@ -83,6 +83,12 @@ func serveAdd(args []string) error {
 		return err
 	}
 
+	// Publishing changes the tunnel, which only root may do. Asked for here,
+	// before anything else, rather than discovered as a refusal afterwards.
+	if err := mustBeRoot(); err != nil {
+		return err
+	}
+
 	c, err := dialDaemon(*path)
 	if err != nil {
 		return err
@@ -121,7 +127,7 @@ func serveAdd(args []string) error {
 	}
 	if !st.Firewall.OK() {
 		fmt.Printf("\nwarning: %s\n", st.Firewall.Detail)
-		fmt.Print("run 'sudo makima firewall allow' or peers will not get through.\n")
+		fmt.Print("run 'makima firewall allow' or peers will not get through.\n")
 	}
 	return nil
 }
@@ -139,6 +145,9 @@ func serveRemove(args []string) error {
 	port, err := strconv.ParseUint(fs.Arg(0), 10, 16)
 	if err != nil {
 		return fmt.Errorf("%q is not a port", fs.Arg(0))
+	}
+	if err := mustBeRoot(); err != nil {
+		return err
 	}
 
 	c, err := dialDaemon(*path)
@@ -170,7 +179,7 @@ func serveList(args []string) error {
 
 	if len(st.Services) == 0 {
 		fmt.Print("nothing published from this machine\n\n")
-		fmt.Print("publish a local port with:\n  sudo makima serve 11434\n")
+		fmt.Print("publish a local port with:\n  makima allow 11434\n")
 		return nil
 	}
 
@@ -277,6 +286,9 @@ func firewallAllowCmd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := mustBeRoot(); err != nil {
+		return err
+	}
 
 	c, err := dialDaemon(*path)
 	if err != nil {
@@ -320,7 +332,7 @@ func uiCmd(args []string) error {
 	url := "http://" + *addr + "/"
 	if !reachable(*addr) {
 		return fmt.Errorf(
-			"nothing is serving the UI on %s.\nstart the daemon with it enabled:\n  sudo makimad -ui %s -ui-write",
+			"nothing is serving the web page on %s. The desktop app is the usual interface;\nfor the web page too, start makima with it on:\n  sudo makimad -ui %s -ui-write",
 			*addr, *addr)
 	}
 
