@@ -24,7 +24,7 @@ RELEASE := dist/release
 TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean sidecars app app-build app-install app-skip app-dev
+.PHONY: all build install update restart stop clean test race fmt vet check cross service release release-clean sidecars app app-build app-install app-skip app-dev dmg
 
 all: build install $(if $(HAVE_APP),app,app-skip) restart
 
@@ -157,13 +157,23 @@ sidecars:
 # new app in the menu bar, not with a bundle in a target directory.
 app: app-build app-install
 
+# On a Mac only the .app is built here: the .dmg is for handing the app to
+# somebody else, and its packaging step leaves a mounted volume behind when it
+# is interrupted, after which every later build fails at that step. `make
+# dmg` produces one on purpose.
 app-build: sidecars
-	@cd desktop && bun install --frozen-lockfile && bun run tauri build
+	@cd desktop && bun install --frozen-lockfile && \
+		if [ "$$(uname -s)" = Darwin ]; then bun run tauri build --bundles app; else bun run tauri build; fi
+
+dmg: sidecars
+	@cd desktop && bun install --frozen-lockfile && bun run tauri build --bundles dmg
 
 app-install:
 	@if [ "$$(uname -s)" = Darwin ]; then \
 		echo "  install $(APP)"; \
 		osascript -e 'quit app "makima"' >/dev/null 2>&1 || true; \
+		pkill -x makima-desktop 2>/dev/null || true; \
+		i=0; while pgrep -x makima-desktop >/dev/null 2>&1 && [ $$i -lt 40 ]; do sleep 0.25; i=$$((i+1)); done; \
 		rm -rf $(APP); \
 		cp -R $(BUNDLE)/macos/makima.app $(APP); \
 		open $(APP); \
