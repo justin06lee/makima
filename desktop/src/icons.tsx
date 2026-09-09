@@ -122,13 +122,15 @@ export const Icon = {
     </Svg>
   ),
   Mark: (p: P) => (
-    // The same ringed eye as the native menu bar template.
+    // The same circular iris as the native menu bar template.
     <svg width={p.size ?? 16} height={p.size ?? 16} viewBox="0 0 44 44" className={`shrink-0 ${p.className ?? ""}`} aria-hidden="true">
-      <g fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinejoin="round">
-        <path d="M2 22Q22 0 42 22Q22 44 2 22Z" />
-        <circle cx="22" cy="22" r="8" />
+      <g fill="none" stroke="currentColor">
+        <circle cx="22" cy="22" r="19" strokeWidth="2" />
+        <circle cx="22" cy="22" r="14" strokeWidth="2.4" />
+        <circle cx="22" cy="22" r="8" strokeWidth="2.2" />
+        <path d="M22 4v2m0 32v2M4 22h2m32 0h2M9.3 9.3l1.4 1.4m22.6 22.6 1.4 1.4m0-25.4-1.4 1.4m-22.6 22.6-1.4 1.4" strokeWidth="1.6" />
       </g>
-      <circle cx="22" cy="22" r="3" fill="currentColor" />
+      <circle cx="22" cy="22" r="2.7" fill="currentColor" />
     </svg>
   ),
 };

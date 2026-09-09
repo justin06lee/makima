@@ -123,8 +123,9 @@ devserver/        a pretend mesh, for working on the UI without root
 
 ## Icons
 
-The app uses a flat amber and vermilion ringed eye. The menu bar and in-app
-mark use a monochrome eye; macOS tints the menu bar template automatically,
+The app uses a flat circular amber iris with irregular vermilion rings, tapered
+radial fibers, and a small red pupil. There are no eyelids, eye whites, or
+background tile. The menu bar and in-app mark use a simplified monochrome iris; macOS tints the menu bar template automatically,
 and the existing disconnected state dims it.
 
 The editable sources are `src-tauri/icons/icon.svg` and
