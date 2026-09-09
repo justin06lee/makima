@@ -120,3 +120,24 @@ src-tauri/        the Rust half
   binaries/       the four Go binaries, built by `make sidecars`
 devserver/        a pretend mesh, for working on the UI without root
 ```
+
+## Icons
+
+The app uses a flat amber and vermilion ringed eye. The menu bar and in-app
+mark use a monochrome eye; macOS tints the menu bar template automatically,
+and the existing disconnected state dims it.
+
+The editable sources are `src-tauri/icons/icon.svg` and
+`src-tauri/icons/tray.svg`. After editing, run from `desktop/`:
+
+```sh
+bun run tauri icon src-tauri/icons/icon.svg --output /tmp/makima-icons
+for icon in 32x32.png 128x128.png 128x128@2x.png icon.png icon.icns icon.ico; do
+  cp "/tmp/makima-icons/$icon" src-tauri/icons/
+done
+rsvg-convert src-tauri/icons/tray.svg -o src-tauri/icons/tray.png
+```
+
+Keep `Icon.Mark` in `src/icons.tsx` aligned with the tray SVG. The SVGs have
+no gradients, shadows, or reflections. Generated desktop assets are checked
+in, so normal builds do not need `rsvg-convert`.

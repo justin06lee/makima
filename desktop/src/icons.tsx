@@ -122,15 +122,13 @@ export const Icon = {
     </Svg>
   ),
   Mark: (p: P) => (
-    // makima's own mark: three nodes around a centre, the banner reduced.
+    // The same ringed eye as the native menu bar template.
     <svg width={p.size ?? 16} height={p.size ?? 16} viewBox="0 0 44 44" className={`shrink-0 ${p.className ?? ""}`} aria-hidden="true">
-      <path d="M22 8 L35 30 L9 30 Z" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinejoin="round" />
-      <g fill="currentColor">
-        <circle cx="22" cy="8" r="4.2" />
-        <circle cx="35" cy="30" r="4.2" />
-        <circle cx="9" cy="30" r="4.2" />
-        <circle cx="22" cy="23" r="4.6" />
+      <g fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinejoin="round">
+        <path d="M2 22Q22 0 42 22Q22 44 2 22Z" />
+        <circle cx="22" cy="22" r="8" />
       </g>
+      <circle cx="22" cy="22" r="3" fill="currentColor" />
     </svg>
   ),
 };
