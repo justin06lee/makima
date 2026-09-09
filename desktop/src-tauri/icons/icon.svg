@@ -1,52 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="makima">
-  <!-- The banner's picture, squared: nodes leashed to the control plane in
-       gold, the traffic between them in crimson. The centre decides who may
-       speak to whom; it never carries a packet. -->
-  <defs>
-    <radialGradient id="bg" cx="50%" cy="48%" r="76%">
-      <stop offset="0%" stop-color="#14151d"/>
-      <stop offset="100%" stop-color="#0a0b10"/>
-    </radialGradient>
-    <radialGradient id="iris" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#1a1016"/>
-      <stop offset="100%" stop-color="#0d0a0e"/>
-    </radialGradient>
-  </defs>
-
-  <!-- Rounded, so the corners are genuinely transparent. That is how an app
-       icon should look on every platform, and it is also what keeps the PNG a
-       true RGBA image — encoders drop the alpha channel from anything fully
-       opaque, and Tauri's icon pipeline refuses those. -->
-  <rect width="512" height="512" rx="104" fill="url(#bg)"/>
-
-  <!-- Direct peer paths: crimson, solid, and never through the middle. -->
-  <g stroke="#c4353f" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.92">
-    <path d="M256 104 L396 330"/>
-    <path d="M396 330 L116 330"/>
-    <path d="M116 330 L256 104"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Makima's ringed eye">
+  <!-- Flat fills only: amber iris, vermilion rings, ink lashes. -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#191719"/>
+  <path d="M58 264C106 192 177 154 256 154s150 38 198 110c-50 67-120 104-198 104S108 331 58 264Z" fill="#fff4dc"/>
+  <circle cx="256" cy="258" r="103" fill="#edba48" stroke="#191719" stroke-width="10"/>
+  <g fill="none" stroke="#b84432" stroke-width="13">
+    <circle cx="256" cy="258" r="75"/>
+    <circle cx="256" cy="258" r="43"/>
   </g>
-
-  <!-- The leashes: gold, dashed, every node tied to the centre. -->
-  <g stroke="#e0a94a" stroke-width="5" stroke-dasharray="14 11" fill="none" opacity="0.85" stroke-linecap="round">
-    <path d="M256 256 L256 104"/>
-    <path d="M256 256 L396 330"/>
-    <path d="M256 256 L116 330"/>
-  </g>
-
-  <!-- The rings, breathing in the banner and still here. -->
-  <g fill="none" stroke="#e0a94a">
-    <circle cx="256" cy="256" r="72" stroke-width="3" opacity="0.34"/>
-    <circle cx="256" cy="256" r="54" stroke-width="3" opacity="0.52"/>
-  </g>
-
-  <!-- The control plane. -->
-  <circle cx="256" cy="256" r="38" fill="url(#iris)" stroke="#e0a94a" stroke-width="6"/>
-  <circle cx="256" cy="256" r="13" fill="#c4353f"/>
-
-  <!-- The nodes. -->
-  <g fill="#0a0b10" stroke="#e8e6e3" stroke-width="6">
-    <circle cx="256" cy="104" r="26"/>
-    <circle cx="396" cy="330" r="26"/>
-    <circle cx="116" cy="330" r="26"/>
-  </g>
+  <circle cx="256" cy="258" r="16" fill="#872f29"/>
+  <path d="M50 264C104 183 175 143 256 143s152 40 206 121l-27-11c-49-58-109-87-179-87S126 195 77 253Z" fill="#fff4dc"/>
+  <path d="m81 220-12-28 38 11m293 0 43-14-17 32" fill="#fff4dc"/>
 </svg>

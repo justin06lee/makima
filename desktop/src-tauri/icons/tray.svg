@@ -1,16 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44" role="img" aria-label="makima">
-  <!-- A template image: one colour and an alpha channel, nothing else. macOS
-       recolours it for the menu bar, so anything with its own palette comes
-       out as a pale smudge in one appearance and a dark one in the other.
-       The shape is the banner's — three nodes around a centre — reduced until
-       it still reads at 16 points. -->
-  <g fill="none" stroke="#000" stroke-width="2.6" stroke-linejoin="round">
-    <path d="M22 8 L35 30 L9 30 Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44" role="img" aria-label="Makima's ringed eye">
+  <!-- Template mask: transparent gaps remain legible at 22 points. -->
+  <g fill="none" stroke="#000" stroke-width="2.8" stroke-linejoin="round">
+    <path d="M2 22Q22 0 42 22Q22 44 2 22Z"/>
+    <circle cx="22" cy="22" r="8"/>
   </g>
-  <g fill="#000">
-    <circle cx="22" cy="8" r="4.2"/>
-    <circle cx="35" cy="30" r="4.2"/>
-    <circle cx="9" cy="30" r="4.2"/>
-    <circle cx="22" cy="23" r="4.6"/>
-  </g>
+  <circle cx="22" cy="22" r="3" fill="#000"/>
 </svg>
