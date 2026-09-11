@@ -199,7 +199,7 @@ makima status        # what this machine can see, and anything wrong
 makima down          # stop, and stay stopped across restarts, until up again
 ```
 
-Each node is handed an address from `100.64.0.0/10` and learns about the others
+Each node is handed an address from `10.77.0.0/16` and learns about the others
 automatically. Nodes appearing and disappearing propagate within milliseconds —
 the daemon holds a long poll open, so a change is pushed rather than discovered
 on a timer.
@@ -225,35 +225,48 @@ Then, for every device you chose:
 
 1. makima goes on it, copied from this device. The app carries builds for the
    other platforms, so a Mac can set up a Linux server with nothing downloaded.
-2. The network starts on the Control Devil, reachable at its LAN or public
-   address — never a Tailscale one, since Tailscale is what is going away.
-3. Each device proves it can reach the Control Devil *without* Tailscale. One
-   that cannot is left exactly as it was — and if the device you are at cannot,
-   nothing is switched at all.
-4. Your device joins the network, alongside Tailscale.
-5. Every device switches, on its own, detached from the SSH session that
-   started it: stop Tailscale (stopped, not removed), join, and send a packet
-   through the tunnel to the Control Devil and get one back. Then it *holds*,
-   Tailscale still installed.
-6. Your device reaches each one over makima — the new bridge, and only that —
-   and confirms it. Only a confirmed device removes Tailscale and signs out of
-   the tailnet. One that is never confirmed, because of a firewall or a closed
-   window or anything else, puts Tailscale back by itself after 15 minutes.
-   Your device goes last, and gives up Tailscale only if every device it might
-   still need it for was confirmed; on a Mac, a partial move keeps both.
+2. Your SSH keys go on it — this device's public keys, from `ssh-agent` and
+   `~/.ssh/*.pub`, into the login account's `~/.ssh/authorized_keys`, each
+   once — so ordinary `ssh` keeps working once Tailscale SSH is gone. It then
+   tries a plain `ssh` to the device's own LAN or public address and says
+   whether that works. A device with nothing listening for ordinary SSH gets
+   makima's own SSH server on port 2222, with the same keys. If this device
+   has no SSH key at all, the move stops before changing anything and says to
+   run `ssh-keygen -t ed25519`.
+3. The network starts on the Control Devil, reachable at its LAN or public
+   address — never a Tailscale one, since the network has to work once
+   Tailscale is gone. If the Control Devil was on a network from an older
+   makima, in `100.64.0.0/10`, that network is started over in `10.77.0.0/16`.
+4. Each other device proves it can reach the Control Devil *without*
+   Tailscale, then joins — beside Tailscale, which keeps running. One that
+   cannot is left exactly as it was. The invite goes over the SSH session's
+   input, never onto a command line.
+5. Your device logs in to each one over makima — `ssh` to its makima address,
+   and a command that answers. One that is not reached says why: it never
+   showed up on the network; it is on the network but no connection came up,
+   most likely a firewall dropping UDP 51820; or makima reaches it but `ssh`
+   over makima did not get in.
+6. With *Uninstall Tailscale* on, each device that was reached has Tailscale
+   removed — over makima, so the session doing it does not depend on what it
+   removes — and is checked to still answer. Your device goes last, and only if
+   every device that came along was reached; otherwise it keeps Tailscale
+   beside makima and says which devices are why.
 
 So Tailscale never comes off a device until makima has been shown to reach it
-from where you are — the bridge is never burned before the new one holds.
+from where you are, and it is never stopped before that either. A device that
+does not make it across has had Tailscale running the whole time, so there is
+nothing to roll back. Each device ends *moved* (on makima, Tailscale removed),
+*both* (on makima, Tailscale still beside it), or *stayed* (Tailscale as it
+was).
 
-Devices that were only reachable through Tailscale SSH get makima's own SSH
-server, with your keys, so `ssh` to them keeps working. Each device keeps its
-MagicDNS name: `tenet.your-tailnet.ts.net` becomes `tenet.makima`. Turn off
-*Uninstall Tailscale* to leave it installed and switched off instead.
+Each device keeps its MagicDNS name: `tenet.your-tailnet.ts.net` becomes
+`tenet.makima`. Turn off *Uninstall Tailscale* to keep Tailscale running
+beside makima everywhere instead.
 
-Between Linux machines this has to be all-or-nothing per device: while
-Tailscale runs there, it drops any packet from `100.64.0.0/10` that did not
-arrive on its own interface, and makima's addresses are in that range — which
-is why each switch stops Tailscale before it tests the tunnel, not after.
+This works because makima has its own address range. Tailscale, on Linux,
+drops every packet from `100.64.0.0/10` that did not arrive on its own
+interface; makima's `10.77.0.0/16` is outside it, so the two run side by side
+on every machine and nothing has to be switched over.
 
 ### Services publish themselves
 
@@ -284,15 +297,15 @@ magnitude of latency.
 
 ```sh
 makima ping desktop
-#   100.64.0.2      relay   relay.example:3478  84.2ms
+#   10.77.0.2       relay   relay.example:3478  84.2ms
 #
 #   Reachable through relay.example:3478. Relayed, not direct —
 #   'makima ping -until-direct desktop' waits for an upgrade.
 
 makima ping -until-direct desktop
-#   100.64.0.2      relay   relay.example:3478  84.2ms
-#   100.64.0.2      relay   relay.example:3478  83.9ms
-#   100.64.0.2      direct  203.0.113.9:41641   11.4ms
+#   10.77.0.2       relay   relay.example:3478  84.2ms
+#   10.77.0.2       relay   relay.example:3478  83.9ms
+#   10.77.0.2       direct  203.0.113.9:41641   11.4ms
 #
 #   Direct path to desktop after 3.2s.
 #   Traffic is going straight there — 11.4ms instead of 84.2ms through the relay.
@@ -459,11 +472,26 @@ What does reach the service is what got through WireGuard's cryptographic
 authentication and then the mesh's access policy. That is the "requests that
 arrive in the name of makima just work" property, made literal.
 
-The firewall is handled too. On start the daemon detects firewalld, ufw, or a
-bare iptables ruleset and tells it to trust the tunnel interface — one narrow
-rule, removed again on exit, opening no port to the LAN or the internet. Pass
-`-no-firewall` if you would rather do it yourself, and see `makima firewall
-status` either way.
+The firewall is handled too. On start the daemon detects firewalld, ufw, a bare
+nftables ruleset or a bare iptables one, and tells it to trust the tunnel
+interface — one narrow rule, removed again on exit. It also opens WireGuard's
+UDP port, `51820` by default, because the encrypted packets arrive on the LAN
+interface before they ever reach the tunnel, and trusting the tunnel alone
+lets none of them in. A machine holding the network has its server's TCP port
+opened the same way. Pass `-no-firewall` if you would rather do it yourself,
+and see `makima firewall status` either way.
+
+In bare nftables every base chain on a hook sees every packet and a drop in
+any of them wins, so a table of makima's own would change nothing. Instead
+makima inserts its accept rules at the top of each input chain whose policy is
+drop, each with a comment beginning `makima ` — `makima iface makima0`,
+`makima udp 51820`, `makima tcp 8080` — and finds them again by handle to take
+out only its own. iptables-nft's own chains are left to the iptables handling.
+firewalld and ufw remember a port they were told to open; the tagged nftables
+and iptables rules last until the ruleset is next reloaded, and makima adds
+them again each time it starts. `dist/uninstall.sh` removes the tagged rules.
+It leaves the firewalld and ufw port rules, since makima cannot tell its port
+from the same one opened for something else.
 
 And when something still is not right:
 
@@ -671,7 +699,7 @@ makima pair
 
 # on the second
 makima pair mkp1_eyJuIjoi…
-#   Paired with desktop at 100.79.11.4.
+#   Paired with desktop at 10.77.11.4.
 ```
 
 That is the whole procedure. There is no server, no account, no membership and
@@ -685,7 +713,9 @@ two public keys, the mesh address this machine answers on, optionally a
 preshared key, optionally a relay to meet at, and wherever it currently thinks
 it can be reached. Mesh addresses are derived from the node key rather than
 handed out, so both ends compute the same answer from public information and
-there is nothing to negotiate.
+there is nothing to negotiate. There are 16 bits of it, under `10.77.0.0/16`,
+so two of your machines landing on the same address is unlikely but possible —
+and it is caught and reported at pairing time rather than left to confuse.
 
 Pairing is a **window, not a service**. `makima pair` listens for ten minutes
 by default (`-for 1h`, or `makima pair -stop` to close it early); outside that
@@ -714,15 +744,15 @@ meeting at one you do not own costs nothing in confidentiality.
 ```sh
 # on the machine with something to share
 makima try -serve 8080
-#   This machine is laptop at 100.79.11.4. Nothing on it has been changed.
+#   This machine is laptop at 10.77.11.4. Nothing on it has been changed.
 #
 #   Run this on the other machine:
 #     makima try mkp1_eyJuIjoi…
 
 # on the other one
 makima try -forward 18080:8080 mkp1_eyJuIjoi…
-#   Paired with laptop at 100.79.11.4.
-#     carrying  http://127.0.0.1:18080 → 100.79.11.4:8080
+#   Paired with laptop at 10.77.11.4.
+#     carrying  http://127.0.0.1:18080 → 10.77.11.4:8080
 #
 #   Direct path to [2600:…]:41641 (3ms).
 ```
@@ -750,8 +780,8 @@ A static mesh predates pairing and is still the smallest possible thing:
 `makima init` and `makima peer add` maintain the peer list yourself.
 
 ```sh
-makima init -name laptop -addr 100.64.0.1
-makima peer add -name desktop -key <public key> -addr 100.64.0.2 \
+makima init -name laptop -addr 10.77.0.1
+makima peer add -name desktop -key <public key> -addr 10.77.0.2 \
                 -endpoint 192.168.1.50:51820
 makima up
 ```
@@ -765,19 +795,28 @@ the path-selecting socket, because pairing *is* a disco exchange.
 
 ### Addressing
 
-Addresses come from `100.64.0.0/10`, RFC 6598 carrier-grade NAT space. It is
-routable enough to be useful and reserved enough that it will not collide with
-the `10.0.0.0/8` and `192.168.0.0/16` ranges every home and office LAN is
-already using.
+Addresses come from `10.77.0.0/16` — `10.77.0.1`, `10.77.0.2`, and so on, in
+the order machines join. It is makima's own range, and the reason it has one
+is Tailscale. Tailscale uses `100.64.0.0/10`, and on Linux it drops every
+packet from that range that did not arrive on its own interface; a mesh in the
+same range could only run there with Tailscale stopped. In a range of its own,
+makima runs beside Tailscale on macOS and Linux alike.
+
+The `/16` was picked away from the parts of `10.0.0.0/8` that are taken by
+default: `10.0` and `10.1` by home routers and cloud VPCs, `10.42`–`10.43` by
+k3s, `10.96` by Kubernetes services, `10.128` and up by cloud regions, `10.211`
+by Parallels.
 
 Only `/32` host routes are ever installed, one per peer. That is mostly an ACL
-decision — routing the whole `/10` into the tunnel would blackhole traffic to
-mesh addresses this node cannot actually see — but on macOS it also means
-makima coexists with Tailscale: a `/32` wins over Tailscale's `/10` by
-longest-prefix match. On Linux it does not, because Tailscale also installs a
-firewall rule dropping every packet from `100.64.0.0/10` that did not arrive on
-its own interface; the two take turns there, which is how
-[the move from Tailscale](#coming-from-tailscale) switches each machine.
+decision — routing the whole `/16` into the tunnel would blackhole traffic to
+mesh addresses this node cannot actually see — but it also means that a LAN
+which happens to use part of `10.77.0.0/16` loses only the few addresses peers
+actually hold.
+
+Networks started by an older makima keep their `100.64.0.0/10` addresses and
+keep working. They cannot share a Linux machine with a running Tailscale, and
+`makima doctor` says so when they try; starting the network again with this
+makima moves it into `10.77.0.0/16`.
 
 ## How it fits together
 
@@ -857,7 +896,7 @@ still faces a secret that never crossed the wire.
 
 ```sh
 makima genkey -psk                       # prints one line; use it twice
-makima peer add -name desktop -key ... -addr 100.64.0.2 -psk <the key>
+makima peer add -name desktop -key ... -addr 10.77.0.2 -psk <the key>
 ```
 
 Both sides must set the same one. A preshared key configured on one end only
@@ -913,10 +952,11 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 - **Published services are TCP only.** A UDP service — a game server, a DNS
   resolver on a peer — is reachable at the peer's mesh address directly, but
   `makima allow` does not forward it, and it is not published automatically.
-- **The firewall is configured automatically on Linux only,** and not at all
-  under a bare nftables ruleset: in nftables every table sees every packet, so
-  an accept rule makima owns would not override a drop in yours. `makima
-  doctor` prints the rule to add instead of pretending.
+- **The firewall is configured automatically on Linux only** — firewalld, ufw,
+  bare nftables and bare iptables. macOS does not filter tunnel traffic by
+  default, so there is nothing to configure there. The rules makima adds to a
+  bare nftables or iptables ruleset last until that ruleset is next reloaded;
+  the daemon adds them again each time it starts.
 - **Automatic publishing trusts the whole mesh.** Every loopback service on a
   node is reachable by every node permitted to see it — including a Postgres
   with trust auth, a debug port, or an unauthenticated admin panel. Right for
