@@ -123,16 +123,18 @@ devserver/        a pretend mesh, for working on the UI without root
 
 ## Icons
 
-The app uses a flat circular amber iris with irregular vermilion rings, tapered
-radial fibers, and a small red pupil. There are no eyelids, eye whites, or
-background tile. The menu bar and in-app mark use a simplified monochrome iris; macOS tints the menu bar template automatically,
-and the existing disconnected state dims it.
+The app icon is a greyscale drawing of Makima, cropped in close on one eye so
+its ringed iris fills a macOS app tile (Apple's 824px grid in a 1024px canvas,
+185.4px corners). The tile shape matters: macOS boxes any other shape in a grey
+frame. The menu bar and in-app mark use a simplified monochrome iris; macOS
+tints the menu bar template automatically, and the existing disconnected state
+dims it.
 
-The editable sources are `src-tauri/icons/icon.svg` and
-`src-tauri/icons/tray.svg`. After editing, run from `desktop/`:
+The sources are `src-tauri/icons/icon-source.png` (the finished 1024px tile)
+and `src-tauri/icons/tray.svg`. After changing either, run from `desktop/`:
 
 ```sh
-bun run tauri icon src-tauri/icons/icon.svg --output /tmp/makima-icons
+bun run tauri icon src-tauri/icons/icon-source.png --output /tmp/makima-icons
 for icon in 32x32.png 128x128.png 128x128@2x.png icon.png icon.icns icon.ico; do
   cp "/tmp/makima-icons/$icon" src-tauri/icons/
 done
