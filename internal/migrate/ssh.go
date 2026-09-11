@@ -218,7 +218,7 @@ func (s *SSH) Run(ctx context.Context, t Target, script string, stdin []byte, on
 
 // sshError turns ssh's failure into one sentence about the machine.
 func sshError(err error, stderr string) error {
-	msg := lastLine(stderr)
+	msg := strings.TrimPrefix(lastLine(stderr), "makima: ")
 	switch {
 	case strings.Contains(stderr, "Permission denied"):
 		return ErrDenied

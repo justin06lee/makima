@@ -28,7 +28,7 @@ func TestControlURL(t *testing.T) {
 		{"a bracketed IPv6 with a port is kept", "[2001:db8::1]:9000", "http://[2001:db8::1]:9000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := controlURL(tc.given); got != tc.want {
+			if got := controlURLOn(tc.given, 8080); got != tc.want {
 				t.Errorf("controlURL(%q) = %q, want %q", tc.given, got, tc.want)
 			}
 		})
@@ -60,5 +60,18 @@ func TestServerServiceNamesAreWhatTheAppLooksFor(t *testing.T) {
 	}
 	if svc.Unit != "makima-server" {
 		t.Errorf("systemd unit = %q; the app looks for makima-server.service", svc.Unit)
+	}
+}
+
+func TestControlURLUsesTheServersPort(t *testing.T) {
+	if got := controlURLOn("192.168.1.20", 8081); got != "http://192.168.1.20:8081" {
+		t.Fatal(got)
+	}
+	// An explicit port, or a URL, is what was asked for.
+	if got := controlURLOn("192.168.1.20:9000", 8081); got != "http://192.168.1.20:9000" {
+		t.Fatal(got)
+	}
+	if got := controlURLOn("https://makima.example.dev", 8081); got != "https://makima.example.dev" {
+		t.Fatal(got)
 	}
 }

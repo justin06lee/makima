@@ -97,6 +97,20 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 		return nil
 	}
 
+	// The directories the daemon writes into exist before anything starts
+	// it. systemd opens StandardOutput=append: itself, and does not make the
+	// directory for it — on a machine that has never run makima the daemon
+	// never got as far as its first instruction, failing with status 209 and
+	// leaving no log at all to say why. The pid file sits beside state that
+	// holds keys, so its directory is root's alone; the log's is readable.
+	for f, mode := range map[string]os.FileMode{d.LogFile: 0o755, d.PIDFile: 0o700} {
+		if f != "" {
+			if err := os.MkdirAll(filepath.Dir(f), mode); err != nil {
+				return fmt.Errorf("make %s: %w", filepath.Dir(f), err)
+			}
+		}
+	}
+
 	bin, err := Locate(d.Name)
 	if err != nil {
 		return err
@@ -112,7 +126,7 @@ func (d Daemon) Start(ctx context.Context, wait time.Duration) error {
 			// next `makima up` would find a service that looks installed and
 			// a daemon that is not there.
 			_ = m.unregister(d)
-			return fmt.Errorf("%s did not come up within %s — see %s", d.Name, wait, d.logFor())
+			return d.didNotStart(wait)
 		} else {
 			fmt.Fprintf(os.Stderr, "note: %s will not come back after a reboot: %s could not register it (%v)\n", d.Name, m.name(), err)
 		}
@@ -148,9 +162,39 @@ func (d Daemon) spawn(ctx context.Context, bin string, wait time.Duration) error
 	d.writePID(pid)
 
 	if err := d.waitUntil(ctx, true, wait); err != nil {
-		return fmt.Errorf("%s did not come up within %s — see %s", d.Name, wait, d.logFor())
+		return d.didNotStart(wait)
 	}
 	return nil
+}
+
+// didNotStart says a daemon failed to come up, with the last thing it said
+// if it said anything: "address already in use" in the error itself is worth
+// more than a path to a file on another machine.
+func (d Daemon) didNotStart(wait time.Duration) error {
+	if last := lastLogLine(d.LogFile); last != "" {
+		return fmt.Errorf("%s did not come up within %s: %s (more in %s)", d.Name, wait, last, d.logFor())
+	}
+	return fmt.Errorf("%s did not come up within %s — see %s", d.Name, wait, d.logFor())
+}
+
+func lastLogLine(path string) string {
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(b) > 8192 {
+		b = b[len(b)-8192:]
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	// Go's log prefix is a timestamp; the message is what matters.
+	if len(last) > 20 && last[4] == '/' && last[7] == '/' && last[10] == ' ' {
+		last = strings.TrimSpace(last[20:])
+	}
+	return last
 }
 
 // Stop asks the daemon to exit and waits for it to let go of its socket.

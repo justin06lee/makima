@@ -602,7 +602,9 @@ function ProgressRow({
   outcome?: { outcome: string; detail?: string; notes?: string[] };
   done: boolean;
 }) {
-  const failed = step?.state === "failed" || (outcome && outcome.outcome !== "moved" && outcome.outcome !== "moved?");
+  // Red is for a device something went wrong on. One the run stopped short
+  // of was never touched, and says so in grey.
+  const failed = step?.state === "failed" || outcome?.outcome === "rolled_back";
   const finished = outcome ? outcome.outcome === "moved" || outcome.outcome === "moved?" : step?.step === "switch" && step.state === "ok";
   const text = outcome?.detail ?? (step ? stepText(step) : "Waiting its turn");
   return (
