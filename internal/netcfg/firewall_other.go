@@ -21,3 +21,6 @@ func firewallStatus(iface string) Report {
 
 func firewallAllow(iface string, b Backend) error { return nil }
 func firewallReset(iface string, b Backend) error { return nil }
+
+// OpenPort has nothing to do where firewallStatus has nothing to configure.
+func OpenPort(proto string, port int) (string, error) { return "", nil }

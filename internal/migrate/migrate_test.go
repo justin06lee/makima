@@ -277,8 +277,10 @@ func TestActionArgs(t *testing.T) {
 	}{
 		{Action{Kind: "migrate-host", Advertise: "192.168.1.20", Name: "tenet", Invites: 2}, "migrate host -json -advertise 192.168.1.20 -name tenet -invites 2"},
 		{Action{Kind: "migrate-join", Name: "mac", Invite: "mk1_abc"}, "migrate join -name mac mk1_abc"},
-		{Action{Kind: "migrate-cutover", Name: "mac", Controller: "tenet", Remove: true}, "migrate cutover -name mac -controller tenet -remove=true"},
-		{Action{Kind: "migrate-cutover", Name: "mac", Controller: "mac", ServerSelf: true}, "migrate cutover -name mac -controller mac -server-self -remove=false"},
+		{Action{Kind: "migrate-cutover", Name: "mac", Controller: "tenet", Remove: true}, "migrate cutover -detach -name mac -controller tenet -remove=true"},
+		{Action{Kind: "migrate-cutover", Name: "mac", Controller: "mac", ServerSelf: true}, "migrate cutover -detach -name mac -controller mac -server-self -remove=false"},
+		{Action{Kind: "migrate-commit", Verdict: "commit"}, "migrate commit"},
+		{Action{Kind: "migrate-commit", Verdict: "keep"}, "migrate commit -keep"},
 	}
 	for _, c := range cases {
 		if got := strings.Join(c.a.Args(), " "); got != c.want {
@@ -319,12 +321,14 @@ type fakeShell struct {
 	auth   string
 
 	probeFails map[string]bool   // tailscale IPs that cannot reach the server
-	final      map[string]string // state each machine's switch ends in
+	final      map[string]string // state each machine's switch ends in, instead of holding
 	cutovers   []string          // machines a switch was started on, in order
+	commits    []string          // "addr verdict", for every verdict delivered
+	noCommit   map[string]bool   // mesh addresses a verdict cannot reach
 }
 
 func newFakeShell() *fakeShell {
-	return &fakeShell{pinned: map[string]bool{}, refuse: map[string]bool{}, probeFails: map[string]bool{}, final: map[string]string{}}
+	return &fakeShell{pinned: map[string]bool{}, refuse: map[string]bool{}, probeFails: map[string]bool{}, final: map[string]string{}, noCommit: map[string]bool{}}
 }
 
 func (f *fakeShell) Pin(addr string, keys []string) error {
@@ -382,9 +386,31 @@ func (f *fakeShell) Run(ctx context.Context, t Target, script string, stdin []by
 		s := f.final[t.Addr]
 		f.mu.Unlock()
 		if s == "" {
-			s = StateDone
+			s = StateWaiting
 		}
 		b, _ := json.Marshal(State{State: s, Detail: "reported by " + t.Addr, Path: "direct"})
+		return string(b), nil
+	case strings.Contains(norm, "migrate commit"):
+		verdict := VerdictCommit
+		if strings.Contains(norm, "-abort") {
+			verdict = VerdictAbort
+		} else if strings.Contains(norm, "-keep") {
+			verdict = VerdictKeep
+		}
+		f.mu.Lock()
+		blocked := f.noCommit[t.Addr]
+		if !blocked {
+			f.commits = append(f.commits, t.Addr+" "+verdict)
+		}
+		f.mu.Unlock()
+		if blocked {
+			return "", ErrUnreachable
+		}
+		st := State{State: StateDone, Removed: true}
+		if verdict == VerdictAbort {
+			st = State{State: StateRolledBack, Detail: "the move was called off"}
+		}
+		b, _ := json.Marshal(st)
 		return string(b), nil
 	}
 	return "", fmt.Errorf("unexpected script %q", script)
@@ -426,14 +452,30 @@ func (l *fakeLocal) elevate(_ context.Context, a Action) (string, error) {
 		b, _ := json.Marshal(HostResult{Server: "http://192.168.1.199:8080", Invites: inv})
 		return string(b), nil
 	case "migrate-cutover":
-		s := l.cutover
-		if s == "" {
-			s = StateDone
+		if l.cutover != "" && l.cutover != StateWaiting {
+			return "", fmt.Errorf("it would not start")
 		}
-		b, _ := json.Marshal(State{State: s, Removed: true})
+		return "started 123", nil
+	case "migrate-commit":
+		st := State{State: StateDone, Removed: a.Verdict == VerdictCommit}
+		if a.Verdict == VerdictAbort {
+			st = State{State: StateRolledBack, Detail: "the move was called off"}
+		}
+		b, _ := json.Marshal(st)
 		return "status...\n" + string(b), nil
 	}
 	return "", nil
+}
+
+func (l *fakeLocal) verdict() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, a := range l.actions {
+		if a.Kind == "migrate-commit" {
+			return a.Verdict
+		}
+	}
+	return ""
 }
 
 func runner(sh *fakeShell, l *fakeLocal) *Runner {
@@ -442,8 +484,15 @@ func runner(sh *fakeShell, l *fakeLocal) *Runner {
 		Version: "v1.0.0",
 		Elevate: l.elevate,
 		Probe:   func(context.Context, string) error { return nil },
-		Peers:   func() map[string]MeshPeer { return nil },
-		Pubkeys: func() string { return "ssh-ed25519 AAAAkey me@mac" },
+		Peers: func() map[string]MeshPeer {
+			return map[string]MeshPeer{
+				"mac":   {Address: "100.64.0.9", Online: true},
+				"tenet": {Address: "100.64.0.1", Online: true},
+				"box":   {Address: "100.64.0.2", Online: true},
+			}
+		},
+		LocalState: func() (State, error) { return State{State: StateWaiting}, nil },
+		Pubkeys:    func() string { return "ssh-ed25519 AAAAkey me@mac" },
 		Kit: func(context.Context, string, string, string) ([]byte, string, error) {
 			return []byte("kit"), "test", nil
 		},
@@ -460,6 +509,15 @@ func outcomes(res Result) map[string]string {
 	return m
 }
 
+func commitsTo(sh *fakeShell) map[string]string {
+	m := map[string]string{}
+	for _, c := range sh.commits {
+		addr, v, _ := strings.Cut(c, " ")
+		m[addr] = v
+	}
+	return m
+}
+
 func TestRunControllerRemote(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
 	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
@@ -472,16 +530,23 @@ func TestRunControllerRemote(t *testing.T) {
 	if o := outcomes(res); o["mac"] != Moved || o["tenet"] != Moved || o["box"] != Moved {
 		t.Fatalf("outcomes = %v", o)
 	}
-	// The controller switches before anybody else.
-	if len(sh.cutovers) != 2 || sh.cutovers[0] != "100.102.72.87" {
-		t.Fatalf("cutovers = %v", sh.cutovers)
+	// Every removal was confirmed over makima — the mesh addresses — and
+	// never over Tailscale.
+	c := commitsTo(sh)
+	if c["100.64.0.1"] != VerdictCommit || c["100.64.0.2"] != VerdictCommit || len(c) != 2 {
+		t.Fatalf("commits = %v", sh.commits)
 	}
-	// This machine joins, then switches last, pointed at the controller.
-	if len(l.actions) != 2 || l.actions[0].Kind != "migrate-join" || l.actions[1].Kind != "migrate-cutover" ||
-		l.actions[1].Controller != "tenet" || l.actions[1].ServerSelf || !l.actions[1].Remove {
-		t.Fatalf("local actions = %+v", l.actions)
+	if sh.commits[0] != "100.64.0.1 commit" {
+		t.Fatalf("the controller is confirmed first: %v", sh.commits)
 	}
-	var sawBoxCutover, sawTenetCutover bool
+	// This machine joined before anything switched, and committed last.
+	kinds := []string{}
+	for _, a := range l.actions {
+		kinds = append(kinds, a.Kind)
+	}
+	if strings.Join(kinds, ",") != "migrate-join,migrate-cutover,migrate-commit" || l.verdict() != VerdictCommit {
+		t.Fatalf("local actions = %v verdict %s", kinds, l.verdict())
+	}
 	for _, c := range sh.calls {
 		script := strings.NewReplacer(`'\''`, "", "'", "").Replace(c.script)
 		if !strings.Contains(script, "migrate cutover") {
@@ -489,25 +554,46 @@ func TestRunControllerRemote(t *testing.T) {
 		}
 		switch c.target.Addr {
 		case "100.70.0.9":
-			sawBoxCutover = true
 			// Through sudo, password first, then the invite — never on
 			// the command line.
 			if !strings.HasPrefix(c.stdin, "pw\n{") || !strings.Contains(c.stdin, "mk1_invite") || strings.Contains(script, "mk1_") {
 				t.Errorf("box cutover: script %q stdin %q", c.script, c.stdin)
 			}
 		case "100.102.72.87":
-			sawTenetCutover = true
-			if !strings.Contains(script, "-server-self") {
-				t.Errorf("tenet holds the network: %q", c.script)
-			}
-			// Reached by Tailscale SSH with no sshd: it gets makima's.
-			if !strings.Contains(script, "-ssh-user root") || !strings.Contains(c.stdin, "ssh-ed25519 AAAAkey") {
-				t.Errorf("tenet should get makima's SSH server: %q %q", c.script, c.stdin)
+			if !strings.Contains(script, "-server-self") || !strings.Contains(script, "-ssh-user root") || !strings.Contains(c.stdin, "ssh-ed25519 AAAAkey") {
+				t.Errorf("tenet cutover: %q %q", script, c.stdin)
 			}
 		}
+		if strings.HasPrefix(c.target.Addr, "100.64.") {
+			t.Errorf("a switch is started over Tailscale, not makima: %s", c.target.Addr)
+		}
 	}
-	if !sawBoxCutover || !sawTenetCutover {
-		t.Fatal("a cutover was not started")
+	// tenet only had Tailscale SSH: it is confirmed through makima's own.
+	for _, c := range sh.calls {
+		if c.target.Addr == "100.64.0.1" && c.target.Port != 2222 {
+			t.Errorf("tenet over makima should be port 2222, got %d", c.target.Port)
+		}
+	}
+}
+
+// The failure that prompted the confirmation: this machine cannot reach the
+// controller without Tailscale. Nothing may leave Tailscale then.
+func TestRunSwitchesNothingWhenThisDeviceCannotReachTheController(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	r := runner(sh, l)
+	r.Probe = func(context.Context, string) error { return fmt.Errorf("192.168.1.253 does not answer on TCP 8081") }
+	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet"}, Remove: true}
+	res := r.Run(context.Background(), ch)
+	if res.OK || !strings.Contains(res.Error, "Nothing was switched") {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(sh.cutovers) != 0 {
+		t.Fatalf("a switch was started: %v", sh.cutovers)
+	}
+	for _, a := range l.actions {
+		if a.Kind == "migrate-cutover" || a.Kind == "migrate-join" {
+			t.Fatalf("this machine did %s", a.Kind)
+		}
 	}
 }
 
@@ -518,8 +604,9 @@ func TestRunControllerLocal(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(l.actions) != 2 || l.actions[0].Kind != "migrate-host" || l.actions[0].Invites != 1 ||
-		l.actions[0].Advertise != "192.168.1.199" || l.actions[1].Kind != "migrate-cutover" || !l.actions[1].ServerSelf {
+	if len(l.actions) != 3 || l.actions[0].Kind != "migrate-host" || l.actions[0].Invites != 1 ||
+		l.actions[0].Advertise != "192.168.1.199" || l.actions[1].Kind != "migrate-cutover" || !l.actions[1].ServerSelf ||
+		l.verdict() != VerdictCommit {
 		t.Fatalf("local actions = %+v", l.actions)
 	}
 	if o := outcomes(res); o["box"] != Stayed {
@@ -546,31 +633,71 @@ func TestRunLeavesUnreachableMachinesAlone(t *testing.T) {
 	}
 }
 
-func TestRunStopsWhenTheControllerRollsBack(t *testing.T) {
+// A machine that switched but cannot be reached over makima is never told to
+// remove Tailscale — and this Mac, which may still need Tailscale to reach
+// it, keeps Tailscale too.
+func TestRunKeepsTailscaleWhereAMachineCouldNotBeConfirmed(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
-	sh.final["100.102.72.87"] = StateRolledBack
+	sh.noCommit["100.64.0.2"] = true
+	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
+		Passwords: map[string]string{"box": "pw"}, Remove: true}
+	res := runner(sh, l).Run(context.Background(), ch)
+	if o := outcomes(res); o["box"] != Stayed || o["tenet"] != Moved {
+		t.Fatalf("outcomes = %v", o)
+	}
+	if c := commitsTo(sh); c["100.64.0.2"] != "" {
+		t.Fatalf("box was committed: %v", sh.commits)
+	}
+	if l.verdict() != VerdictKeep {
+		t.Fatalf("this Mac should keep Tailscale beside makima, got %q", l.verdict())
+	}
+}
+
+func TestRunCallsEverythingOffWhenTheControllerCannotBeConfirmed(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	sh.noCommit["100.64.0.1"] = true
 	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
 		Passwords: map[string]string{"box": "pw"}, Remove: true}
 	res := runner(sh, l).Run(context.Background(), ch)
 	if res.OK || res.Error == "" {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(sh.cutovers) != 1 {
-		t.Fatalf("only the controller should have been tried: %v", sh.cutovers)
-	}
-	for _, a := range l.actions {
-		if a.Kind == "migrate-cutover" {
-			t.Fatal("this machine must not leave Tailscale when the controller could not")
+	for _, c := range sh.commits {
+		if strings.HasSuffix(c, " commit") {
+			t.Fatalf("nothing may be committed: %v", sh.commits)
 		}
 	}
-	if o := outcomes(res); o["tenet"] != RolledBack || o["box"] != Stayed {
+	if l.verdict() != VerdictAbort {
+		t.Fatalf("this Mac goes back to Tailscale, got %q", l.verdict())
+	}
+}
+
+func TestRunStopsWhenTheControllerRollsBack(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	sh.final["100.102.72.87"] = StateRolledBack
+	sh.final["100.64.0.1"] = StateRolledBack
+	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
+		Passwords: map[string]string{"box": "pw"}, Remove: true}
+	res := runner(sh, l).Run(context.Background(), ch)
+	if res.OK || res.Error == "" {
+		t.Fatalf("result = %+v", res)
+	}
+	for _, c := range sh.commits {
+		if strings.HasSuffix(c, " commit") {
+			t.Fatalf("nothing may be committed: %v", sh.commits)
+		}
+	}
+	if o := outcomes(res); o["tenet"] != RolledBack {
 		t.Fatalf("outcomes = %v", o)
+	}
+	if l.verdict() != VerdictAbort {
+		t.Fatalf("this Mac goes back to Tailscale, got %q", l.verdict())
 	}
 }
 
 func TestRunRefusesAMissingPassword(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"tenet", "box"}, Remove: true}
+	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"}, Remove: true}
 	res := runner(sh, l).Run(context.Background(), ch)
 	if o := outcomes(res); o["box"] != Stayed {
 		t.Fatalf("outcomes = %v", o)
@@ -578,6 +705,22 @@ func TestRunRefusesAMissingPassword(t *testing.T) {
 	for _, c := range sh.calls {
 		if c.target.Addr == "100.70.0.9" {
 			t.Fatalf("nothing should have been run on box: %q", c.script)
+		}
+	}
+}
+
+func TestRunTellsOthersWhenTheControllerSwitchesLast(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	plan := twoMachinePlan()
+	plan.Machines[0].Facts.OS = "linux"
+	plan.Machines[0].Facts.Tailscale = "/usr/bin/tailscale"
+	res := runner(sh, l).Run(context.Background(), Choice{Plan: plan, Controller: "mac", Selected: []string{"mac", "tenet"}, Remove: true})
+	if !res.OK {
+		t.Fatalf("result = %+v", res)
+	}
+	for _, c := range sh.calls {
+		if strings.Contains(c.script, "cutover") && !strings.Contains(c.script, "controller-on-tailscale") {
+			t.Fatalf("tenet cannot test the tunnel to a controller still behind Tailscale's firewall: %q", c.script)
 		}
 	}
 }
@@ -704,22 +847,6 @@ func TestRankPrefersAPublicAddress(t *testing.T) {
 	rank(&p)
 	if p.Controller != "server" {
 		t.Fatalf("a server that stays on beats a laptop holding a first-try network: %s", p.Controller)
-	}
-}
-
-func TestRunTellsOthersWhenTheControllerSwitchesLast(t *testing.T) {
-	sh, l := newFakeShell(), &fakeLocal{}
-	plan := twoMachinePlan()
-	plan.Machines[0].Facts.OS = "linux"
-	plan.Machines[0].Facts.Tailscale = "/usr/bin/tailscale"
-	res := runner(sh, l).Run(context.Background(), Choice{Plan: plan, Controller: "mac", Selected: []string{"mac", "tenet"}, Remove: true})
-	if !res.OK {
-		t.Fatalf("result = %+v", res)
-	}
-	for _, c := range sh.calls {
-		if strings.Contains(c.script, "cutover") && !strings.Contains(c.script, "controller-on-tailscale") {
-			t.Fatalf("tenet cannot test the tunnel to a controller still behind Tailscale's firewall: %q", c.script)
-		}
 	}
 }
 

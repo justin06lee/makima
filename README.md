@@ -217,13 +217,22 @@ Then, for every device you chose:
 2. The network starts on the Control Devil, reachable at its LAN or public
    address — never a Tailscale one, since Tailscale is what is going away.
 3. Each device proves it can reach the Control Devil *without* Tailscale. One
-   that cannot is left exactly as it was.
-4. The Control Devil switches first, then the rest, then the device you are
-   sitting at. A switch runs on the device itself, detached from the SSH
-   session that started it: stop Tailscale, join, send a packet through the
-   tunnel and get one back — and only then uninstall Tailscale and sign it out
-   of the tailnet. A device where makima does not come up puts Tailscale back
-   by itself.
+   that cannot is left exactly as it was — and if the device you are at cannot,
+   nothing is switched at all.
+4. Your device joins the network, alongside Tailscale.
+5. Every device switches, on its own, detached from the SSH session that
+   started it: stop Tailscale (stopped, not removed), join, and send a packet
+   through the tunnel to the Control Devil and get one back. Then it *holds*,
+   Tailscale still installed.
+6. Your device reaches each one over makima — the new bridge, and only that —
+   and confirms it. Only a confirmed device removes Tailscale and signs out of
+   the tailnet. One that is never confirmed, because of a firewall or a closed
+   window or anything else, puts Tailscale back by itself after 15 minutes.
+   Your device goes last, and gives up Tailscale only if every device it might
+   still need it for was confirmed; on a Mac, a partial move keeps both.
+
+So Tailscale never comes off a device until makima has been shown to reach it
+from where you are — the bridge is never burned before the new one holds.
 
 Devices that were only reachable through Tailscale SSH get makima's own SSH
 server, with your keys, so `ssh` to them keeps working. Each device keeps its

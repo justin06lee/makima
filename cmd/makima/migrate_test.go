@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/justin06lee/makima/internal/migrate"
 )
@@ -43,5 +44,26 @@ func TestCutoverRefusesBeforeTouchingAnything(t *testing.T) {
 		if s, _ := migrate.ReadState(b); s.State != migrate.StateFailed {
 			t.Errorf("%s: the file says %q", name, s.State)
 		}
+	}
+}
+
+func TestWaitForVerdict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "commit")
+	if v := waitForVerdict(context.Background(), path, 1500*time.Millisecond); v != "" {
+		t.Fatalf("nobody answered, but the verdict was %q", v)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		os.WriteFile(path, []byte("keep\n"), 0o600)
+	}()
+	if v := waitForVerdict(context.Background(), path, 5*time.Second); v != migrate.VerdictKeep {
+		t.Fatalf("verdict = %q", v)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("a verdict is used once")
+	}
+	os.WriteFile(path, []byte("rm -rf /\n"), 0o600)
+	if v := waitForVerdict(context.Background(), path, 1500*time.Millisecond); v != "" {
+		t.Fatalf("garbage is not a verdict: %q", v)
 	}
 }

@@ -7,7 +7,7 @@
 //! One kind of line is not for the window: `elevate`, which is the CLI asking
 //! for a step on this machine that needs root. That goes through
 //! `privileged::run`, the same prompt as every other button in the app, and
-//! only the three migration actions are accepted — whatever the process says,
+//! only the migration's own actions are accepted — whatever the process says,
 //! it cannot use this channel to ask for anything else.
 
 use std::process::Stdio;
@@ -130,7 +130,12 @@ pub async fn start(app: AppHandle, run: bool, choice: Option<Value>) -> Result<(
 async fn answer(app: AppHandle, stdin: Arc<Mutex<ChildStdin>>, event: Value) {
     let id = event.get("id").and_then(Value::as_i64).unwrap_or(0);
     let reply = match serde_json::from_value::<Action>(event.get("action").cloned().unwrap_or(Value::Null)) {
-        Ok(action @ (Action::MigrateHost { .. } | Action::MigrateJoin { .. } | Action::MigrateCutover { .. })) => {
+        Ok(
+            action @ (Action::MigrateHost { .. }
+            | Action::MigrateJoin { .. }
+            | Action::MigrateCutover { .. }
+            | Action::MigrateCommit { .. }),
+        ) => {
             let _ = app.emit("migrate", json!({ "type": "prompt" }));
             match privileged::run(action).await {
                 Ok(o) => json!({ "id": id, "ok": o.ok, "output": o.output }),

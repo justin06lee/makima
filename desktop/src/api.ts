@@ -335,18 +335,21 @@ const pretend = {
       step(local.id, "join", "running", "joining the network", 200);
       step(local.id, "join", "ok", "", 1400);
     }
-    if (!ctrl.local) {
-      step(ctrl.id, "switch", "running", "leaving Tailscale");
-      step(ctrl.id, "switch", "running", "checking the tunnel", 1200);
-      step(ctrl.id, "switch", "ok", "on makima, holding the network; Tailscale removed", 1500);
-    }
-    for (const m of others.filter((m) => !m.local)) step(m.id, "switch", "running", "leaving Tailscale", 200);
-    for (const m of others.filter((m) => !m.local)) step(m.id, "switch", "ok", "on makima, direct; Tailscale removed", 1300);
+    const remote = chosen.filter((m) => !m.local);
+    for (const m of remote) step(m.id, "switch", "running", "leaving Tailscale", 200);
     const self = ctrl.local ? ctrl : local;
     if (self) {
       pretend.send({ type: "prompt" }, (t += 300));
       step(self.id, "switch", "running", "leaving Tailscale", 200);
-      step(self.id, "switch", "ok", "on makima, direct; Tailscale removed", 2000);
+    }
+    for (const m of remote) step(m.id, "switch", "running", "checking the tunnel", 600);
+    for (const m of [...remote, ...(self ? [self] : [])]) step(m.id, "switch", "ok", "on makima, direct — confirming", 900);
+    for (const m of remote) step(m.id, "confirm", "running", "confirmed over makima — removing Tailscale", 500);
+    for (const m of remote) step(m.id, "confirm", "ok", "on makima, direct; Tailscale removed", 1400);
+    if (self) {
+      pretend.send({ type: "prompt" }, (t += 300));
+      step(self.id, "confirm", "running", "confirmed over makima — removing Tailscale", 200);
+      step(self.id, "confirm", "ok", "on makima, direct; Tailscale removed", 1600);
     }
     const result: MigrationResult = {
       ok: choice.plan.machines.every((m) => !m.eligible || chosen.includes(m)),
