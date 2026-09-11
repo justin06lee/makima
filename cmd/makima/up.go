@@ -77,10 +77,80 @@ func daemonFor(configPath string) supervise.Daemon {
 	return d
 }
 
+// defaultServerPort is where the network's server listens unless something
+// else already does.
+const defaultServerPort = 8080
+
+// serverPortPath remembers the port the server was given when the network
+// was made, so every later start — `makima up` again, a reboot, `make
+// update` — puts it back on the same one. The invites already handed out
+// name it.
+const serverPortPath = "/var/lib/makima/server-port"
+
+// serverPort is the port this machine's server listens on.
+func serverPort() int {
+	if b, err := os.ReadFile(serverPortPath); err == nil {
+		if p, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	return defaultServerPort
+}
+
+// choosePort picks the port a new network's server will listen on.
+//
+// The advertised port when one was given as host:port — that is a promise to
+// the other machines. Otherwise 8080, unless something already has it, which
+// on a machine that self-hosts is likely: then the next free one. Then it is
+// written down, before the server first starts, so it never moves again.
+func choosePort(advertise string) (int, error) {
+	want := 0
+	s := strings.TrimSpace(advertise)
+	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+		if _, p, err := net.SplitHostPort(s); err == nil {
+			if n, err := strconv.Atoi(p); err == nil {
+				want = n
+			}
+		}
+	}
+	free := func(p int) bool {
+		l, err := net.Listen("tcp", ":"+strconv.Itoa(p))
+		if err != nil {
+			return false
+		}
+		l.Close()
+		return true
+	}
+	port := 0
+	switch {
+	case want != 0 && free(want):
+		port = want
+	case want != 0:
+		return 0, fmt.Errorf("port %d is already in use on this machine, so the network cannot be reached at %s — pick another port, or give just the address", want, advertise)
+	default:
+		for p := defaultServerPort; p < defaultServerPort+100; p++ {
+			if free(p) {
+				port = p
+				break
+			}
+		}
+		if port == 0 {
+			return 0, errors.New("no free port from 8080 to 8179 for the network's server")
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(serverPortPath), 0o700); err != nil {
+		return 0, err
+	}
+	if err := os.WriteFile(serverPortPath, []byte(strconv.Itoa(port)+"\n"), 0o600); err != nil {
+		return 0, err
+	}
+	return port, nil
+}
+
 func controlDaemon() supervise.Daemon {
 	return supervise.Daemon{
 		Name:    "makima-server",
-		Args:    []string{"serve", "-state", serverStatePath},
+		Args:    []string{"serve", "-state", serverStatePath, "-addr", ":" + strconv.Itoa(serverPort())},
 		Socket:  serverSocket(),
 		PIDFile: filepath.Join(runDir, "makima-server.pid"),
 		LogFile: filepath.Join(logDir, "makima-server.log"),
@@ -146,6 +216,14 @@ func upCmd(args []string) error {
 // architecture decision into a sentence they can read afterwards.
 func bootstrap(ctx context.Context, path, name, advertise string) error {
 	fmt.Println("No network here yet — starting one. This machine holds it; the others join through it.")
+
+	port, err := choosePort(advertise)
+	if err != nil {
+		return err
+	}
+	if port != defaultServerPort {
+		fmt.Printf("Port %d is taken here, so the network's server listens on %d.\n", defaultServerPort, port)
+	}
 
 	server := controlDaemon()
 	if err := server.Start(ctx, startWait); err != nil {
@@ -537,8 +615,8 @@ func warnIfUnreachable(addr string) {
 	fmt.Println("    any cheap VPS — and join this one to that; it becomes the relay too.")
 	fmt.Println()
 	fmt.Println("    Or, if something already carries traffic into this network for you — a")
-	fmt.Println("    reverse proxy, a Cloudflare tunnel, a port forward — point it at port 8080")
-	fmt.Println("    here and re-run with the name it answers on:")
+	fmt.Printf("    reverse proxy, a Cloudflare tunnel, a port forward — point it at port %d\n", serverPort())
+	fmt.Printf("    here and re-run with the name it answers on:\n")
 	fmt.Println()
 	fmt.Println("      makima up -advertise https://makima.example.dev")
 }
@@ -785,6 +863,11 @@ func startRelayIfPublic(ctx context.Context, admin *control.AdminClient, addr st
 // the house for some other service, the coordination plane can ride the same
 // path — and then it is on 443 behind a name, not on 8080 behind an address.
 func controlURL(advertise string) string {
+	return controlURLOn(advertise, serverPort())
+}
+
+// controlURLOn is controlURL with the server's port given rather than read.
+func controlURLOn(advertise string, port int) string {
 	s := strings.TrimSpace(advertise)
 	s = strings.TrimRight(s, "/")
 
@@ -796,5 +879,5 @@ func controlURL(advertise string) string {
 	if _, _, err := net.SplitHostPort(s); err == nil {
 		return "http://" + s
 	}
-	return "http://" + net.JoinHostPort(s, "8080")
+	return "http://" + net.JoinHostPort(s, strconv.Itoa(port))
 }

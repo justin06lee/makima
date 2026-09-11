@@ -642,6 +642,9 @@ func (r *Runner) finish(res Result, ch Choice) Result {
 		if o.Outcome != Moved && o.Outcome != MovedLikely {
 			res.OK = false
 		}
+		if o.Outcome == Stayed && o.Detail == "" {
+			o.Detail = "not moved — it is exactly as it was, on Tailscale"
+		}
 		res.Machines = append(res.Machines, *o)
 	}
 	r.emit(Event{Type: "result", Result: &res})
