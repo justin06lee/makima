@@ -192,6 +192,48 @@ automatically. Nodes appearing and disappearing propagate within milliseconds �
 the daemon holds a long poll open, so a change is pushed rather than discovered
 on a timer.
 
+### Coming from Tailscale
+
+If your devices are already on a tailnet, there is nothing to do by hand. The
+app notices Tailscale and offers **Move from Tailscale**; in a terminal it is:
+
+```sh
+makima migrate
+```
+
+It reaches every device the way you already do — over Tailscale, with SSH,
+Tailscale SSH included — and looks before it touches anything: what each one
+runs, whether it can become root, which ones cannot come along (phones, anything
+offline, devices shared in by somebody else). Then it asks the one real
+question: which device should be the **Control Devil**, the one holding the
+network. It recommends one — a machine with a public address if you have one,
+otherwise a server that stays on — and says why.
+
+Then, for every device you chose:
+
+1. makima goes on it, copied from this device. The app carries builds for the
+   other platforms, so a Mac can set up a Linux server with nothing downloaded.
+2. The network starts on the Control Devil, reachable at its LAN or public
+   address — never a Tailscale one, since Tailscale is what is going away.
+3. Each device proves it can reach the Control Devil *without* Tailscale. One
+   that cannot is left exactly as it was.
+4. The Control Devil switches first, then the rest, then the device you are
+   sitting at. A switch runs on the device itself, detached from the SSH
+   session that started it: stop Tailscale, join, send a packet through the
+   tunnel and get one back — and only then uninstall Tailscale and sign it out
+   of the tailnet. A device where makima does not come up puts Tailscale back
+   by itself.
+
+Devices that were only reachable through Tailscale SSH get makima's own SSH
+server, with your keys, so `ssh` to them keeps working. Each device keeps its
+MagicDNS name: `tenet.your-tailnet.ts.net` becomes `tenet.makima`. Turn off
+*Uninstall Tailscale* to leave it installed and switched off instead.
+
+Between Linux machines this has to be all-or-nothing per device: while
+Tailscale runs there, it drops any packet from `100.64.0.0/10` that did not
+arrive on its own interface, and makima's addresses are in that range — which
+is why each switch stops Tailscale before it tests the tunnel, not after.
+
 ### Services publish themselves
 
 Anything listening on `127.0.0.1` is put on the mesh as it appears, and taken
@@ -456,15 +498,19 @@ pasted invite. *Add device*, in the title bar of the machine holding the
 network, shows fifteen words to type into the next one, and the string to
 paste for a machine that can be pasted to.
 Either answer asks for your password once; after that the device stays
-connected, restarts included, until you disconnect.
+connected, restarts included, until you disconnect. If Tailscale is running, a
+third card offers to move the whole tailnet instead — see
+[Coming from Tailscale](#coming-from-tailscale) — and the same offer sits above
+the device list, and in Settings, until it is taken or dismissed.
 
 ```sh
 make app        # build it, put it in /Applications (or install the package), open it
 ```
 
 macOS and Linux, built with Tauri — about 4 MB of its own, plus the four
-binaries it carries, using the web view already running on the machine rather
-than shipping another browser. It follows the system's light or dark
+binaries it carries and the same four for each other platform (about 55 MB,
+for moving other machines off Tailscale — `make kits` builds them), using the
+web view already running on the machine rather than shipping another browser. It follows the system's light or dark
 appearance. It opens at login once a network has been started or joined from
 it — the tunnel is up anyway, and this is the menu bar coming back with it —
 and Settings turns that off.
@@ -705,9 +751,12 @@ already using.
 
 Only `/32` host routes are ever installed, one per peer. That is mostly an ACL
 decision — routing the whole `/10` into the tunnel would blackhole traffic to
-mesh addresses this node cannot actually see — but it also means makima
-coexists with Tailscale on the same machine: a `/32` wins over Tailscale's
-`/10` by longest-prefix match.
+mesh addresses this node cannot actually see — but on macOS it also means
+makima coexists with Tailscale: a `/32` wins over Tailscale's `/10` by
+longest-prefix match. On Linux it does not, because Tailscale also installs a
+firewall rule dropping every packet from `100.64.0.0/10` that did not arrive on
+its own interface; the two take turns there, which is how
+[the move from Tailscale](#coming-from-tailscale) switches each machine.
 
 ## How it fits together
 

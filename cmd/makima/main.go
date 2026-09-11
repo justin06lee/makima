@@ -61,6 +61,8 @@ func main() {
 		err = denyCmd(os.Args[2:])
 	case "link-cli":
 		err = linkCmd(os.Args[2:])
+	case "migrate":
+		err = migrateCmd(os.Args[2:])
 
 	case "genkey":
 		err = genkey(os.Args[2:])
@@ -112,6 +114,9 @@ getting started:
   makima invite                    print an invite for the next machine
   makima join <invite>             run this on that machine
   makima down                      stop, and put this machine back
+
+coming from Tailscale:
+  makima migrate                   move every machine on your tailnet to makima
 
 with no server at all:
   makima pair                      print an address, and listen for one machine

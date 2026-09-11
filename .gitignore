@@ -21,3 +21,6 @@ desktop/node_modules/
 desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+
+# Other platforms' makima, built into the app by `make kits`.
+desktop/src-tauri/kits/*.tar.gz
