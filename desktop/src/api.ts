@@ -120,6 +120,71 @@ export type Action =
   | { kind: "pair" }
   | { kind: "link-cli" };
 
+// --- moving from Tailscale -------------------------------------------------
+// Mirrors internal/migrate. The run itself is `makima migrate`, streaming one
+// event per line; the app carries them here as "migrate" events.
+
+export type Tailscale = { installed: boolean; running: boolean; tailnet?: string; self?: string; peers: number; online: number; error?: string };
+
+export type Facts = {
+  os: string;
+  arch: string;
+  user: string;
+  sudo: "root" | "nopasswd" | "password" | "none";
+  makima?: string;
+  member?: boolean;
+  holds?: boolean;
+  via?: string;
+  openssh?: boolean;
+  pkg?: string;
+};
+
+export type Candidate = {
+  id: string;
+  name: string;
+  host: string;
+  dns?: string;
+  os: string;
+  ips: string[];
+  online: boolean;
+  local?: boolean;
+  shared?: boolean;
+  facts?: Facts;
+  access?: { user?: string; auth_url?: string; error?: string };
+  eligible: boolean;
+  why?: string;
+  needs_password?: boolean;
+  public?: string;
+  reach?: string;
+  score: number;
+  pitch?: string;
+  checking?: boolean;
+};
+
+export type Plan = { tailnet: string; machines: Candidate[]; controller?: string; advice?: string; version: string };
+
+export type Choice = {
+  plan: Plan;
+  controller: string;
+  advertise?: string;
+  selected: string[];
+  passwords?: Record<string, string>;
+  remove_tailscale: boolean;
+};
+
+export type MachineOutcome = { id: string; name: string; outcome: "moved" | "moved?" | "rolled_back" | "stayed"; detail?: string; notes?: string[] };
+export type MigrationResult = { ok: boolean; server?: string; controller?: string; machines: MachineOutcome[]; error?: string };
+
+export type MigrateEvent =
+  | { type: "machine"; machine: string; candidate: Candidate }
+  | { type: "auth"; machine: string; url: string }
+  | { type: "plan"; plan: Plan }
+  | { type: "error"; detail: string }
+  | { type: "step"; machine: string; step: string; state: "running" | "ok" | "failed"; detail?: string }
+  | { type: "prompt" }
+  | { type: "result"; result: MigrationResult }
+  | { type: "exit"; code?: number; detail?: string };
+
 /// Whether this is running inside the Tauri window at all.
 ///
 /// It is not when the interface is opened in a plain browser from `bun run
@@ -185,10 +250,116 @@ export const api = {
     if (action.kind === "down") window.location.search = "?state=off";
     return { ok: true, output: "" };
   },
+  migrate: {
+    detect: async (): Promise<Tailscale> => {
+      if (inTauri) return invoke<Tailscale>("migrate_detect");
+      const p = browser.params();
+      if (p.get("tailscale") === "0") return { installed: false, running: false, peers: 0, online: 0 };
+      return { installed: true, running: true, tailnet: "you.github", self: "macbook-air", peers: 4, online: 3 };
+    },
+    /// Listen to the migration's events. Returns the unsubscribe.
+    listen: async (on: (e: MigrateEvent) => void): Promise<() => void> => {
+      if (inTauri) {
+        const { listen } = await import("@tauri-apps/api/event");
+        return listen<MigrateEvent>("migrate", (e) => on(e.payload));
+      }
+      pretend.listeners.add(on);
+      return () => pretend.listeners.delete(on);
+    },
+    scan: async (): Promise<void> => {
+      if (inTauri) return invoke("migrate_scan");
+      pretend.scan();
+    },
+    run: async (choice: Choice): Promise<void> => {
+      if (inTauri) return invoke("migrate_run", { choice });
+      pretend.run(choice);
+    },
+    stop: async (): Promise<void> => {
+      if (inTauri) return invoke("migrate_stop");
+    },
+  },
   sendFile: async (peer: string, path: string): Promise<Outcome> => {
     if (inTauri) return invoke<Outcome>("send_file", { peer, path });
     await browser.wait(900);
     return { ok: true, output: "" };
+  },
+};
+
+/// A pretend tailnet, for working on the migration screens in a browser.
+/// Nothing here touches a machine; it only replays the events a real run
+/// sends, with the timing roughly right.
+const pretend = {
+  listeners: new Set<(e: MigrateEvent) => void>(),
+  send(e: MigrateEvent, after: number) {
+    setTimeout(() => pretend.listeners.forEach((l) => l(e)), after);
+  },
+  machines(): Candidate[] {
+    const f = (os: string, arch: string, user: string, sudo: Facts["sudo"], extra: Partial<Facts> = {}): Facts => ({ os, arch, user, sudo, ...extra });
+    return [
+      { id: "n1", name: "macbook-air", host: "MacBook Air", os: "macOS", ips: ["100.98.21.63"], online: true, local: true, facts: f("darwin", "arm64", "you", "password", { holds: true }), eligible: true, reach: "192.168.1.199", score: 0, pitch: "already holds a makima network" },
+      { id: "n2", name: "tenet", host: "tenet", os: "linux", ips: ["100.102.72.87"], online: true, facts: f("linux", "amd64", "root", "root", { via: "tailscale" }), access: { user: "root" }, eligible: true, why: "reached through Tailscale SSH with no sshd behind it — makima's own SSH server takes over, with your keys", reach: "192.168.1.20", score: 10, pitch: "a server that stays on" },
+      { id: "n3", name: "frieren", host: "frieren", os: "linux", ips: ["100.101.4.2"], online: true, facts: f("linux", "arm64", "pi", "password", { openssh: true }), access: { user: "" }, eligible: true, needs_password: true, reach: "192.168.1.31", score: 10, pitch: "a server that stays on" },
+      { id: "n4", name: "vps", host: "vps", os: "linux", ips: ["100.90.8.8"], online: true, facts: f("linux", "amd64", "root", "root", { openssh: true }), access: { user: "root" }, eligible: true, public: "203.0.113.9", reach: "203.0.113.9", score: 70, pitch: "has a public address, so devices anywhere can reach it, and it can relay for them" },
+      { id: "n5", name: "iphone", host: "iPhone", os: "iOS", ips: ["100.70.1.2"], online: true, eligible: false, why: "makima does not run on iPhone or iPad yet — it stays on Tailscale", score: 0 },
+      { id: "n6", name: "old-desktop", host: "old-desktop", os: "linux", ips: ["100.85.1.1"], online: false, eligible: false, why: "offline — turn it on and scan again to bring it along", score: 0 },
+    ];
+  },
+  scan() {
+    const ms = pretend.machines();
+    ms.forEach((m) => pretend.send({ type: "machine", machine: m.id, candidate: { ...m, eligible: false, why: undefined, facts: undefined, checking: true } }, 150));
+    ms.forEach((m, i) => {
+      if (m.id === "n2") {
+        pretend.send({ type: "auth", machine: m.id, url: "https://login.tailscale.com/a/example" }, 500);
+      }
+      pretend.send({ type: "machine", machine: m.id, candidate: m }, m.id === "n2" ? 6000 : 500 + i * 400);
+    });
+    pretend.send({ type: "plan", plan: { tailnet: "you.github", machines: ms, controller: "n4", version: "dev" } }, 6200);
+  },
+  run(choice: Choice) {
+    let t = 200;
+    const step = (machine: string, s: string, state: "running" | "ok" | "failed", detail = "", gap = 700) => {
+      pretend.send({ type: "step", machine, step: s, state, detail }, (t += gap));
+    };
+    const chosen = choice.plan.machines.filter((m) => choice.selected.includes(m.id) || m.id === choice.controller);
+    const ctrl = chosen.find((m) => m.id === choice.controller)!;
+    const others = chosen.filter((m) => m !== ctrl);
+    for (const m of chosen.filter((m) => !m.local)) step(m.id, "install", "running", "putting makima on it", 250);
+    for (const m of chosen.filter((m) => !m.local)) step(m.id, "install", "ok", "makima v0.3.0", 500);
+    step(ctrl.id, "network", "running", `starting the network at ${choice.advertise || ctrl.reach}`);
+    step(ctrl.id, "network", "ok", `holding the network at http://${choice.advertise || ctrl.reach}:8080`, 1200);
+    for (const m of others) step(m.id, "reach", "running", `checking it can reach ${ctrl.name} without Tailscale`, 200);
+    for (const m of others) step(m.id, "reach", "ok", "", 500);
+    const local = chosen.find((m) => m.local);
+    if (local && local !== ctrl) {
+      pretend.send({ type: "prompt" }, (t += 300));
+      step(local.id, "join", "running", "joining the network", 200);
+      step(local.id, "join", "ok", "", 1400);
+    }
+    if (!ctrl.local) {
+      step(ctrl.id, "switch", "running", "leaving Tailscale");
+      step(ctrl.id, "switch", "running", "checking the tunnel", 1200);
+      step(ctrl.id, "switch", "ok", "on makima, holding the network; Tailscale removed", 1500);
+    }
+    for (const m of others.filter((m) => !m.local)) step(m.id, "switch", "running", "leaving Tailscale", 200);
+    for (const m of others.filter((m) => !m.local)) step(m.id, "switch", "ok", "on makima, direct; Tailscale removed", 1300);
+    const self = ctrl.local ? ctrl : local;
+    if (self) {
+      pretend.send({ type: "prompt" }, (t += 300));
+      step(self.id, "switch", "running", "leaving Tailscale", 200);
+      step(self.id, "switch", "ok", "on makima, direct; Tailscale removed", 2000);
+    }
+    const result: MigrationResult = {
+      ok: choice.plan.machines.every((m) => !m.eligible || chosen.includes(m)),
+      server: `http://${choice.advertise || ctrl.reach}:8080`,
+      controller: ctrl.id,
+      machines: choice.plan.machines.map((m) =>
+        chosen.includes(m)
+          ? { id: m.id, name: m.name, outcome: "moved", detail: "on makima, direct; Tailscale removed" }
+          : { id: m.id, name: m.name, outcome: "stayed", detail: m.why ?? "not chosen" },
+      ),
+    };
+    pretend.send({ type: "result", result }, (t += 400));
+    pretend.send({ type: "exit", code: 0 }, (t += 50));
   },
 };
 

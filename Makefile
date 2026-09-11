@@ -24,7 +24,7 @@ RELEASE := dist/release
 TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-.PHONY: all build install update update-stop update-delete update-start trusted-copy restart clean test race fmt vet check cross service release release-clean sidecars app app-build app-install app-place app-skip app-dev dmg
+.PHONY: all build install update update-stop update-delete update-start trusted-copy restart clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-skip app-dev dmg
 
 all: build install $(if $(HAVE_APP),app,app-skip) restart
 
@@ -239,12 +239,35 @@ SIDECARS := desktop/src-tauri/binaries
 BUNDLE   := desktop/src-tauri/target/release/bundle
 APP      := /Applications/makima.app
 
-sidecars:
+sidecars: kits
 	@test -n "$(TRIPLE)" || { echo "rustc not found; the app needs a Rust toolchain"; exit 1; }
 	@mkdir -p $(SIDECARS)
 	@for b in $(BINS); do \
 		echo "  sidecar $$b-$(TRIPLE)"; \
 		CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(SIDECARS)/$$b-$(TRIPLE) ./cmd/$$b || exit 1; \
+	done
+
+# Kits: the four binaries for every platform but this one, carried inside the
+# app as resources. Moving from Tailscale installs makima on the other
+# machines from the Mac (or Linux box) it runs on, and a Linux server needs
+# Linux binaries — which, this way, never have to come from the internet, and
+# are always exactly the version of the app doing the installing.
+# internal/migrate/kit.go reads them as makima-<os>-<arch>.tar.gz.
+KITS          := desktop/src-tauri/kits
+KIT_PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 linux/arm
+HOST_PLATFORM := $(shell go env GOOS)/$(shell go env GOARCH)
+
+kits:
+	@mkdir -p $(KITS)
+	@for t in $(filter-out $(HOST_PLATFORM),$(KIT_PLATFORMS)); do \
+		os=$${t%/*}; arch=$${t#*/}; \
+		dir=$$(mktemp -d)/makima; mkdir -p $$dir; \
+		printf "  kit     %s\n" "$$t"; \
+		for b in $(BINS); do \
+			GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $$dir/$$b ./cmd/$$b || exit 1; \
+		done; \
+		tar -C $$(dirname $$dir) -czf $(KITS)/makima-$$os-$$arch.tar.gz makima || exit 1; \
+		rm -rf $$(dirname $$dir); \
 	done
 
 # Build it and put it where apps go, then open it — so `make` ends with the

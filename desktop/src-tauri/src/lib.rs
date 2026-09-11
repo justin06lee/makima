@@ -10,6 +10,7 @@
 //! and `tray.rs` for the menu bar, which is most of the interface.
 
 mod daemon;
+mod migrate;
 mod privileged;
 mod tray;
 
@@ -64,6 +65,30 @@ async fn send_file(peer: String, path: String) -> Result<privileged::Outcome, St
     privileged::run_unprivileged(&["cp".into(), "-q".into(), path, format!("{peer}:")]).await
 }
 
+/// Is Tailscale on this machine, and connected?
+#[tauri::command]
+async fn migrate_detect() -> serde_json::Value {
+    migrate::detect().await
+}
+
+/// Look at every machine on the tailnet. Changes nothing.
+#[tauri::command]
+async fn migrate_scan(app: AppHandle) -> Result<(), String> {
+    migrate::start(app, false, None).await
+}
+
+/// Move the chosen machines. The choice is the plan a scan produced, with
+/// the person's decisions on it.
+#[tauri::command]
+async fn migrate_run(app: AppHandle, choice: serde_json::Value) -> Result<(), String> {
+    migrate::start(app, true, Some(choice)).await
+}
+
+#[tauri::command]
+async fn migrate_stop(app: AppHandle) -> Result<(), String> {
+    migrate::stop(app).await
+}
+
 /// Show the window and bring it to the front.
 ///
 /// Both halves matter: a window that is merely visible but behind the browser
@@ -102,13 +127,18 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .manage(tray::State::default())
+        .manage(migrate::State::default())
         .invoke_handler(tauri::generate_handler![
             status,
             environment,
             doctor,
             ping,
             act,
-            send_file
+            send_file,
+            migrate_detect,
+            migrate_scan,
+            migrate_run,
+            migrate_stop
         ])
         .setup(|app| {
             let handle = app.handle().clone();
