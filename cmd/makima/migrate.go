@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -22,8 +23,11 @@ import (
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
+	"github.com/justin06lee/makima/internal/invite"
+	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/migrate"
+	"github.com/justin06lee/makima/internal/netcfg"
 )
 
 // migrateCmd is `makima migrate`: everything on Tailscale, onto makima.
@@ -49,17 +53,8 @@ func migrateCmd(args []string) error {
 		return migrateJoin(args[1:])
 	case "probe":
 		return migrateProbe(args[1:])
-	case "cutover":
-		return migrateCutover(args[1:])
-	case "commit":
-		return migrateCommit(args[1:])
-	case "status":
-		b, err := os.ReadFile(migrate.StatePath)
-		if err != nil {
-			return errors.New("no migration has run on this machine")
-		}
-		os.Stdout.Write(b)
-		return nil
+	case "retire":
+		return migrateRetire(args[1:])
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stderr, migrateUsage)
 		return nil
@@ -77,10 +72,11 @@ The app does the same from its Move from Tailscale button. The steps it is made 
   detect                  is Tailscale here, and running?
   scan                    look at every machine over Tailscale SSH; change nothing
   run                     carry out a choice made from a scan
-  host | join | cutover | commit
-                          the parts run as root on each machine
+  host | join             start the network here, or join it — beside Tailscale,
+                          which keeps running
+  retire                  remove Tailscale from this machine; refused unless
+                          makima is up here
   probe URL               can this machine reach a server without Tailscale?
-  status                  how this machine's switch went
 `
 
 // --- detect -------------------------------------------------------------
@@ -245,8 +241,7 @@ func migrateRun(args []string) error {
 
 	out := &events{enc: json.NewEncoder(os.Stdout)}
 	rpc := newAppRPC(out, in)
-	res := runChoice(context.Background(), ch, func(e migrate.Event) { out.send(e) }, rpc.elevate)
-	_ = res
+	runChoice(context.Background(), ch, func(e migrate.Event) { out.send(e) }, rpc.elevate)
 	return nil
 }
 
@@ -353,7 +348,9 @@ func sudoElevate(ctx context.Context, a migrate.Action) (string, error) {
 	return string(out), err
 }
 
-// meshPeers is this machine's view of the makima network, by name.
+// meshPeers is this machine's view of the makima network, by name. Read over
+// the daemon's own socket, or — for the person who is not root, which is who
+// runs the migration — the read-only one it keeps for them.
 func meshPeers() map[string]migrate.MeshPeer {
 	c, err := dialDaemon(conf.DefaultPath)
 	if err != nil {
@@ -365,13 +362,14 @@ func meshPeers() map[string]migrate.MeshPeer {
 	}
 	m := map[string]migrate.MeshPeer{}
 	for _, p := range st.Peers {
-		m[p.Name] = migrate.MeshPeer{Address: p.Address.String(), Online: p.Online}
+		m[p.Name] = migrate.MeshPeer{Address: p.Address.String(), Online: p.Online, Direct: p.Direct}
 	}
 	return m
 }
 
 // ownPubkeys are the SSH public keys of whoever is running this, from their
-// agent and their ~/.ssh, for makima's SSH server on machines that had none.
+// agent and their ~/.ssh — the keys every machine is given, so that ssh
+// reaches it without Tailscale.
 func ownPubkeys() string {
 	seen := map[string]bool{}
 	var keys []string
@@ -463,8 +461,9 @@ func probeServer(ctx context.Context, server string) error {
 
 // --- host ---------------------------------------------------------------
 
-// migrateHost starts the network on this machine — or finds it already
-// running here — and mints an invite for every machine about to join.
+// migrateHost starts the network on this machine — or finds it running here —
+// and mints an invite for every machine about to join. Tailscale is not
+// touched.
 func migrateHost(args []string) error {
 	fs := flag.NewFlagSet("migrate host", flag.ExitOnError)
 	path := fs.String("config", conf.DefaultPath, "config path")
@@ -472,6 +471,8 @@ func migrateHost(args []string) error {
 	name := fs.String("name", "", "this machine's name on the network")
 	count := fs.Int("invites", 0, "how many invites to mint")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
+	fromStdin := fs.Bool("stdin", false, "read SSH keys as JSON on stdin")
+	sshUser := fs.String("ssh-user", "", "turn on makima's SSH server for this account, with the keys given on stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -484,10 +485,14 @@ func migrateHost(args []string) error {
 	if err := migrate.CheckAdvertise(*advertise); err != nil {
 		return err
 	}
+	in, err := readInput(*fromStdin)
+	if err != nil {
+		return err
+	}
 	if err := mustBeRoot(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	// Everything bootstrap and bringUp print goes to stderr, so the one line
@@ -495,6 +500,11 @@ func migrateHost(args []string) error {
 	stdout := os.Stdout
 	os.Stdout = os.Stderr
 	server, err := holdNetwork(ctx, *path, *name, *advertise)
+	if err == nil && *sshUser != "" && in.SSHKeys != "" {
+		if serr := enableOwnSSH(*path, in.SSHKeys, *sshUser); serr != nil {
+			fmt.Fprintf(os.Stderr, "note: makima's SSH server did not start: %v\n", serr)
+		}
+	}
 	os.Stdout = stdout
 	if err != nil {
 		return err
@@ -526,38 +536,63 @@ func migrateHost(args []string) error {
 	return nil
 }
 
-// holdNetwork makes sure this machine holds a network and is on it, and says
-// where it is.
+// holdNetwork makes sure this machine holds a network, running the makima
+// just installed, and is on it — and says where it is.
+//
+// The machine was chosen to hold the network, so whatever makima network it
+// was on before gives way: one from an older makima, on Tailscale's range,
+// starts over; one held somewhere else is left. A network it already holds on
+// makima's own range is kept, with everything on it.
 func holdNetwork(ctx context.Context, path, name, advertise string) (string, error) {
 	f, err := conf.Load(path)
-	if err != nil {
+	if err == nil {
+		switch {
+		case onLegacyRange(f) || serverStateOnLegacyRange(serverStatePath):
+			fmt.Fprintf(os.Stderr, "This machine is on a network from an older makima, in 100.64.0.0/10 — Tailscale's range, which cannot run beside Tailscale. Starting it over in %s.\n", netcfg.MeshRange)
+			if err := leaveNetwork(ctx, path, true); err != nil {
+				return "", err
+			}
+			f = nil
+		case !f.Managed():
+			return "", errors.New("this machine is on a makima network with no server — it cannot hold one as well")
+		case !holdsNetworkHere():
+			fmt.Fprintf(os.Stderr, "This machine is on the network held at %s. It leaves that one to hold this.\n", f.LoginServer)
+			if err := leaveNetwork(ctx, path, false); err != nil {
+				return "", err
+			}
+			f = nil
+		}
+	} else if serverStateOnLegacyRange(serverStatePath) {
+		if err := leaveNetwork(ctx, path, true); err != nil {
+			return "", err
+		}
+	}
+	if f == nil {
 		if err := bootstrap(ctx, path, name, advertise); err != nil {
 			return "", err
 		}
 		return controlURL(advertise), nil
 	}
-	if !f.Managed() {
-		return "", errors.New("this machine is on a makima network with no server — it cannot hold one as well")
-	}
+
 	if err := migrate.CheckAdvertise(f.LoginServer); err != nil {
 		return "", fmt.Errorf("the network this machine holds is reached at %s, which stops working with Tailscale: %w", f.LoginServer, err)
 	}
-	elsewhere := fmt.Errorf("this machine is on the network held at %s, so it cannot hold a new one — choose that machine instead", f.LoginServer)
-	if _, ok := control.DialAdmin(serverSocket()); !ok {
-		// A server that is set up here but stopped is started again. One
-		// that was never here is not: this node's network is somebody
-		// else's, and a second one under it would strand it from the first.
-		if _, err := os.Stat(serverStatePath); err != nil {
-			return "", elsewhere
-		}
-		if err := controlDaemon().Start(ctx, startWait); err != nil {
-			return "", err
-		}
+	// Restarted, both of them, so they run the makima that was just put here
+	// rather than whichever one was running.
+	server := controlDaemon()
+	if err := server.Stop(ctx, stopWait); err != nil {
+		return "", err
+	}
+	if err := server.Start(ctx, startWait); err != nil {
+		return "", err
 	}
 	if !holdsOwn(f) {
-		return "", elsewhere
+		return "", fmt.Errorf("this machine is on the network held at %s, not the one its own server holds", f.LoginServer)
 	}
 	openServerPort(serverPort())
+	if err := daemonFor(path).Stop(ctx, stopWait); err != nil {
+		return "", err
+	}
 	if err := bringUp(ctx, path); err != nil {
 		return "", err
 	}
@@ -575,504 +610,219 @@ func holdsOwn(f *conf.File) bool {
 	return err == nil && k == f.ServerKey
 }
 
+// holdsNetworkHere says whether a network's server lives on this machine.
+func holdsNetworkHere() bool {
+	_, err := os.Stat(serverStatePath)
+	return err == nil
+}
+
+// onLegacyRange says whether this node's address is from 100.64.0.0/10, where
+// makima allocated before it had a range of its own.
+func onLegacyRange(f *conf.File) bool {
+	a, err := f.Self.Addr()
+	return err == nil && netcfg.LegacyMeshRange.Contains(a)
+}
+
+// serverStateOnLegacyRange says whether the server whose state is at path
+// hands out addresses from 100.64.0.0/10.
+func serverStateOnLegacyRange(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var st struct {
+		Prefix netip.Prefix `json:"prefix"`
+	}
+	if json.Unmarshal(b, &st) != nil || !st.Prefix.IsValid() {
+		return false
+	}
+	return netcfg.LegacyMeshRange.Contains(st.Prefix.Addr())
+}
+
+// leaveNetwork takes this machine off the network it is on, keeping nothing of
+// it: the node's identity goes, and with withServer the server's state too, so
+// what starts next is new.
+func leaveNetwork(ctx context.Context, path string, withServer bool) error {
+	if err := daemonFor(path).Stop(ctx, stopWait); err != nil {
+		return err
+	}
+	if withServer {
+		if err := controlDaemon().Stop(ctx, stopWait); err != nil {
+			return err
+		}
+		if err := os.Remove(serverStatePath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // --- join ---------------------------------------------------------------
 
-// migrateJoin puts this machine on the network while leaving Tailscale alone:
-// it is the machine running the migration, and Tailscale is how it is still
-// reaching the others.
+// migrateJoin puts this machine on the network, leaving Tailscale running.
+//
+// A machine already on it is restarted onto the makima just installed. One on
+// another network leaves that one — it was chosen to move — unless it holds
+// that network itself, which would strand everything on it.
 func migrateJoin(args []string) error {
 	fs := flag.NewFlagSet("migrate join", flag.ExitOnError)
 	path := fs.String("config", conf.DefaultPath, "config path")
 	name := fs.String("name", "", "this machine's name on the network")
+	fromStdin := fs.Bool("stdin", false, "read the invite and SSH keys as JSON on stdin")
+	sshUser := fs.String("ssh-user", "", "turn on makima's SSH server for this account, with the keys given on stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	raw := fs.Args()
 	if *name != "" && !migrate.ValidName(*name) {
 		return fmt.Errorf("%q is not a name makima can use", *name)
 	}
-	inv, err := checkInvite(strings.Join(raw, " "))
+	in, err := readInput(*fromStdin)
+	if err != nil {
+		return err
+	}
+	if in.Invite == "" {
+		in.Invite = strings.Join(fs.Args(), " ")
+	}
+	inv, err := checkInvite(in.Invite)
 	if err != nil {
 		return err
 	}
 	if err := mustBeRoot(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+
 	if f, err := conf.Load(*path); err == nil {
-		if f.LoginServer != strings.TrimRight(inv.Server, "/") {
-			return fmt.Errorf("this machine is already on the network held at %s — 'makima down' and remove %s to move it", f.LoginServer, *path)
-		}
-		return bringUp(ctx, *path)
-	}
-	return joinWith(ctx, *path, inv, *name)
-}
-
-// --- cutover ------------------------------------------------------------
-
-type cutoverOpts struct {
-	path       string
-	name       string
-	controller string
-	serverSelf bool
-	remove     bool
-	sshUser    string
-	input      migrate.Input
-
-	// ctrlOnTailscale is a controller that switches last — the machine the
-	// migration runs on — and is Linux, where Tailscale's firewall drops
-	// tunnel traffic until it does. Until then the only honest proof this
-	// machine can get is a disco ping, which travels outside the tunnel.
-	ctrlOnTailscale bool
-
-	// statePath is where progress is written; migrate.StatePath but in tests.
-	statePath string
-
-	// confirmWithin is how long a switched machine waits, Tailscale stopped
-	// but not removed, for the machine running the move to confirm it can
-	// reach it over makima. No verdict in that time and it undoes itself.
-	confirmWithin time.Duration
-	commitPath    string
-}
-
-// migrateCutover moves this machine off Tailscale and onto makima, or puts it
-// back exactly as it was.
-func migrateCutover(args []string) error {
-	fs := flag.NewFlagSet("migrate cutover", flag.ExitOnError)
-	o := cutoverOpts{statePath: migrate.StatePath, commitPath: migrate.CommitPath}
-	fs.StringVar(&o.path, "config", conf.DefaultPath, "config path")
-	fs.StringVar(&o.name, "name", "", "this machine's name on the network")
-	fs.StringVar(&o.controller, "controller", "", "the machine holding the network, to check the tunnel against")
-	fs.BoolVar(&o.serverSelf, "server-self", false, "this machine holds the network")
-	fs.BoolVar(&o.remove, "remove", true, "uninstall Tailscale once makima works (otherwise it is left installed, off)")
-	fs.StringVar(&o.sshUser, "ssh-user", "", "turn on makima's SSH server for this account, with the keys given on stdin")
-	fs.BoolVar(&o.ctrlOnTailscale, "controller-on-tailscale", false, "the controller has not left Tailscale yet; check the path to it, not the tunnel")
-	fs.DurationVar(&o.confirmWithin, "confirm-within", 15*time.Minute, "how long to wait, Tailscale stopped but installed, for the move to confirm this machine over makima")
-	detach := fs.Bool("detach", false, "run in the background, surviving the SSH session that started it")
-	fromStdin := fs.Bool("stdin", false, "read the invite and SSH keys as JSON on stdin")
-	inputFile := fs.String("input", "", "read them from this file, and delete it")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if !migrate.ValidName(o.name) || (o.controller != "" && !migrate.ValidName(o.controller)) {
-		return errors.New("cutover needs -name, and names makima can use")
-	}
-	if !o.serverSelf && o.controller == "" {
-		return errors.New("cutover needs -controller, or -server-self on the machine holding the network")
-	}
-	if os.Geteuid() != 0 {
-		return migrate.ErrNotRoot
-	}
-
-	switch {
-	case *fromStdin:
-		b, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
-		if len(strings.TrimSpace(string(b))) > 0 {
-			if err := json.Unmarshal(b, &o.input); err != nil {
-				return fmt.Errorf("read the input: %w", err)
+		switch joinDecision(f, inv, holdsNetworkHere(), serverStateOnLegacyRange(serverStatePath)) {
+		case joinRestart:
+			if err := daemonFor(*path).Stop(ctx, stopWait); err != nil {
+				return err
+			}
+			if err := bringUp(ctx, *path); err != nil {
+				return err
+			}
+			return sshAfterJoin(*path, in, *sshUser)
+		case joinRefuse:
+			return fmt.Errorf("this machine holds the makima network at %s — it can only move by being chosen to hold this one", f.LoginServer)
+		case joinLeave:
+			fmt.Fprintf(os.Stderr, "Leaving the network at %s for this one.\n", f.LoginServer)
+			if err := leaveNetwork(ctx, *path, holdsNetworkHere()); err != nil {
+				return err
 			}
 		}
-	case *inputFile != "":
-		b, err := os.ReadFile(*inputFile)
-		os.Remove(*inputFile)
-		if err != nil {
-			return fmt.Errorf("read the input: %w", err)
-		}
-		if err := json.Unmarshal(b, &o.input); err != nil {
-			return fmt.Errorf("read the input: %w", err)
-		}
 	}
-
-	if *detach {
-		return detachCutover(o, args)
+	if err := joinWith(ctx, *path, inv, *name); err != nil {
+		return err
 	}
+	return sshAfterJoin(*path, in, *sshUser)
+}
 
-	st := runCutover(context.Background(), o)
-	b, _ := json.Marshal(st)
-	fmt.Println(string(b))
+type joinChoice int
+
+const (
+	joinRestart joinChoice = iota // already on this network
+	joinLeave                     // on another one, which it leaves
+	joinRefuse                    // holds another one
+)
+
+// joinDecision says what a machine already on a network does with an invite
+// to one: the same network is restarted; another is left, unless this machine
+// holds it — then it stays, because leaving would strand every machine on it.
+// A network from an older makima, on Tailscale's range, is always left, its
+// server with it: it cannot run beside Tailscale, and the move is replacing it.
+func joinDecision(f *conf.File, inv invite.Invite, holds, holdsLegacy bool) joinChoice {
+	same := f.LoginServer == strings.TrimRight(inv.Server, "/") &&
+		(inv.ServerKey == (key.Public{}) || inv.ServerKey == f.ServerKey)
+	switch {
+	case same && !onLegacyRange(f):
+		return joinRestart
+	case holds && !holdsLegacy && !onLegacyRange(f):
+		return joinRefuse
+	}
+	return joinLeave
+}
+
+// sshAfterJoin switches on makima's SSH server, where the move asked for it.
+func sshAfterJoin(path string, in migrate.Input, user string) error {
+	if user == "" || in.SSHKeys == "" {
+		return nil
+	}
+	if err := enableOwnSSH(path, in.SSHKeys, user); err != nil {
+		fmt.Fprintf(os.Stderr, "note: makima's SSH server did not start: %v\n", err)
+	}
 	return nil
 }
 
-// detachCutover starts the cutover again in the background and returns.
+// readInput reads what another machine sent on stdin, when asked to.
+func readInput(fromStdin bool) (migrate.Input, error) {
+	var in migrate.Input
+	if !fromStdin {
+		return in, nil
+	}
+	b, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if strings.TrimSpace(string(b)) == "" {
+		return in, nil
+	}
+	if err := json.Unmarshal(b, &in); err != nil {
+		return in, fmt.Errorf("read the input: %w", err)
+	}
+	return in, nil
+}
+
+// enableOwnSSH switches on makima's SSH server with the keys the migration
+// brought, for a machine that was only reachable by Tailscale SSH.
+func enableOwnSSH(path, keys, user string) error {
+	file := filepath.Join(filepath.Dir(path), "authorized_keys")
+	lines := strings.Split(strings.TrimSpace(keys), "\n")
+	sort.Strings(lines)
+	if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	c, err := localapi.Dial(localapi.SocketPath(path))
+	if err != nil {
+		return err
+	}
+	return c.SetSSH(true, []string{file}, user)
+}
+
+// --- retire -------------------------------------------------------------
+
+// migrateRetire removes Tailscale from this machine: the last step of a move,
+// run over makima once this machine has been reached through it.
 //
-// It has to outlive the SSH session that asked for it: that session rides on
-// Tailscale, which the cutover is about to stop — and under Tailscale SSH the
-// session's processes belong to tailscaled, which takes them all down as it
-// goes. systemd-run gives it a unit of its own; elsewhere a new session does.
-func detachCutover(o cutoverOpts, args []string) error {
-	if err := os.MkdirAll(filepath.Dir(migrate.InputPath), 0o700); err != nil {
-		return err
-	}
-	b, _ := json.Marshal(o.input)
-	if err := os.WriteFile(migrate.InputPath, b, 0o600); err != nil {
-		return err
-	}
-	_ = migrate.WriteState(migrate.StatePath, migrate.State{State: migrate.StateStarting, Name: o.name, Detail: "starting"})
-
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	var rest []string
-	for _, a := range args {
-		if a == "-detach" || a == "--detach" || a == "-stdin" || a == "--stdin" {
-			continue
-		}
-		rest = append(rest, a)
-	}
-	cmdArgs := append([]string{"migrate", "cutover"}, rest...)
-	cmdArgs = append(cmdArgs, "-input", migrate.InputPath)
-
-	if run, err := exec.LookPath("systemd-run"); err == nil && dirExists("/run/systemd/system") {
-		unit := "makima-migrate-" + strconv.FormatInt(time.Now().Unix(), 10)
-		full := append([]string{
-			"--unit", unit, "--collect", "--quiet",
-			"--property=StandardOutput=append:" + migrate.LogPath,
-			"--property=StandardError=append:" + migrate.LogPath,
-			self,
-		}, cmdArgs...)
-		if out, err := exec.Command(run, full...).CombinedOutput(); err == nil {
-			fmt.Println("started", unit)
-			return nil
-		} else {
-			fmt.Fprintf(os.Stderr, "note: systemd-run refused (%s); starting it directly\n", strings.TrimSpace(string(out)))
-		}
-	}
-	return spawnDetached(self, cmdArgs, migrate.LogPath)
-}
-
-func dirExists(p string) bool {
-	fi, err := os.Stat(p)
-	return err == nil && fi.IsDir()
-}
-
-// runCutover is the switch itself. It always ends in a final state, and every
-// path out of it that is not "done" leaves Tailscale as it found it.
-func runCutover(ctx context.Context, o cutoverOpts) migrate.State {
-	os.Setenv("PATH", os.Getenv("PATH")+":/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin")
-	st := migrate.State{State: migrate.StateRunning, Name: o.name, PID: os.Getpid()}
-	save := func(step, detail string) {
-		st.Step, st.Detail = step, detail
-		_ = migrate.WriteState(o.statePath, st)
-		fmt.Fprintf(os.Stderr, "%s  %s: %s\n", time.Now().Format(time.TimeOnly), step, detail)
-	}
-	finish := func(state, detail string) migrate.State {
-		st.State = state
-		save(st.Step, detail)
-		return st
-	}
-
-	// 1. Refuse before touching anything, if this could not work.
-	f, err := conf.Load(o.path)
-	member := err == nil
-	var inv struct{ server string }
-	if o.input.Invite != "" {
-		i, err := checkInvite(o.input.Invite)
-		if err != nil {
-			return finish(migrate.StateFailed, err.Error())
-		}
-		inv.server = strings.TrimRight(i.Server, "/")
-	}
-	switch {
-	case o.serverSelf && !member:
-		return finish(migrate.StateFailed, "this machine was to hold the network, but is not on it")
-	case o.serverSelf:
-		if _, ok := control.DialAdmin(serverSocket()); !ok {
-			return finish(migrate.StateFailed, "the network's server is not running here")
-		}
-	case member && !f.Managed():
-		return finish(migrate.StateFailed, "this machine is on a makima network with no server, and cannot join another")
-	case member && inv.server != "" && inv.server != f.LoginServer:
-		return finish(migrate.StateFailed, "this machine is already on the network held at "+f.LoginServer)
-	case !member && o.input.Invite == "":
-		return finish(migrate.StateFailed, "no invite to join with")
-	}
-
-	_ = os.Remove(o.commitPath)
-
-	// 2. Tailscale off. It is only stopped here — nothing is forgotten — so
-	// starting it again is a complete undo.
-	host := migrate.ThisHost()
-	ts, found := migrate.FindTailscale(ctx, host)
-	if found {
-		save("tailscale", "stopping Tailscale")
-		if err := ts.Stop(ctx); err != nil {
-			_ = ts.Start(ctx)
-			return finish(migrate.StateFailed, err.Error())
-		}
-	}
-	rollback := func(reason string) migrate.State {
-		save("rollback", "putting Tailscale back: "+reason)
-		if !o.serverSelf {
-			// The node goes down and stays registered, so another try picks
-			// up the same identity. The server, on the machine that holds
-			// it, stays: other machines may already be on it.
-			d := daemonFor(o.path)
-			_ = d.Stop(ctx, stopWait)
-		}
-		if found {
-			if err := ts.Start(ctx); err != nil {
-				st.Notes = append(st.Notes, err.Error())
-			}
-		}
-		return finish(migrate.StateRolledBack, reason)
-	}
-
-	// 3. On the network.
-	save("join", "joining the network")
-	jctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	if !member {
-		i, _ := checkInvite(o.input.Invite)
-		if err := registerNode(jctx, o.path, i, o.name); err != nil {
-			cancel()
-			return rollback(err.Error())
-		}
-	}
-	err = bringUp(jctx, o.path)
-	cancel()
-	if err != nil {
-		return rollback(err.Error())
-	}
-
-	// 4. Proof, not hope.
-	save("verify", "checking the tunnel")
-	path, err := verifyTunnel(ctx, o, 90*time.Second)
-	if err != nil {
-		return rollback(err.Error())
-	}
-	st.Path = path
-	if c, err := localapi.Dial(localapi.SocketPath(o.path)); err == nil {
-		if s, err := c.Status(); err == nil {
-			st.Address = s.Node.Address.String()
-		}
-	}
-
-	// 5. SSH, for a machine that only had Tailscale's.
-	if o.sshUser != "" && o.input.SSHKeys != "" {
-		if err := enableOwnSSH(o); err != nil {
-			st.Notes = append(st.Notes, "makima's SSH server did not start: "+err.Error())
-		}
-	}
-
-	// 6. Hold. Everything up to here is undone by starting Tailscale again;
-	// what comes next is not. So it waits for the machine running the move
-	// to confirm it — which that machine can only do by reaching this one
-	// over makima, the bridge that is about to be the only one. Nothing
-	// arrives, and this machine goes back to Tailscale by itself.
-	if o.confirmWithin > 0 {
-		st.State = migrate.StateWaiting
-		save("confirm", "on makima — waiting to be confirmed over it before Tailscale is removed")
-		switch verdict := waitForVerdict(ctx, o.commitPath, o.confirmWithin); verdict {
-		case migrate.VerdictCommit:
-			st.State = migrate.StateRunning
-		case migrate.VerdictKeep:
-			st.State = migrate.StateRunning
-			if found {
-				if err := ts.Start(ctx); err != nil {
-					st.Notes = append(st.Notes, err.Error())
-				}
-			}
-			st.Notes = append(st.Notes, "Tailscale is running here again alongside makima, because some devices stayed on it")
-			save("done", "on makima, Tailscale kept")
-			return finish(migrate.StateDone, "on makima; Tailscale kept for the devices still on it")
-		case migrate.VerdictAbort:
-			return rollback("the move was called off")
-		default:
-			return rollback(fmt.Sprintf("nothing confirmed it over makima within %s", o.confirmWithin))
-		}
-	}
-
-	// 7. Tailscale away — or left installed and off, if that was the choice.
-	if found {
-		if o.remove {
-			save("remove", "removing Tailscale")
-			notes, _ := ts.Remove(ctx)
-			st.Notes = append(st.Notes, notes...)
-			st.Removed = true
-			// Signing out briefly restarts tailscaled, which briefly puts its
-			// rules back. Make sure makima came through it.
-			if _, err := verifyTunnel(ctx, o, 30*time.Second); err != nil {
-				d := daemonFor(o.path)
-				_ = d.Stop(ctx, stopWait)
-				_ = d.Start(ctx, startWait)
-				if _, err := verifyTunnel(ctx, o, 60*time.Second); err != nil {
-					st.Notes = append(st.Notes, "the tunnel did not come back after Tailscale was removed — try 'makima down' and 'makima up'")
-				}
-			}
-		} else {
-			ts.Disable(ctx)
-			st.Notes = append(st.Notes, "Tailscale is still installed, switched off")
-		}
-	}
-	save("done", "on makima")
-	return finish(migrate.StateDone, "on makima")
-}
-
-// waitForVerdict waits for `makima migrate commit` to say what happens next.
-func waitForVerdict(ctx context.Context, path string, within time.Duration) string {
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if b, err := os.ReadFile(path); err == nil {
-			os.Remove(path)
-			switch v := strings.TrimSpace(string(b)); v {
-			case migrate.VerdictCommit, migrate.VerdictKeep, migrate.VerdictAbort:
-				return v
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-time.After(time.Second):
-		}
-	}
-	return ""
-}
-
-// migrateCommit hands a waiting switch its verdict and reports how it ends.
-func migrateCommit(args []string) error {
-	fs := flag.NewFlagSet("migrate commit", flag.ExitOnError)
-	keep := fs.Bool("keep", false, "stay on makima, but put Tailscale back running too")
-	abort := fs.Bool("abort", false, "call the switch off: leave makima, put Tailscale back")
-	wait := fs.Duration("wait", 3*time.Minute, "how long to wait for the switch to finish")
+// It refuses unless makima is up here and on a network. Taking Tailscale off a
+// machine makima is not carrying would leave it reachable by neither.
+func migrateRetire(args []string) error {
+	fs := flag.NewFlagSet("migrate retire", flag.ExitOnError)
+	path := fs.String("config", conf.DefaultPath, "config path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if os.Geteuid() != 0 {
 		return migrate.ErrNotRoot
 	}
-	verdict := migrate.VerdictCommit
-	switch {
-	case *abort:
-		verdict = migrate.VerdictAbort
-	case *keep:
-		verdict = migrate.VerdictKeep
-	}
-	b, err := os.ReadFile(migrate.StatePath)
+	c, err := localapi.Dial(localapi.SocketPath(*path))
 	if err != nil {
-		return errors.New("no switch is running on this machine")
-	}
-	if st, _ := migrate.ReadState(b); st.Final() {
-		os.Stdout.Write(compact(b))
-		return nil
-	}
-	if err := os.WriteFile(migrate.CommitPath, []byte(verdict+"\n"), 0o600); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(*wait)
-	for time.Now().Before(deadline) {
-		time.Sleep(time.Second)
-		if b, err := os.ReadFile(migrate.StatePath); err == nil {
-			if st, _ := migrate.ReadState(b); st.Final() {
-				os.Stdout.Write(compact(b))
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("the switch has not finished after %s — see %s", *wait, migrate.LogPath)
-}
-
-func compact(b []byte) []byte {
-	var v any
-	if json.Unmarshal(b, &v) != nil {
-		return b
-	}
-	out, _ := json.Marshal(v)
-	return append(out, '\n')
-}
-
-// verifyTunnel waits for this machine to be properly on the network: for the
-// machine holding it, its server answering at the address the others use; for
-// the rest, a packet that goes through the tunnel to that machine and back.
-func verifyTunnel(ctx context.Context, o cutoverOpts, wait time.Duration) (string, error) {
-	deadline := time.Now().Add(wait)
-	last := errors.New("makima did not start")
-	for time.Now().Before(deadline) {
-		if p, err := tunnelOnce(ctx, o); err == nil {
-			return p, nil
-		} else {
-			last = err
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
-	return "", last
-}
-
-func tunnelOnce(ctx context.Context, o cutoverOpts) (string, error) {
-	c, err := localapi.Dial(localapi.SocketPath(o.path))
-	if err != nil {
-		return "", errors.New("makima is not running")
+		return errors.New("makima is not running here, so Tailscale stays")
 	}
 	st, err := c.Status()
-	if err != nil {
-		return "", err
+	if err != nil || !st.Managed {
+		return errors.New("makima is not on a network here, so Tailscale stays")
 	}
-	if !st.Managed {
-		return "", errors.New("makima is up but not on a network")
-	}
-	if o.serverSelf {
-		fctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		if _, err := control.FetchServerKey(fctx, st.Server); err != nil {
-			return "", fmt.Errorf("the network's server does not answer at %s", st.Server)
-		}
-		return "holding the network", nil
-	}
-	for _, p := range st.Peers {
-		if p.Name != o.controller {
-			continue
-		}
-		if !p.Online {
-			return "", fmt.Errorf("%s is not online on makima", o.controller)
-		}
-		if o.ctrlOnTailscale {
-			pg, err := c.Ping(o.controller)
-			if err != nil || (pg.Latency == 0 && pg.RelayLatency == 0) {
-				return "", fmt.Errorf("no path to %s yet", o.controller)
-			}
-			if pg.Direct {
-				return "direct", nil
-			}
-			return "via relay", nil
-		}
-		// The server listens on every address, the tunnel's included. A
-		// connection accepted — or refused — came back through the tunnel;
-		// silence is what Tailscale's firewall rule, or any other, sounds like.
-		d := net.Dialer{Timeout: 3 * time.Second}
-		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(p.Address.String(), "8080"))
-		if err != nil && !errors.Is(err, syscall.ECONNREFUSED) {
-			return "", fmt.Errorf("nothing comes back from %s through the tunnel", o.controller)
-		}
-		if conn != nil {
-			conn.Close()
-		}
-		if p.Direct {
-			return "direct", nil
-		}
-		return "via relay", nil
-	}
-	return "", fmt.Errorf("%s is not on the network yet", o.controller)
-}
 
-// enableOwnSSH switches on makima's SSH server with the keys the migration
-// brought, so a machine that was only reachable by Tailscale SSH is still
-// reachable by ssh.
-func enableOwnSSH(o cutoverOpts) error {
-	keys := filepath.Join(filepath.Dir(o.path), "authorized_keys")
-	lines := strings.Split(strings.TrimSpace(o.input.SSHKeys), "\n")
-	sort.Strings(lines)
-	if err := os.WriteFile(keys, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		return err
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	os.Setenv("PATH", os.Getenv("PATH")+":/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin")
+	var res migrate.Retired
+	if ts, found := migrate.FindTailscale(ctx, migrate.ThisHost()); found {
+		res.Notes, _ = ts.Remove(ctx)
+		res.Removed = true
 	}
-	c, err := localapi.Dial(localapi.SocketPath(o.path))
-	if err != nil {
-		return err
-	}
-	return c.SetSSH(true, []string{keys}, o.sshUser)
+	return json.NewEncoder(os.Stdout).Encode(res)
 }
 
 // --- the terminal version -----------------------------------------------
@@ -1126,7 +876,7 @@ func migrateInteractive() error {
 	if line, _ := in.ReadString('\n'); strings.TrimSpace(line) != "" {
 		ch.Advertise = strings.TrimSpace(line)
 	}
-	fmt.Print("Uninstall Tailscale from each machine once it is on makima? [Y/n] ")
+	fmt.Print("Uninstall Tailscale from each machine once it has been reached over makima? [Y/n] ")
 	line, _ := in.ReadString('\n')
 	ch.Remove = !strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "n")
 	fmt.Printf("Move %d machine(s) to makima, held by %s? [y/N] ", len(movable), ctrl.Name)
@@ -1153,9 +903,9 @@ func migrateInteractive() error {
 
 	fmt.Println()
 	for _, m := range res.Machines {
-		fmt.Printf("  %-20s %-11s %s\n", m.Name, m.Outcome, m.Detail)
+		fmt.Printf("  %-20s %-7s %s\n", m.Name, m.Outcome, m.Detail)
 		for _, n := range m.Notes {
-			fmt.Printf("  %-20s %-11s note: %s\n", "", "", n)
+			fmt.Printf("  %-20s %-7s note: %s\n", "", "", n)
 		}
 	}
 	if res.Error != "" {

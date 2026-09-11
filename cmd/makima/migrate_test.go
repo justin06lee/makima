@@ -1,69 +1,65 @@
 package main
 
 import (
-	"context"
+	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/justin06lee/makima/internal/migrate"
+	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/invite"
+	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netmap"
 )
 
-// The refusals: each has to come back before Tailscale is so much as looked
-// at, which is what makes them safe to answer with "failed" and walk away.
-func TestCutoverRefusesBeforeTouchingAnything(t *testing.T) {
-	dir := t.TempDir()
-	base := cutoverOpts{
-		path:       filepath.Join(dir, "node.json"),
-		name:       "tenet",
-		controller: "mac",
-		statePath:  filepath.Join(dir, "migrate.json"),
+func node(server string, sk key.Public, addr string) *conf.File {
+	f := &conf.File{LoginServer: server, ServerKey: sk}
+	if addr != "" {
+		f.Self = netmap.Node{Addresses: []netip.Prefix{netip.MustParsePrefix(addr + "/32")}}
 	}
+	return f
+}
 
-	cases := map[string]func(o *cutoverOpts){
-		"no invite":                   func(o *cutoverOpts) {},
-		"not on the network it holds": func(o *cutoverOpts) { o.serverSelf = true },
-		"a broken invite":             func(o *cutoverOpts) { o.input.Invite = "mk1_notreally" },
+// What a machine already on a network does when the move asks it to join one.
+// The case that prompted this: a Mac left on an earlier try's network, which
+// the move then refused to take anywhere.
+func TestJoinDecision(t *testing.T) {
+	k1, _ := key.NewPrivate()
+	k2, _ := key.NewPrivate()
+	tenet := invite.Invite{Server: "http://192.168.1.253:8081/", ServerKey: k1.Public()}
+
+	cases := []struct {
+		name        string
+		f           *conf.File
+		holds       bool
+		holdsLegacy bool
+		want        joinChoice
+	}{
+		{"already on it", node("http://192.168.1.253:8081", k1.Public(), "10.77.0.4"), false, false, joinRestart},
+		{"same address, a new server there", node("http://192.168.1.253:8081", k2.Public(), "10.77.0.4"), false, false, joinLeave},
+		{"on another network", node("http://192.168.1.199:8080", k2.Public(), "10.77.0.2"), false, false, joinLeave},
+		{"holds another network", node("http://192.168.1.199:8080", k2.Public(), "10.77.0.1"), true, false, joinRefuse},
+		{"holds one from an older makima", node("http://192.168.1.199:8080", k2.Public(), "100.64.0.1"), true, true, joinLeave},
+		{"on this network, from an older makima", node("http://192.168.1.253:8081", k1.Public(), "100.64.0.2"), false, false, joinLeave},
 	}
-	for name, change := range cases {
-		o := base
-		change(&o)
-		st := runCutover(context.Background(), o)
-		if st.State != migrate.StateFailed {
-			t.Errorf("%s: state %q (%s), want failed", name, st.State, st.Detail)
-		}
-		if st.Step == "tailscale" || strings.Contains(st.Detail, "Tailscale back") {
-			t.Errorf("%s: it got as far as Tailscale", name)
-		}
-		b, err := os.ReadFile(o.statePath)
-		if err != nil {
-			t.Fatalf("%s: no state written: %v", name, err)
-		}
-		if s, _ := migrate.ReadState(b); s.State != migrate.StateFailed {
-			t.Errorf("%s: the file says %q", name, s.State)
+	for _, c := range cases {
+		if got := joinDecision(c.f, tenet, c.holds, c.holdsLegacy); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
-func TestWaitForVerdict(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "commit")
-	if v := waitForVerdict(context.Background(), path, 1500*time.Millisecond); v != "" {
-		t.Fatalf("nobody answered, but the verdict was %q", v)
+func TestLegacyRange(t *testing.T) {
+	if !onLegacyRange(node("", key.Public{}, "100.64.0.3")) || onLegacyRange(node("", key.Public{}, "10.77.0.3")) || onLegacyRange(node("", key.Public{}, "")) {
+		t.Fatal("onLegacyRange")
 	}
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		os.WriteFile(path, []byte("keep\n"), 0o600)
-	}()
-	if v := waitForVerdict(context.Background(), path, 5*time.Second); v != migrate.VerdictKeep {
-		t.Fatalf("verdict = %q", v)
-	}
-	if _, err := os.Stat(path); err == nil {
-		t.Fatal("a verdict is used once")
-	}
-	os.WriteFile(path, []byte("rm -rf /\n"), 0o600)
-	if v := waitForVerdict(context.Background(), path, 1500*time.Millisecond); v != "" {
-		t.Fatalf("garbage is not a verdict: %q", v)
+
+	dir := t.TempDir()
+	old := filepath.Join(dir, "old.json")
+	os.WriteFile(old, []byte(`{"prefix": "100.64.0.0/10", "next_id": 3}`), 0o600)
+	cur := filepath.Join(dir, "new.json")
+	os.WriteFile(cur, []byte(`{"prefix": "10.77.0.0/16"}`), 0o600)
+	if !serverStateOnLegacyRange(old) || serverStateOnLegacyRange(cur) || serverStateOnLegacyRange(filepath.Join(dir, "none")) {
+		t.Fatal("serverStateOnLegacyRange")
 	}
 }

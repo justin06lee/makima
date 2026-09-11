@@ -282,7 +282,10 @@ func judge(c *Candidate) {
 		c.Reach = a.String()
 	}
 	if f.Member && !f.Holds {
-		c.Why = "already on a makima network — it can only move to that network's machine"
+		c.Why = "already on a makima network — joining this one takes it off that one"
+	}
+	if f.Holds {
+		c.Why = "holds a makima network of its own — choose it to hold this one, or it stays on that one"
 	}
 	if f.Via == "tailscale" && !f.OpenSSH {
 		c.Why = "reached through Tailscale SSH with no sshd behind it — makima's own SSH server takes over, with your keys"
@@ -367,7 +370,7 @@ func rank(p *Plan) {
 		}
 	}
 	if p.Controller != "" && !anyPublic {
-		p.Advice = "None of these machines has a public address, so the network only reaches devices that can get to the one holding it — normally, the ones on the same home network. Each device is checked before anything on it changes; one that cannot reach it stays on Tailscale. A cheap VPS with makima on it fixes this for good."
+		p.Advice = "None of these machines has a public address, so the network only reaches devices that can get to the one holding it — normally, the ones on the same home network. Tailscale keeps running on every device until makima has been reached there, so one that cannot get to it simply stays on Tailscale."
 	}
 }
 

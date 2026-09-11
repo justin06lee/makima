@@ -109,6 +109,27 @@ for n in makimad makima-server makima-relay makima; do
 	stop_proc "$n"
 done
 
+# The holes makima made in a bare nftables or iptables ruleset: each rule is
+# tagged with a comment beginning "makima ", which is how only makima's are
+# taken out. firewalld and ufw ports are left — makima cannot tell its port
+# from the same one opened for something else.
+if [ "$os" = Linux ]; then
+	if command -v nft >/dev/null 2>&1; then
+		nft -a list ruleset 2>/dev/null | awk '
+			$1 == "table" { fam = $2; tbl = $3 }
+			$1 == "chain" { ch = $2 }
+			/comment "makima / { print fam, tbl, ch, $NF }
+		' | while read -r fam tbl ch h; do
+			nft delete rule "$fam" "$tbl" "$ch" handle "$h" 2>/dev/null && say delete "nftables rule $h in $fam $tbl $ch"
+		done
+	fi
+	if command -v iptables >/dev/null 2>&1; then
+		iptables -S INPUT 2>/dev/null | grep -- '--comment "makima ' | sed 's/^-A /-D /' | while IFS= read -r rule; do
+			eval "iptables $rule" 2>/dev/null && say delete "iptables rule: $rule"
+		done
+	fi
+fi
+
 # --- delete ---------------------------------------------------------------
 
 # The network's keys and the control plane's state are copied aside first, so

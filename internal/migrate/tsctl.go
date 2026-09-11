@@ -43,8 +43,8 @@ func (h Host) has(name string) bool {
 	return err == nil
 }
 
-// Tailscale is the Tailscale on this machine, and how to stop, restart and
-// remove it. Run as root.
+// Tailscale is the Tailscale on this machine, and how to remove it. Run as
+// root.
 type Tailscale struct {
 	h   Host
 	CLI string
@@ -61,8 +61,6 @@ type Tailscale struct {
 	// console is the person logged in at the Mac. The app's CLI talks to the
 	// app running in their session, so it is run as them.
 	console string
-
-	wasActive bool
 }
 
 const macApp = "/Applications/Tailscale.app"
@@ -150,80 +148,6 @@ func (t *Tailscale) cli(ctx context.Context, args ...string) (string, error) {
 	return t.h.Run(ctx, t.CLI, args...)
 }
 
-// Active says whether Tailscale is up right now.
-func (t *Tailscale) Active(ctx context.Context) bool {
-	switch t.Kind {
-	case "systemd":
-		out, _ := t.h.Run(ctx, "systemctl", "is-active", "tailscaled")
-		return strings.TrimSpace(out) == "active"
-	case "openrc":
-		_, err := t.h.Run(ctx, "rc-service", "tailscale", "status")
-		return err == nil
-	}
-	out, err := t.cli(ctx, "status", "--json")
-	if err != nil {
-		return false
-	}
-	st, err := ParseStatus([]byte(out))
-	return err == nil && st.Running()
-}
-
-// Stop takes Tailscale off the network without forgetting anything, so Start
-// puts it back exactly.
-//
-// On Linux the daemon itself is stopped, not merely disconnected: while it
-// runs it drops every packet from 100.64.0.0/10 that did not arrive on its own
-// interface, and makima's addresses are in that range. Stopping it removes
-// that rule; --cleanup makes sure.
-func (t *Tailscale) Stop(ctx context.Context) error {
-	t.wasActive = t.Active(ctx)
-	var err error
-	switch t.Kind {
-	case "systemd":
-		_, err = t.h.Run(ctx, "systemctl", "stop", "tailscaled")
-	case "openrc":
-		_, err = t.h.Run(ctx, "rc-service", "tailscale", "stop")
-	default:
-		_, err = t.cli(ctx, "down")
-	}
-	if err != nil {
-		return fmt.Errorf("stop tailscale: %w", err)
-	}
-	t.cleanup(ctx)
-	return nil
-}
-
-// Start undoes Stop.
-func (t *Tailscale) Start(ctx context.Context) error {
-	if !t.wasActive {
-		return nil
-	}
-	var err error
-	switch t.Kind {
-	case "systemd":
-		_, err = t.h.Run(ctx, "systemctl", "start", "tailscaled")
-	case "openrc":
-		_, err = t.h.Run(ctx, "rc-service", "tailscale", "start")
-	default:
-		_, err = t.cli(ctx, "up")
-	}
-	if err != nil {
-		return fmt.Errorf("start tailscale again: %w", err)
-	}
-	return nil
-}
-
-// Disable keeps a stopped Tailscale from coming back at the next boot, for a
-// machine that switched but was asked to keep Tailscale installed.
-func (t *Tailscale) Disable(ctx context.Context) {
-	switch t.Kind {
-	case "systemd":
-		_, _ = t.h.Run(ctx, "systemctl", "disable", "tailscaled")
-	case "openrc":
-		_, _ = t.h.Run(ctx, "rc-update", "del", "tailscale")
-	}
-}
-
 // cleanup removes whatever tailscaled left in the firewall and routing tables.
 func (t *Tailscale) cleanup(ctx context.Context) {
 	if t.h.GOOS != "linux" {
@@ -241,8 +165,8 @@ func (t *Tailscale) cleanup(ctx context.Context) {
 //
 // Each step is attempted whatever happened to the one before, and what could
 // not be done comes back as a note: by the time this runs the machine is on
-// makima, so a leftover is untidy rather than dangerous, and one failed step
-// is no reason to leave the rest undone.
+// makima and has been reached over it, so a leftover is untidy rather than
+// dangerous, and one failed step is no reason to leave the rest undone.
 func (t *Tailscale) Remove(ctx context.Context) (notes []string, err error) {
 	note := func(format string, a ...any) { notes = append(notes, fmt.Sprintf(format, a...)) }
 	step := func(d time.Duration, name string, args ...string) error {
@@ -256,9 +180,9 @@ func (t *Tailscale) Remove(ctx context.Context) (notes []string, err error) {
 		return t.removeMac(ctx)
 	}
 
-	// Signing out needs the daemon, which Stop took down. It comes back for
-	// a few seconds — long enough to tell the tailnet this machine is gone,
-	// so it does not linger in the admin console as an offline device.
+	// Signing out needs the daemon. It is normally running — makima runs
+	// beside it — but is started in case somebody stopped it, so the tailnet
+	// hears this machine is gone rather than keeping it as an offline device.
 	if t.Kind == "systemd" {
 		_ = step(20*time.Second, "systemctl", "start", "tailscaled")
 	} else if t.Kind == "openrc" {

@@ -2,16 +2,17 @@
 //
 // The trick it relies on is that Tailscale is already the thing that can reach
 // every machine. So the move is made through it: SSH over the tailnet to each
-// machine, put makima there, start a network on whichever machine the person
-// picks to hold it, and switch each machine over — and only once a machine is
-// provably on makima does Tailscale come off it. A machine that does not come
-// up on makima puts Tailscale back by itself, so the worst a failed switch can
-// do is leave a machine exactly where it started.
+// machine, give it this person's SSH keys and makima, start a network on
+// whichever machine the person picks to hold it, and join the rest to it.
+// makima has an address range of its own, so all of that happens beside
+// Tailscale, which keeps running. Only once this machine has logged in to a
+// machine over makima does Tailscale come off it — so the worst a failed step
+// can do is leave a machine on Tailscale, exactly as reachable as it was.
 //
 // The package is split by where code runs. tailscale.go, facts.go, ssh.go,
-// kit.go, plan.go and run.go run on the machine the person is sitting at, as
-// that person. state.go and tsctl.go run on the machine being switched, as
-// root — see cmd/makima/migrate.go for the commands that wrap them.
+// keys.go, kit.go, plan.go and run.go run on the machine the person is
+// sitting at, as that person. tsctl.go runs on the machine losing Tailscale,
+// as root — see cmd/makima/migrate.go for the commands that wrap it.
 package migrate
 
 import (

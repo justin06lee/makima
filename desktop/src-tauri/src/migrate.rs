@@ -30,8 +30,7 @@ pub struct State {
 struct Running {
     child: Arc<Mutex<Child>>,
     /// A run cannot be stopped from the window once it has begun: it may be
-    /// halfway through switching a machine, and the machine finishes on its
-    /// own regardless. A scan can.
+    /// halfway through removing Tailscale from a machine. A scan can.
     stoppable: bool,
 }
 
@@ -130,12 +129,7 @@ pub async fn start(app: AppHandle, run: bool, choice: Option<Value>) -> Result<(
 async fn answer(app: AppHandle, stdin: Arc<Mutex<ChildStdin>>, event: Value) {
     let id = event.get("id").and_then(Value::as_i64).unwrap_or(0);
     let reply = match serde_json::from_value::<Action>(event.get("action").cloned().unwrap_or(Value::Null)) {
-        Ok(
-            action @ (Action::MigrateHost { .. }
-            | Action::MigrateJoin { .. }
-            | Action::MigrateCutover { .. }
-            | Action::MigrateCommit { .. }),
-        ) => {
+        Ok(action @ (Action::MigrateHost { .. } | Action::MigrateJoin { .. } | Action::MigrateRetire)) => {
             let _ = app.emit("migrate", json!({ "type": "prompt" }));
             match privileged::run(action).await {
                 Ok(o) => json!({ "id": id, "ok": o.ok, "output": o.output }),

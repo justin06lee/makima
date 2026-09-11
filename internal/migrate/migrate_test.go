@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -137,6 +139,36 @@ func TestProbeScriptIsPOSIX(t *testing.T) {
 	}
 	if f.User == "" || f.Sudo == "" || f.OS == "" {
 		t.Fatalf("facts = %+v", f)
+	}
+}
+
+// Run for real, in a home of its own: a file with no newline at the end, a
+// key already there and one that is not.
+func TestAuthorizeScript(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
+	file := filepath.Join(home, ".ssh", "authorized_keys")
+	os.WriteFile(file, []byte("ssh-ed25519 AAAAold laptop"), 0o600)
+
+	run := func(keys string) string {
+		cmd := exec.Command("sh", "-c", AuthorizeScript)
+		cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+		cmd.Stdin = strings.NewReader(keys)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if out := run("ssh-ed25519 AAAAold laptop\nssh-ed25519 AAAAnew me@mac\n\n"); out != "added=1" {
+		t.Fatalf("first run said %q", out)
+	}
+	if out := run("ssh-ed25519 AAAAnew me@mac\n"); out != "added=0" {
+		t.Fatalf("a key already there was added again: %q", out)
+	}
+	b, _ := os.ReadFile(file)
+	if string(b) != "ssh-ed25519 AAAAold laptop\nssh-ed25519 AAAAnew me@mac\n" {
+		t.Fatalf("authorized_keys = %q", b)
 	}
 }
 
@@ -277,15 +309,15 @@ func TestActionArgs(t *testing.T) {
 	}{
 		{Action{Kind: "migrate-host", Advertise: "192.168.1.20", Name: "tenet", Invites: 2}, "migrate host -json -advertise 192.168.1.20 -name tenet -invites 2"},
 		{Action{Kind: "migrate-join", Name: "mac", Invite: "mk1_abc"}, "migrate join -name mac mk1_abc"},
-		{Action{Kind: "migrate-cutover", Name: "mac", Controller: "tenet", Remove: true}, "migrate cutover -detach -name mac -controller tenet -remove=true"},
-		{Action{Kind: "migrate-cutover", Name: "mac", Controller: "mac", ServerSelf: true}, "migrate cutover -detach -name mac -controller mac -server-self -remove=false"},
-		{Action{Kind: "migrate-commit", Verdict: "commit"}, "migrate commit"},
-		{Action{Kind: "migrate-commit", Verdict: "keep"}, "migrate commit -keep"},
+		{Action{Kind: "migrate-retire"}, "migrate retire"},
 	}
 	for _, c := range cases {
 		if got := strings.Join(c.a.Args(), " "); got != c.want {
 			t.Errorf("%s: %q, want %q", c.a.Kind, got, c.want)
 		}
+	}
+	if b, _ := json.Marshal(Action{Kind: "migrate-retire"}); string(b) != `{"kind":"migrate-retire"}` {
+		t.Errorf("the app is sent %s", b)
 	}
 }
 
@@ -313,6 +345,9 @@ type call struct {
 	stdin  string
 }
 
+// norm is a script with its layers of shell quoting taken off.
+func (c call) norm() string { return strings.NewReplacer(`'\''`, "", "'", "").Replace(c.script) }
+
 type fakeShell struct {
 	mu     sync.Mutex
 	calls  []call
@@ -320,15 +355,13 @@ type fakeShell struct {
 	refuse map[string]bool // users whose login is refused
 	auth   string
 
-	probeFails map[string]bool   // tailscale IPs that cannot reach the server
-	final      map[string]string // state each machine's switch ends in, instead of holding
-	cutovers   []string          // machines a switch was started on, in order
-	commits    []string          // "addr verdict", for every verdict delivered
-	noCommit   map[string]bool   // mesh addresses a verdict cannot reach
+	probeFails  map[string]bool // Tailscale addresses that cannot reach the server
+	meshDown    map[string]bool // makima addresses ssh over makima cannot get into
+	retireFails map[string]bool // makima addresses where removing Tailscale fails
 }
 
 func newFakeShell() *fakeShell {
-	return &fakeShell{pinned: map[string]bool{}, refuse: map[string]bool{}, probeFails: map[string]bool{}, final: map[string]string{}, noCommit: map[string]bool{}}
+	return &fakeShell{pinned: map[string]bool{}, refuse: map[string]bool{}, probeFails: map[string]bool{}, meshDown: map[string]bool{}, retireFails: map[string]bool{}}
 }
 
 func (f *fakeShell) Pin(addr string, keys []string) error {
@@ -341,8 +374,9 @@ func (f *fakeShell) Pin(addr string, keys []string) error {
 }
 
 func (f *fakeShell) Run(ctx context.Context, t Target, script string, stdin []byte, onAuth func(string)) (string, error) {
+	c := call{t, script, string(stdin)}
 	f.mu.Lock()
-	f.calls = append(f.calls, call{t, script, string(stdin)})
+	f.calls = append(f.calls, c)
 	refused := f.refuse[t.User]
 	auth := f.auth
 	f.mu.Unlock()
@@ -353,8 +387,9 @@ func (f *fakeShell) Run(ctx context.Context, t Target, script string, stdin []by
 	if refused {
 		return "", ErrDenied
 	}
-	// Seen through any number of layers of shell quoting.
-	norm := strings.NewReplacer(`'\''`, "", "'", "").Replace(script)
+	norm := c.norm()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	switch {
 	case script == ProbeScript:
 		return linuxProbe, nil
@@ -362,6 +397,13 @@ func (f *fakeShell) Run(ctx context.Context, t Target, script string, stdin []by
 		return "/tmp/makima-kit.abc123\n", nil
 	case strings.Contains(script, "install -m 0755"):
 		return "v1.0.0\n", nil
+	case script == AuthorizeScript:
+		return "added=1\n", nil
+	case script == CheckScript:
+		if f.meshDown[t.Addr] {
+			return "", ErrDenied
+		}
+		return "makima-ok\n", nil
 	case strings.Contains(norm, "migrate host"):
 		n := 0
 		fmt.Sscanf(norm[strings.Index(norm, "-invites ")+len("-invites "):], "%d", &n)
@@ -376,73 +418,64 @@ func (f *fakeShell) Run(ctx context.Context, t Target, script string, stdin []by
 			return "", fmt.Errorf("no answer")
 		}
 		return "ok\n", nil
-	case strings.Contains(norm, "migrate cutover"):
-		f.mu.Lock()
-		f.cutovers = append(f.cutovers, t.Addr)
-		f.mu.Unlock()
-		return "started\n", nil
-	case strings.HasPrefix(script, "cat "):
-		f.mu.Lock()
-		s := f.final[t.Addr]
-		f.mu.Unlock()
-		if s == "" {
-			s = StateWaiting
+	case strings.Contains(norm, "migrate join"):
+		return "joined\n", nil
+	case strings.Contains(norm, "migrate retire"):
+		if f.retireFails[t.Addr] {
+			return "", fmt.Errorf("pacman is locked")
 		}
-		b, _ := json.Marshal(State{State: s, Detail: "reported by " + t.Addr, Path: "direct"})
-		return string(b), nil
-	case strings.Contains(norm, "migrate commit"):
-		verdict := VerdictCommit
-		if strings.Contains(norm, "-abort") {
-			verdict = VerdictAbort
-		} else if strings.Contains(norm, "-keep") {
-			verdict = VerdictKeep
-		}
-		f.mu.Lock()
-		blocked := f.noCommit[t.Addr]
-		if !blocked {
-			f.commits = append(f.commits, t.Addr+" "+verdict)
-		}
-		f.mu.Unlock()
-		if blocked {
-			return "", ErrUnreachable
-		}
-		st := State{State: StateDone, Removed: true}
-		if verdict == VerdictAbort {
-			st = State{State: StateRolledBack, Detail: "the move was called off"}
-		}
-		b, _ := json.Marshal(st)
-		return string(b), nil
+		return `{"removed":true}` + "\n", nil
 	}
 	return "", fmt.Errorf("unexpected script %q", script)
 }
 
-// twoMachinePlan is this Mac and tenet, both movable.
+// ran is every call whose script does sub, in order, with where it came in
+// the whole run.
+func (f *fakeShell) ran(sub string) (calls []call, at []int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, c := range f.calls {
+		if c.script == sub || strings.Contains(c.norm(), sub) {
+			calls = append(calls, c)
+			at = append(at, i)
+		}
+	}
+	return calls, at
+}
+
+// twoMachinePlan is this Mac, tenet — reached through Tailscale SSH with no
+// sshd — and box, which has an sshd and a sudo that wants a password.
 func twoMachinePlan() Plan {
 	return Plan{
 		Tailnet: "t",
 		Machines: []Candidate{
 			{Machine: Machine{ID: "mac", Name: "mac", OS: "macOS", Local: true, Online: true, IPs: []string{"100.98.21.63"}},
 				Facts: &Facts{OS: "darwin", Arch: "arm64", Sudo: "password", User: "me"}, Eligible: true, Reach: "192.168.1.199"},
-			{Machine: Machine{ID: "tenet", Name: "tenet", OS: "linux", Online: true, IPs: []string{"100.102.72.87"}},
+			{Machine: Machine{ID: "tenet", Name: "tenet", OS: "linux", Online: true, IPs: []string{"100.102.72.87"}, HostKeys: []string{"ssh-ed25519 AAAAtenet"}},
 				Facts: &Facts{OS: "linux", Arch: "amd64", Sudo: "root", User: "root", Via: "tailscale"}, Access: &Access{},
 				Eligible: true, Reach: "192.168.1.20"},
-			{Machine: Machine{ID: "box", Name: "box", OS: "linux", Online: true, IPs: []string{"100.70.0.9"}},
+			{Machine: Machine{ID: "box", Name: "box", OS: "linux", Online: true, IPs: []string{"100.70.0.9"}, HostKeys: []string{"ssh-ed25519 AAAAbox"}},
 				Facts: &Facts{OS: "linux", Arch: "arm64", Sudo: "password", User: "pi", OpenSSH: true}, Access: &Access{User: "pi"},
 				Eligible: true, NeedsPassword: true, Reach: "192.168.1.30"},
 		},
 	}
 }
 
+func everyone() Choice {
+	return Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
+		Passwords: map[string]string{"box": "pw"}, Remove: true}
+}
+
 type fakeLocal struct {
-	mu      sync.Mutex
-	actions []Action
-	cutover string // state this machine's own switch ends in
+	mu       sync.Mutex
+	actions  []Action
+	joinFail bool
 }
 
 func (l *fakeLocal) elevate(_ context.Context, a Action) (string, error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.actions = append(l.actions, a)
-	l.mu.Unlock()
 	switch a.Kind {
 	case "migrate-host":
 		inv := make([]string, a.Invites)
@@ -451,276 +484,283 @@ func (l *fakeLocal) elevate(_ context.Context, a Action) (string, error) {
 		}
 		b, _ := json.Marshal(HostResult{Server: "http://192.168.1.199:8080", Invites: inv})
 		return string(b), nil
-	case "migrate-cutover":
-		if l.cutover != "" && l.cutover != StateWaiting {
+	case "migrate-join":
+		if l.joinFail {
 			return "", fmt.Errorf("it would not start")
 		}
-		return "started 123", nil
-	case "migrate-commit":
-		st := State{State: StateDone, Removed: a.Verdict == VerdictCommit}
-		if a.Verdict == VerdictAbort {
-			st = State{State: StateRolledBack, Detail: "the move was called off"}
-		}
-		b, _ := json.Marshal(st)
-		return "status...\n" + string(b), nil
+		return "joined", nil
+	case "migrate-retire":
+		return "status...\n" + `{"removed":true}`, nil
 	}
 	return "", nil
 }
 
-func (l *fakeLocal) verdict() string {
+func (l *fakeLocal) kinds() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	var k []string
 	for _, a := range l.actions {
-		if a.Kind == "migrate-commit" {
-			return a.Verdict
-		}
+		k = append(k, a.Kind)
 	}
-	return ""
+	return strings.Join(k, ",")
 }
 
-func runner(sh *fakeShell, l *fakeLocal) *Runner {
+func runner(sh *fakeShell, l *fakeLocal, peers map[string]MeshPeer) *Runner {
+	if peers == nil {
+		peers = map[string]MeshPeer{
+			"mac":   {Address: "10.77.0.9", Online: true, Direct: true},
+			"tenet": {Address: "10.77.0.1", Online: true, Direct: true},
+			"box":   {Address: "10.77.0.2", Online: true},
+		}
+	}
 	return &Runner{
 		SSH:     sh,
 		Version: "v1.0.0",
 		Elevate: l.elevate,
 		Probe:   func(context.Context, string) error { return nil },
-		Peers: func() map[string]MeshPeer {
-			return map[string]MeshPeer{
-				"mac":   {Address: "100.64.0.9", Online: true},
-				"tenet": {Address: "100.64.0.1", Online: true},
-				"box":   {Address: "100.64.0.2", Online: true},
-			}
-		},
-		LocalState: func() (State, error) { return State{State: StateWaiting}, nil },
-		Pubkeys:    func() string { return "ssh-ed25519 AAAAkey me@mac" },
+		Peers:   func() map[string]MeshPeer { return peers },
+		Pubkeys: func() string { return "ssh-ed25519 AAAAkey me@mac" },
 		Kit: func(context.Context, string, string, string) ([]byte, string, error) {
 			return []byte("kit"), "test", nil
 		},
+		Wait: 50 * time.Millisecond,
 		Poll: time.Millisecond,
-		Wait: time.Second,
 	}
 }
 
-func outcomes(res Result) map[string]string {
-	m := map[string]string{}
+func outcomes(res Result) map[string]Outcome {
+	m := map[string]Outcome{}
 	for _, o := range res.Machines {
-		m[o.ID] = o.Outcome
+		m[o.ID] = o
 	}
 	return m
 }
 
-func commitsTo(sh *fakeShell) map[string]string {
-	m := map[string]string{}
-	for _, c := range sh.commits {
-		addr, v, _ := strings.Cut(c, " ")
-		m[addr] = v
-	}
-	return m
-}
-
-func TestRunControllerRemote(t *testing.T) {
+func TestRunAddsEverythingBeforeRemovingAnything(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
-		Passwords: map[string]string{"box": "pw"}, Remove: true}
-	res := runner(sh, l).Run(context.Background(), ch)
+	res := runner(sh, l, nil).Run(context.Background(), everyone())
 
 	if !res.OK || res.Server != "http://192.168.1.20:8080" {
 		t.Fatalf("result = %+v", res)
 	}
-	if o := outcomes(res); o["mac"] != Moved || o["tenet"] != Moved || o["box"] != Moved {
-		t.Fatalf("outcomes = %v", o)
-	}
-	// Every removal was confirmed over makima — the mesh addresses — and
-	// never over Tailscale.
-	c := commitsTo(sh)
-	if c["100.64.0.1"] != VerdictCommit || c["100.64.0.2"] != VerdictCommit || len(c) != 2 {
-		t.Fatalf("commits = %v", sh.commits)
-	}
-	if sh.commits[0] != "100.64.0.1 commit" {
-		t.Fatalf("the controller is confirmed first: %v", sh.commits)
-	}
-	// This machine joined before anything switched, and committed last.
-	kinds := []string{}
-	for _, a := range l.actions {
-		kinds = append(kinds, a.Kind)
-	}
-	if strings.Join(kinds, ",") != "migrate-join,migrate-cutover,migrate-commit" || l.verdict() != VerdictCommit {
-		t.Fatalf("local actions = %v verdict %s", kinds, l.verdict())
-	}
-	for _, c := range sh.calls {
-		script := strings.NewReplacer(`'\''`, "", "'", "").Replace(c.script)
-		if !strings.Contains(script, "migrate cutover") {
-			continue
+	for id, o := range outcomes(res) {
+		if o.Outcome != Moved {
+			t.Errorf("%s: %+v", id, o)
 		}
+	}
+
+	// Removal happens over makima and nothing else — and only after every
+	// device has joined.
+	retires, retireAt := sh.ran("migrate retire")
+	if len(retires) != 2 {
+		t.Fatalf("retired over ssh: %+v", retires)
+	}
+	joins, joinAt := sh.ran("migrate join")
+	for _, i := range joinAt {
+		if i > retireAt[0] {
+			t.Fatal("Tailscale came off a device before every device had joined")
+		}
+	}
+	for _, c := range retires {
 		switch c.target.Addr {
-		case "100.70.0.9":
-			// Through sudo, password first, then the invite — never on
-			// the command line.
-			if !strings.HasPrefix(c.stdin, "pw\n{") || !strings.Contains(c.stdin, "mk1_invite") || strings.Contains(script, "mk1_") {
-				t.Errorf("box cutover: script %q stdin %q", c.script, c.stdin)
+		case "10.77.0.1":
+			if c.target.Port != 2222 {
+				t.Errorf("tenet has no sshd; it is reached through makima's own: %+v", c.target)
 			}
-		case "100.102.72.87":
-			if !strings.Contains(script, "-server-self") || !strings.Contains(script, "-ssh-user root") || !strings.Contains(c.stdin, "ssh-ed25519 AAAAkey") {
-				t.Errorf("tenet cutover: %q %q", script, c.stdin)
+		case "10.77.0.2":
+			if c.target.Port != 0 || c.target.User != "pi" || !strings.HasPrefix(c.stdin, "pw\n") {
+				t.Errorf("box: %+v %q", c.target, c.stdin)
 			}
-		}
-		if strings.HasPrefix(c.target.Addr, "100.64.") {
-			t.Errorf("a switch is started over Tailscale, not makima: %s", c.target.Addr)
+		default:
+			t.Errorf("Tailscale was removed over %s, which is not makima", c.target.Addr)
 		}
 	}
-	// tenet only had Tailscale SSH: it is confirmed through makima's own.
-	for _, c := range sh.calls {
-		if c.target.Addr == "100.64.0.1" && c.target.Port != 2222 {
-			t.Errorf("tenet over makima should be port 2222, got %d", c.target.Port)
+	// And each device was logged in to over makima before it lost Tailscale.
+	checks, checkAt := sh.ran(CheckScript)
+	for i, r := range retires {
+		reached := false
+		for k, c := range checks {
+			if c.target.Addr == r.target.Addr && checkAt[k] < retireAt[i] {
+				reached = true
+			}
+		}
+		if !reached {
+			t.Errorf("%s lost Tailscale without being reached over makima first", r.target.Addr)
+		}
+	}
+
+	// Joining is over Tailscale, with the invite on stdin, never on a
+	// command line.
+	for _, c := range joins {
+		if strings.HasPrefix(c.target.Addr, "10.77.") {
+			t.Errorf("joined over makima: %s", c.target.Addr)
+		}
+		if strings.Contains(c.script, "mk1_") || !strings.Contains(c.stdin, "mk1_invite") {
+			t.Errorf("join: script %q stdin %q", c.script, c.stdin)
+		}
+		if c.target.Addr == "100.70.0.9" && !strings.HasPrefix(c.stdin, "pw\n{") {
+			t.Errorf("box's sudo password goes first: %q", c.stdin)
+		}
+	}
+
+	// box has an sshd: your keys go in its authorized_keys, as pi, not root.
+	// tenet has none: makima's own SSH server takes them, when it hosts.
+	auth, _ := sh.ran(AuthorizeScript)
+	if len(auth) != 1 || auth[0].target.Addr != "100.70.0.9" || !strings.Contains(auth[0].stdin, "AAAAkey") {
+		t.Fatalf("authorized: %+v", auth)
+	}
+	hosts, _ := sh.ran("migrate host")
+	if len(hosts) != 1 || !strings.Contains(hosts[0].norm(), "-ssh-user root") || !strings.Contains(hosts[0].stdin, "AAAAkey") {
+		t.Fatalf("host: %+v", hosts)
+	}
+
+	// This device joined, and lost Tailscale last.
+	if k := l.kinds(); k != "migrate-join,migrate-retire" {
+		t.Fatalf("local actions = %s", k)
+	}
+}
+
+func TestRunNeedsAnSSHKey(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	r := runner(sh, l, nil)
+	r.Pubkeys = func() string { return "" }
+	res := r.Run(context.Background(), everyone())
+	if res.OK || !strings.Contains(res.Error, "ssh-keygen") {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(sh.calls) != 0 || len(l.actions) != 0 {
+		t.Fatalf("something was done: %v %v", sh.calls, l.actions)
+	}
+}
+
+// A device that cannot reach the server without Tailscale never joins, and
+// this device keeps Tailscale for it.
+func TestRunLeavesAMachineThatCannotReachTheServerOnTailscale(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	sh.probeFails["100.70.0.9"] = true
+	res := runner(sh, l, nil).Run(context.Background(), everyone())
+	o := outcomes(res)
+	if res.OK || o["box"].Outcome != Stayed || o["tenet"].Outcome != Moved || o["mac"].Outcome != Both {
+		t.Fatalf("outcomes = %+v", o)
+	}
+	if !strings.Contains(o["mac"].Detail, "box") {
+		t.Errorf("this device should say why it kept Tailscale: %q", o["mac"].Detail)
+	}
+	joins, _ := sh.ran("migrate join")
+	for _, c := range joins {
+		if c.target.Addr == "100.70.0.9" {
+			t.Fatal("box joined")
+		}
+	}
+	if strings.Contains(l.kinds(), "retire") {
+		t.Fatal("this device lost Tailscale while box still needs it")
+	}
+}
+
+// Joined, but ssh over makima does not get in: Tailscale stays.
+func TestRunKeepsTailscaleWhereMakimaCannotBeReached(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	sh.meshDown["10.77.0.2"] = true
+	res := runner(sh, l, nil).Run(context.Background(), everyone())
+	o := outcomes(res)
+	if o["box"].Outcome != Stayed || !strings.Contains(o["box"].Detail, "ssh over makima") || o["tenet"].Outcome != Moved || o["mac"].Outcome != Both {
+		t.Fatalf("outcomes = %+v", o)
+	}
+	retires, _ := sh.ran("migrate retire")
+	for _, c := range retires {
+		if c.target.Addr == "10.77.0.2" {
+			t.Fatal("box lost Tailscale without being reached over makima")
 		}
 	}
 }
 
-// The failure that prompted the confirmation: this machine cannot reach the
-// controller without Tailscale. Nothing may leave Tailscale then.
-func TestRunSwitchesNothingWhenThisDeviceCannotReachTheController(t *testing.T) {
+// A device on the network that no connection ever came up to is most likely
+// behind a firewall, and the run says so.
+func TestRunNamesAFirewallWhenNoConnectionComesUp(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
-	r := runner(sh, l)
-	r.Probe = func(context.Context, string) error { return fmt.Errorf("192.168.1.253 does not answer on TCP 8081") }
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet"}, Remove: true}
-	res := r.Run(context.Background(), ch)
-	if res.OK || !strings.Contains(res.Error, "Nothing was switched") {
+	res := runner(sh, l, map[string]MeshPeer{
+		"mac":   {Address: "10.77.0.9", Online: true},
+		"tenet": {Address: "10.77.0.1", Online: true},
+		"box":   {Address: "10.77.0.2", Online: false},
+	}).Run(context.Background(), everyone())
+	if o := outcomes(res)["box"]; o.Outcome != Stayed || !strings.Contains(o.Detail, "UDP 51820") {
+		t.Fatalf("box = %+v", o)
+	}
+}
+
+func TestRunWithoutRemovalLeavesTailscaleRunning(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	ch := everyone()
+	ch.Remove = false
+	res := runner(sh, l, nil).Run(context.Background(), ch)
+	if !res.OK {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(sh.cutovers) != 0 {
-		t.Fatalf("a switch was started: %v", sh.cutovers)
-	}
-	for _, a := range l.actions {
-		if a.Kind == "migrate-cutover" || a.Kind == "migrate-join" {
-			t.Fatalf("this machine did %s", a.Kind)
+	for id, o := range outcomes(res) {
+		if o.Outcome != Both {
+			t.Errorf("%s: %+v", id, o)
 		}
+	}
+	if retires, _ := sh.ran("migrate retire"); len(retires) != 0 || strings.Contains(l.kinds(), "retire") {
+		t.Fatal("Tailscale was removed")
+	}
+}
+
+// Tailscale that will not come off leaves the device on both, and says so.
+func TestRunReportsATailscaleThatWouldNotGo(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	sh.retireFails["10.77.0.1"] = true
+	res := runner(sh, l, nil).Run(context.Background(), everyone())
+	o := outcomes(res)
+	if o["tenet"].Outcome != Both || !strings.Contains(o["tenet"].Detail, "pacman is locked") || o["mac"].Outcome != Both {
+		t.Fatalf("outcomes = %+v", o)
 	}
 }
 
 func TestRunControllerLocal(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
 	ch := Choice{Plan: twoMachinePlan(), Controller: "mac", Selected: []string{"mac", "tenet"}, Remove: true}
-	res := runner(sh, l).Run(context.Background(), ch)
+	res := runner(sh, l, nil).Run(context.Background(), ch)
 	if !res.OK {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(l.actions) != 3 || l.actions[0].Kind != "migrate-host" || l.actions[0].Invites != 1 ||
-		l.actions[0].Advertise != "192.168.1.199" || l.actions[1].Kind != "migrate-cutover" || !l.actions[1].ServerSelf ||
-		l.verdict() != VerdictCommit {
+	if l.kinds() != "migrate-host,migrate-retire" || l.actions[0].Invites != 1 || l.actions[0].Advertise != "192.168.1.199" {
 		t.Fatalf("local actions = %+v", l.actions)
 	}
-	if o := outcomes(res); o["box"] != Stayed {
-		t.Fatalf("an unselected machine is left alone: %v", o)
+	if o := outcomes(res); o["box"].Outcome != Stayed || o["tenet"].Outcome != Moved {
+		t.Fatalf("outcomes = %+v", o)
 	}
 }
 
-func TestRunLeavesUnreachableMachinesAlone(t *testing.T) {
-	sh, l := newFakeShell(), &fakeLocal{}
-	sh.probeFails["100.70.0.9"] = true
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
-		Passwords: map[string]string{"box": "pw"}, Remove: true}
-	res := runner(sh, l).Run(context.Background(), ch)
-	if res.OK {
-		t.Fatal("a machine stayed behind; the run is not wholly ok")
-	}
-	if o := outcomes(res); o["box"] != Stayed || o["tenet"] != Moved || o["mac"] != Moved {
-		t.Fatalf("outcomes = %v", o)
-	}
-	for _, a := range sh.cutovers {
-		if a == "100.70.0.9" {
-			t.Fatal("a machine that cannot reach the server must never be switched")
-		}
-	}
-}
-
-// A machine that switched but cannot be reached over makima is never told to
-// remove Tailscale — and this Mac, which may still need Tailscale to reach
-// it, keeps Tailscale too.
-func TestRunKeepsTailscaleWhereAMachineCouldNotBeConfirmed(t *testing.T) {
-	sh, l := newFakeShell(), &fakeLocal{}
-	sh.noCommit["100.64.0.2"] = true
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
-		Passwords: map[string]string{"box": "pw"}, Remove: true}
-	res := runner(sh, l).Run(context.Background(), ch)
-	if o := outcomes(res); o["box"] != Stayed || o["tenet"] != Moved {
-		t.Fatalf("outcomes = %v", o)
-	}
-	if c := commitsTo(sh); c["100.64.0.2"] != "" {
-		t.Fatalf("box was committed: %v", sh.commits)
-	}
-	if l.verdict() != VerdictKeep {
-		t.Fatalf("this Mac should keep Tailscale beside makima, got %q", l.verdict())
-	}
-}
-
-func TestRunCallsEverythingOffWhenTheControllerCannotBeConfirmed(t *testing.T) {
-	sh, l := newFakeShell(), &fakeLocal{}
-	sh.noCommit["100.64.0.1"] = true
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
-		Passwords: map[string]string{"box": "pw"}, Remove: true}
-	res := runner(sh, l).Run(context.Background(), ch)
-	if res.OK || res.Error == "" {
+// This device is what reaches the others over makima. If it cannot join,
+// nothing can be reached, and Tailscale comes off nothing.
+func TestRunRemovesNothingWhenThisDeviceCannotJoin(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{joinFail: true}
+	res := runner(sh, l, nil).Run(context.Background(), everyone())
+	if res.OK || !strings.Contains(res.Error, "removed from none") {
 		t.Fatalf("result = %+v", res)
 	}
-	for _, c := range sh.commits {
-		if strings.HasSuffix(c, " commit") {
-			t.Fatalf("nothing may be committed: %v", sh.commits)
+	if retires, _ := sh.ran("migrate retire"); len(retires) != 0 || strings.Contains(l.kinds(), "retire") {
+		t.Fatal("Tailscale was removed")
+	}
+	for id, o := range outcomes(res) {
+		if o.Outcome != Stayed {
+			t.Errorf("%s: %+v", id, o)
 		}
-	}
-	if l.verdict() != VerdictAbort {
-		t.Fatalf("this Mac goes back to Tailscale, got %q", l.verdict())
-	}
-}
-
-func TestRunStopsWhenTheControllerRollsBack(t *testing.T) {
-	sh, l := newFakeShell(), &fakeLocal{}
-	sh.final["100.102.72.87"] = StateRolledBack
-	sh.final["100.64.0.1"] = StateRolledBack
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"},
-		Passwords: map[string]string{"box": "pw"}, Remove: true}
-	res := runner(sh, l).Run(context.Background(), ch)
-	if res.OK || res.Error == "" {
-		t.Fatalf("result = %+v", res)
-	}
-	for _, c := range sh.commits {
-		if strings.HasSuffix(c, " commit") {
-			t.Fatalf("nothing may be committed: %v", sh.commits)
-		}
-	}
-	if o := outcomes(res); o["tenet"] != RolledBack {
-		t.Fatalf("outcomes = %v", o)
-	}
-	if l.verdict() != VerdictAbort {
-		t.Fatalf("this Mac goes back to Tailscale, got %q", l.verdict())
 	}
 }
 
 func TestRunRefusesAMissingPassword(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
-	ch := Choice{Plan: twoMachinePlan(), Controller: "tenet", Selected: []string{"mac", "tenet", "box"}, Remove: true}
-	res := runner(sh, l).Run(context.Background(), ch)
-	if o := outcomes(res); o["box"] != Stayed {
-		t.Fatalf("outcomes = %v", o)
+	ch := everyone()
+	ch.Passwords = nil
+	res := runner(sh, l, nil).Run(context.Background(), ch)
+	if o := outcomes(res); o["box"].Outcome != Stayed {
+		t.Fatalf("outcomes = %+v", o)
 	}
 	for _, c := range sh.calls {
 		if c.target.Addr == "100.70.0.9" {
 			t.Fatalf("nothing should have been run on box: %q", c.script)
-		}
-	}
-}
-
-func TestRunTellsOthersWhenTheControllerSwitchesLast(t *testing.T) {
-	sh, l := newFakeShell(), &fakeLocal{}
-	plan := twoMachinePlan()
-	plan.Machines[0].Facts.OS = "linux"
-	plan.Machines[0].Facts.Tailscale = "/usr/bin/tailscale"
-	res := runner(sh, l).Run(context.Background(), Choice{Plan: plan, Controller: "mac", Selected: []string{"mac", "tenet"}, Remove: true})
-	if !res.OK {
-		t.Fatalf("result = %+v", res)
-	}
-	for _, c := range sh.calls {
-		if strings.Contains(c.script, "cutover") && !strings.Contains(c.script, "controller-on-tailscale") {
-			t.Fatalf("tenet cannot test the tunnel to a controller still behind Tailscale's firewall: %q", c.script)
 		}
 	}
 }
@@ -747,9 +787,6 @@ func (h *fakeHost) host(goos string) Host {
 					return "", fmt.Errorf("%s failed", k)
 				}
 			}
-			if strings.HasPrefix(line, "systemctl is-active") {
-				return "active", nil
-			}
 			if strings.HasPrefix(line, "stat -f %Su /dev/console") {
 				return "me", nil
 			}
@@ -775,19 +812,10 @@ func TestTailscaleOnArchLinux(t *testing.T) {
 	if !ok || ts.Kind != "systemd" || ts.Pkg != "pacman" {
 		t.Fatalf("found %+v", ts)
 	}
-	if err := ts.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !h.did("systemctl stop tailscaled") || !h.did("/usr/bin/tailscaled --cleanup") {
-		t.Fatalf("stop ran %v", h.ran)
-	}
-	if err := ts.Start(context.Background()); err != nil || !h.did("systemctl start tailscaled") {
-		t.Fatalf("start ran %v", h.ran)
-	}
 	if _, err := ts.Remove(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tailscale logout", "systemctl disable --now tailscaled", "pacman -Rns --noconfirm tailscale", "rm -rf /var/lib/tailscale"} {
+	for _, want := range []string{"tailscale logout", "systemctl disable --now tailscaled", "/usr/bin/tailscaled --cleanup", "pacman -Rns --noconfirm tailscale", "rm -rf /var/lib/tailscale"} {
 		if !h.did(want) {
 			t.Errorf("remove did not run %q: %v", want, h.ran)
 		}
@@ -800,17 +828,16 @@ func TestTailscaleMacApp(t *testing.T) {
 	if !ok || ts.Kind != "app" {
 		t.Fatalf("found %+v", ts)
 	}
-	_ = ts.Stop(context.Background())
-	if !h.did("sudo -u me /Applications/Tailscale.app/Contents/MacOS/Tailscale down") {
-		t.Fatalf("the app's CLI should run as the person at the console: %v", h.ran)
+	if _, err := ts.Remove(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	notes, _ := ts.Remove(context.Background())
-	for _, want := range []string{"Tailscale logout", "configure mac-vpn uninstall", "configure sysext deactivate", "rm -rf /Applications/Tailscale.app"} {
+	// The app's CLI talks to the app in the console user's session, so it
+	// runs as them.
+	for _, want := range []string{"sudo -u me /Applications/Tailscale.app/Contents/MacOS/Tailscale logout", "configure mac-vpn uninstall", "configure sysext deactivate", "rm -rf /Applications/Tailscale.app"} {
 		if !h.did(want) {
 			t.Errorf("remove did not run %q: %v", want, h.ran)
 		}
 	}
-	_ = notes
 }
 
 func TestTailscaleRemoveKeepsGoingAndSaysWhat(t *testing.T) {

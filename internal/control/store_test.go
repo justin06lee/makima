@@ -47,11 +47,11 @@ func TestAddressesAllocateSequentially(t *testing.T) {
 	a := join(t, s, "one")
 	b := join(t, s, "two")
 
-	if got := a.Address.Addr().String(); got != "100.64.0.1" {
-		t.Errorf("first node got %s, want 100.64.0.1", got)
+	if got := a.Address.Addr().String(); got != "10.77.0.1" {
+		t.Errorf("first node got %s, want 10.77.0.1", got)
 	}
-	if got := b.Address.Addr().String(); got != "100.64.0.2" {
-		t.Errorf("second node got %s, want 100.64.0.2", got)
+	if got := b.Address.Addr().String(); got != "10.77.0.2" {
+		t.Errorf("second node got %s, want 10.77.0.2", got)
 	}
 }
 
@@ -67,10 +67,10 @@ func TestForgottenAddressIsReused(t *testing.T) {
 	}
 	three := join(t, s, "three")
 
-	if three.Address.Addr().String() != "100.64.0.1" {
-		t.Errorf("reused address was %s, want 100.64.0.1", three.Address.Addr())
+	if three.Address.Addr().String() != "10.77.0.1" {
+		t.Errorf("reused address was %s, want 10.77.0.1", three.Address.Addr())
 	}
-	if two.Address.Addr().String() != "100.64.0.2" {
+	if two.Address.Addr().String() != "10.77.0.2" {
 		t.Errorf("surviving node's address moved to %s", two.Address.Addr())
 	}
 }

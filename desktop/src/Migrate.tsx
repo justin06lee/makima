@@ -8,8 +8,8 @@ import { Icon } from "./icons";
 /// Three screens. The first looks at every device, through Tailscale, and
 /// changes nothing. The second is the one real decision — which device holds
 /// the network, the Control Devil — plus what comes along. The third is the
-/// move, device by device, controller first and this device last; anything
-/// that does not come up on makima gets Tailscale back on its own.
+/// move: makima goes on beside Tailscale everywhere, and Tailscale comes off a
+/// device only once this one has reached it over makima.
 type Phase = "scan" | "choose" | "run" | "done";
 
 type Step = { step: string; state: "running" | "ok" | "failed"; detail?: string };
@@ -210,7 +210,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                           <Input value={advertise} onChange={setAdvertise} mono placeholder="an address, or https://a-name-you-own" />
                           <p className="text-[11.5px] leading-relaxed text-dimmer">
                             {m.public
-                              ? "Its public address — reachable from anywhere. If it has a firewall, open TCP 8080 and 3478 and UDP 51820."
+                              ? "Its public address — reachable from anywhere. makima opens its own ports in the device's firewall; a cloud provider's firewall still needs TCP 8080 and UDP 51820 open."
                               : "Its address on your home network. If a reverse proxy or a Cloudflare tunnel reaches this device from outside, put that name here instead."}
                           </p>
                         </div>
@@ -233,10 +233,10 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                       role={
                         m.id === controller
                           ? m.local
-                            ? "holds the network, and confirms each of the others over makima"
+                            ? "holds the network, and reaches each of the others over makima"
                             : "holds the network"
                           : m.local
-                            ? "always comes along — it confirms each of the others over makima"
+                            ? "always comes along — it reaches each of the others over makima"
                             : undefined
                       }
                       onToggle={(on) =>
@@ -271,9 +271,9 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                     <div className="min-w-0 flex-1">
                       <div className="text-[14px] text-ink">Uninstall Tailscale from each device</div>
                       <div className="mt-0.5 text-[12px] leading-relaxed text-dim">
-                        Only once this device has reached it over makima and confirmed it. One that cannot be confirmed puts
-                        Tailscale back by itself.
-                        {!remove && " Left off, Tailscale stays installed but switched off."}
+                        Only once this device has logged in to it over makima. Until then Tailscale keeps running beside
+                        makima, so a device that does not come up is exactly as reachable as before.
+                        {!remove && " Left off, Tailscale keeps running beside makima everywhere."}
                       </div>
                     </div>
                     <Toggle on={remove} onChange={setRemove} label="Uninstall Tailscale" />
@@ -311,8 +311,8 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
               </Card>
               {phase === "run" && (
                 <p className="text-[12px] leading-relaxed text-dimmer">
-                  Each device keeps Tailscale installed until this one reaches it over makima and confirms it. If that never
-                  happens — a firewall, a closed window — it puts Tailscale back by itself within 15 minutes.
+                  Tailscale keeps running on every device until this one has logged in to it over makima. A device that
+                  cannot be reached that way keeps Tailscale, and is exactly as reachable as it was.
                 </p>
               )}
             </>
@@ -578,17 +578,17 @@ function ComingRow({
 /// once it has finished.
 const stepLabel: Record<string, [string, string]> = {
   install: ["putting makima on it", "makima is on it — waiting its turn"],
+  keys: ["adding your SSH keys", "your SSH keys are there"],
   network: ["starting the network", "holding the network"],
-  reach: ["checking it can reach the network", "can reach the network — waiting its turn"],
-  join: ["joining the network", "joined — it leaves Tailscale last"],
-  switch: ["leaving Tailscale", "on makima — confirming"],
-  confirm: ["confirming it over makima", "on makima"],
+  join: ["joining the network", "on the network, beside Tailscale"],
+  verify: ["reaching it over makima", "reached over makima"],
+  remove: ["removing Tailscale", "Tailscale removed"],
 };
 
 function stepText(s: Step): string {
   const [running, ok] = stepLabel[s.step] ?? [s.step, s.step];
   if (s.state === "running") return s.detail || running;
-  if (s.state === "ok") return s.step === "switch" || s.step === "network" || s.step === "confirm" ? s.detail || ok : ok;
+  if (s.state === "ok") return s.detail || ok;
   return s.detail || "failed";
 }
 
@@ -618,9 +618,11 @@ function ProgressRow({
   done: boolean;
 }) {
   // Red is for a device something went wrong on. One the run stopped short
-  // of was never touched, and says so in grey.
-  const failed = step?.state === "failed" || outcome?.outcome === "rolled_back";
-  const finished = outcome ? outcome.outcome === "moved" || outcome.outcome === "moved?" : step?.step === "confirm" && step.state === "ok";
+  // of was never touched, and says so in grey. Amber is on makima with
+  // Tailscale still beside it.
+  const on = outcome?.outcome === "moved" || outcome?.outcome === "both";
+  const failed = !on && step?.state === "failed";
+  const finished = outcome ? on : step?.step === "remove" && step.state === "ok";
   const text = outcome?.detail ?? (step ? stepText(step) : "Waiting its turn");
   return (
     <div className="flex items-start gap-3 border-b border-line px-4 py-3 last:border-0">
@@ -628,7 +630,7 @@ function ProgressRow({
         {failed ? (
           <Icon.Close className="text-red" />
         ) : finished ? (
-          <Icon.Check className="text-green" />
+          <Icon.Check className={outcome?.outcome === "both" ? "text-amber" : "text-green"} />
         ) : step && !done ? (
           <Spinner className="text-accent" />
         ) : (
@@ -659,21 +661,21 @@ function ProgressRow({
 }
 
 function Summary({ result, removed }: { result: MigrationResult; removed: boolean }) {
-  const moved = result.machines.filter((m) => m.outcome === "moved" || m.outcome === "moved?").length;
+  const on = result.machines.filter((m) => m.outcome === "moved" || m.outcome === "both").length;
   const tried = result.machines.filter((m) => m.outcome !== "stayed" || m.detail !== "not chosen").length;
   return (
     <div className="flex items-start gap-3 rounded-xl bg-card px-4 py-3">
       {result.ok ? <Icon.Check className="mt-0.5 text-green" /> : <Icon.Warn className="mt-0.5 text-amber" />}
       <div className="min-w-0 flex-1">
         <div className="text-[14px] font-medium text-ink">
-          {result.ok ? `All ${moved} devices are on makima.` : `${moved} of ${tried} devices are on makima.`}
+          {result.ok ? `All ${on} devices are on makima.` : `${on} of ${tried} devices are on makima.`}
         </div>
         <div className="mt-0.5 text-[12.5px] leading-relaxed text-dim">
           {result.error
             ? result.error
             : result.ok
-              ? `${removed ? "Tailscale is gone from each of them" : "Tailscale is switched off on each of them, still installed"}. Each device keeps the name it had on your tailnet, now under .makima, and ssh to it works as before.`
-              : "The ones that did not move are exactly as they were, on Tailscale. Their reasons are below."}
+              ? `${removed ? "Tailscale is gone from each of them" : "Tailscale is still running beside makima on each of them"}. Each device keeps the name it had on your tailnet, now under .makima, and ssh to it works as before.`
+              : "Tailscale was never stopped on the rest, so they are exactly as reachable as they were. Their reasons are below."}
         </div>
       </div>
     </div>

@@ -210,9 +210,9 @@ func TokenEqual(a, b []byte) bool {
 	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
-// meshPrefix is the range every makima address comes from: RFC 6598 CGNAT
-// space, the same one the control plane allocates out of.
-var meshPrefix = netip.MustParsePrefix("100.64.0.0/10")
+// meshPrefix is the range every makima address comes from, the same one the
+// control plane allocates out of (netcfg.MeshRange).
+var meshPrefix = netip.MustParsePrefix("10.77.0.0/16")
 
 // MeshAddr derives a machine's mesh address from its node key.
 //
@@ -221,19 +221,18 @@ var meshPrefix = netip.MustParsePrefix("100.64.0.0/10")
 // same answer from public information, which is what removes the negotiation
 // step entirely.
 //
-// The /10 gives 22 usable host bits — four million addresses — so two of your
-// own machines colliding is remote but not impossible, and a collision is
-// detected and reported at pairing time rather than producing a mesh where two
-// peers silently answer to the same address. The lowest address in the range
-// is skipped because it reads as a network address and tends to be special-
-// cased by tools that have no reason to.
+// The /16 gives 16 host bits — 65,534 addresses — so two of your own machines
+// colliding is remote but not impossible, and a collision is detected and
+// reported at pairing time rather than producing a mesh where two peers
+// silently answer to the same address. The lowest and highest addresses in the
+// range are skipped because they read as network and broadcast addresses and
+// tend to be special-cased by tools that have no reason to.
 func MeshAddr(k key.Public) netip.Addr {
-	sum := sha256.Sum256(append([]byte("makima-pair-addr-v1"), k[:]...))
+	sum := sha256.Sum256(append([]byte("makima-pair-addr-v2"), k[:]...))
 
-	// 22 bits of host space under 100.64.0.0/10.
-	host := uint32(sum[0])<<16 | uint32(sum[1])<<8 | uint32(sum[2])
-	host &= (1 << 22) - 1
-	if host == 0 {
+	// 16 bits of host space under 10.77.0.0/16.
+	host := uint32(sum[0])<<8 | uint32(sum[1])
+	if host == 0 || host == 0xffff {
 		host = 1
 	}
 

@@ -47,12 +47,11 @@ const (
 
 	// BackendNFTables is a bare nftables ruleset.
 	//
-	// The one case that cannot be fixed automatically, and the reason this is a
-	// distinct value rather than folded into iptables. In nftables every table
-	// sees every packet, so an accept in a table makima owns does not override
-	// a drop in a table somebody else owns. Inserting a rule would look like it
-	// worked and change nothing. Reporting the rule to add is the honest
-	// answer.
+	// Distinct from iptables because it is configured differently. In
+	// nftables every table sees every packet, so an accept in a table makima
+	// owns would not override a drop in somebody else's; the accept goes
+	// into each chain that drops instead, tagged so only makima's rules are
+	// ever taken out again (nft.go).
 	BackendNFTables Backend = "nftables"
 
 	// BackendUnsupported is a platform where none of this applies.

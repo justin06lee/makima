@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/localapi"
+	"github.com/justin06lee/makima/internal/netcfg"
 )
 
 // logf is the daemon's logger, wrapped so code that is not in main.go does not
@@ -56,6 +57,27 @@ func (n *node) openFirewall() {
 		return
 	}
 	logf("host firewall: told %s to trust %s (undone on exit)", after.Backend, n.engine.Name())
+}
+
+// openListenPort lets WireGuard's own packets in, on the port it listens on.
+//
+// Trusting the tunnel interface is not enough on its own: the encrypted
+// packets arrive on the LAN interface first, and a firewall that drops them
+// there leaves a tunnel that registers, gets its peers, and never completes a
+// handshake with any of them. Kept after exit — it is what lets this machine
+// be reached at all, and the next start would only open it again.
+func (n *node) openListenPort(port int) {
+	if port <= 0 {
+		return
+	}
+	via, err := netcfg.OpenPort("udp", port)
+	switch {
+	case err != nil:
+		logf("WARNING: could not open UDP %d in the host firewall: %v", port, err)
+		logf("peers may not be able to reach this machine directly until it is open")
+	case via != "":
+		logf("host firewall: %s lets UDP %d in, for WireGuard", via, port)
+	}
 }
 
 // serveLocalAPI starts the daemon's local socket and, if asked, the web UI.

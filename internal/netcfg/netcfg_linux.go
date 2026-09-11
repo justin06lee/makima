@@ -66,18 +66,23 @@ const natComment = "makima-exit"
 //
 // IP forwarding plus a MASQUERADE rule is the whole of it. The masquerade is
 // the part people forget: without it the upstream router sees a packet sourced
-// from 100.64.0.5, has no route back, and drops the reply — so the tunnel
+// from 10.77.0.5, has no route back, and drops the reply — so the tunnel
 // looks like it works right up until nothing answers.
+//
+// Both ranges, because a network started by an older makima still hands out
+// 100.64.0.0/10 addresses.
 func enableForwarding(iface string) error {
 	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return fmt.Errorf("enable IP forwarding: %w", err)
 	}
 
-	if err := run("iptables", "-t", "nat", "-A", "POSTROUTING",
-		"-s", CGNATRange.String(), "!", "-o", iface,
-		"-m", "comment", "--comment", natComment,
-		"-j", "MASQUERADE"); err != nil {
-		return fmt.Errorf("install NAT rule (is iptables available?): %w", err)
+	for _, r := range []netip.Prefix{MeshRange, LegacyMeshRange} {
+		if err := run("iptables", "-t", "nat", "-A", "POSTROUTING",
+			"-s", r.String(), "!", "-o", iface,
+			"-m", "comment", "--comment", natComment,
+			"-j", "MASQUERADE"); err != nil {
+			return fmt.Errorf("install NAT rule (is iptables available?): %w", err)
+		}
 	}
 
 	// Accept both directions explicitly. A default-DROP FORWARD chain is
@@ -99,9 +104,11 @@ func disableForwarding(iface string) error {
 		}
 	}
 
-	del("-t", "nat", "-D", "POSTROUTING",
-		"-s", CGNATRange.String(), "!", "-o", iface,
-		"-m", "comment", "--comment", natComment, "-j", "MASQUERADE")
+	for _, r := range []netip.Prefix{MeshRange, LegacyMeshRange} {
+		del("-t", "nat", "-D", "POSTROUTING",
+			"-s", r.String(), "!", "-o", iface,
+			"-m", "comment", "--comment", natComment, "-j", "MASQUERADE")
+	}
 	del("-D", "FORWARD", "-i", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
 	del("-D", "FORWARD", "-o", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
 

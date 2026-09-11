@@ -64,7 +64,9 @@ full-window sheet over `makima migrate`: *Look* lists every device on the
 tailnet as it is examined over SSH (with an Approve button when Tailscale SSH
 wants a browser check), *Choose* picks the Control Devil and what comes along
 (and takes sudo passwords for devices that need one), and *Move* follows each
-device's switch to the end. The CLI runs as you, so it has your SSH keys; the
+device to the end: makima on it, your SSH keys, joined beside Tailscale,
+reached over makima, and — if *Uninstall Tailscale* is on — Tailscale removed.
+Each ends *moved*, *both*, or *stayed*. The CLI runs as you, so it has your SSH keys; the
 steps on this device that need root come back up to the app and go through the
 same prompt as every other button.
 
