@@ -213,20 +213,180 @@ fn owner() -> Option<String> {
         .filter(|u| !u.is_empty() && u != "root" && u.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.'))
 }
 
-/// Run an action, asking the user to authenticate first.
+/// Where root keeps its own copy of the app's binaries.
+///
+/// Remembering the person's yes means letting sudo run makima without a
+/// password, and that is only as safe as the file sudo runs. The copies inside
+/// the app bundle belong to whoever dragged the app into /Applications, so a
+/// rule pointing at them would hand root to anything that can write there.
+/// These copies are root's, in a directory Apple creates root-owned for
+/// exactly this kind of helper, so the only way to change them is to be root
+/// already.
+const TRUSTED_DIR: &str = "/Library/PrivilegedHelperTools/makima";
+
+/// The binaries the app carries, all copied together: the CLI finds makimad
+/// beside itself, so a lone copy of makima would start a daemon from nowhere.
+const SIDECARS: [&str; 4] = ["makima", "makimad", "makima-server", "makima-relay"];
+
+/// The sudoers drop-in that remembers the person's yes.
+///
+/// One per account, named without dots because sudo skips any file in
+/// sudoers.d with a dot in its name.
+fn sudoers_path(who: &str) -> String {
+    format!("/etc/sudoers.d/makima_{}", who.replace(|c: char| !c.is_ascii_alphanumeric(), "_"))
+}
+
+/// The commands the rule allows, and nothing else.
+///
+/// Each is one of the app's own buttons, spelled the way `Action::argv` spells
+/// it, so the rule grants what the person already said yes to — not the whole
+/// CLI. A verb with no arguments is listed bare, which sudo reads as "exactly
+/// these arguments". Anything not here falls back to the password prompt.
+fn sudo_commands() -> Vec<String> {
+    let bin = format!("{TRUSTED_DIR}/makima");
+    [
+        "up",
+        "down",
+        "join *",
+        "allow *",
+        "deny *",
+        "set -exit-node *",
+        "set -advertise-exit-node true",
+        "set -advertise-exit-node false",
+        "invite -json",
+        "pair",
+        "link-cli -q",
+    ]
+    .iter()
+    .map(|args| format!("{bin} {args}"))
+    .collect()
+}
+
+/// The sudoers rule itself, one line per element.
+fn sudoers_lines(who: &str) -> Vec<String> {
+    let alias = format!(
+        "MAKIMA_{}",
+        who.to_ascii_uppercase().replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    );
+    vec![
+        "# Written by the makima app so its buttons stop asking for a password.".into(),
+        "# Delete this file to make it ask every time again.".into(),
+        format!("Cmnd_Alias {alias} = {}", sudo_commands().join(", ")),
+        format!("{who} ALL=(root) NOPASSWD: {alias}"),
+    ]
+}
+
+/// Whether root's copy is the same build as the one in the bundle.
+///
+/// Size and modification time, which `install -p` carries over. After an app
+/// update they differ, the next action goes through the prompt once more, and
+/// that prompt refreshes the copy — so the trusted binaries never lag the app.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn trusted_copy_current(src_dir: &std::path::Path, who: &str) -> bool {
+    if !std::path::Path::new(&sudoers_path(who)).exists() {
+        return false;
+    }
+    let stamp = |p: &std::path::Path| {
+        let m = std::fs::metadata(p).ok()?;
+        let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some((m.len(), t.as_secs()))
+    };
+    SIDECARS.iter().all(|name| match stamp(&src_dir.join(name)) {
+        None => true,
+        Some(s) => stamp(&std::path::Path::new(TRUSTED_DIR).join(name)) == Some(s),
+    })
+}
+
+/// The shell that installs root's copy and the rule, run inside the one
+/// password prompt the person already sees.
+///
+/// Everything in it is best-effort and silent: if any step fails, the action
+/// they clicked still runs, and they are simply asked again next time. The
+/// rule is checked with visudo before it goes anywhere near sudoers.d — a
+/// malformed file there breaks sudo for the whole machine.
+fn trust_script(src_dir: &std::path::Path, who: &str) -> String {
+    let mut s = format!(
+        "{{ t=$(/usr/bin/mktemp /tmp/makima-sudoers.XXXXXX) && /bin/mkdir -p {d} && /usr/sbin/chown root:wheel {d} && /bin/chmod 755 {d}",
+        d = shell_quote(TRUSTED_DIR),
+    );
+    for name in SIDECARS {
+        let src = src_dir.join(name);
+        if src.is_file() {
+            s.push_str(&format!(
+                " && /usr/bin/install -p -o root -g wheel -m 0755 {} {}",
+                shell_quote(&src.to_string_lossy()),
+                shell_quote(&format!("{TRUSTED_DIR}/{name}")),
+            ));
+        }
+    }
+    s.push_str(" && /usr/bin/printf '%s\\n'");
+    for line in sudoers_lines(who) {
+        s.push(' ');
+        s.push_str(&shell_quote(&line));
+    }
+    s.push_str(&format!(
+        " > \"$t\" && /usr/sbin/visudo -cqf \"$t\" && /usr/bin/install -o root -g wheel -m 0440 \"$t\" {}; /bin/rm -f \"$t\"; }} >/dev/null 2>&1; ",
+        shell_quote(&sudoers_path(who)),
+    ));
+    s
+}
+
+/// Run an action through the remembered rule, if there is one.
+///
+/// None means "ask instead": no rule yet, a stale copy, or sudo saying no —
+/// every sudo refusal starts with "sudo:", and makima's own errors never do.
+#[cfg(target_os = "macos")]
+async fn run_remembered(src_dir: &std::path::Path, who: &str, argv: &[String]) -> Option<std::process::Output> {
+    if !trusted_copy_current(src_dir, who) {
+        return None;
+    }
+    let out = Command::new("/usr/bin/sudo")
+        .arg("-n")
+        .arg(format!("{TRUSTED_DIR}/makima"))
+        .args(argv)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() && String::from_utf8_lossy(&out.stderr).trim_start().starts_with("sudo:") {
+        return None;
+    }
+    Some(out)
+}
+
+/// Run an action, asking the user to authenticate first — once.
+///
+/// On macOS the first prompt also installs a narrow sudo rule for the app's
+/// own buttons, so later clicks run without one. See `sudo_commands`.
 pub async fn run(action: Action) -> Result<Outcome, String> {
     action.validate()?;
 
     let bin = makima_binary()
         .ok_or("the makima command is missing — this app should have it inside; reinstall it")?;
+    // /usr/local/bin/makima is a symlink into the bundle once linked; the
+    // bundle is where the rest of the binaries are.
+    let src_dir = std::fs::canonicalize(&bin)
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .filter(|d| d != std::path::Path::new(TRUSTED_DIR));
     let bin = bin.to_string_lossy().to_string();
     let argv = action.argv();
     let reason = action.reason();
+
+    #[cfg(target_os = "macos")]
+    if let (Some(dir), Some(who)) = (&src_dir, owner()) {
+        if let Some(out) = run_remembered(dir, &who, &argv).await {
+            return Ok(finish(out));
+        }
+    }
 
     let output = if cfg!(target_os = "macos") {
         // `with administrator privileges` is Authorization Services: the
         // system draws the prompt, and this process never sees the password.
         let mut command = String::new();
+        if let (Some(dir), Some(who)) = (&src_dir, owner()) {
+            command.push_str(&trust_script(dir, &who));
+        }
         if let Some(who) = owner() {
             command.push_str("MAKIMA_OWNER=");
             command.push_str(&shell_quote(&who));
@@ -270,11 +430,16 @@ pub async fn run(action: Action) -> Result<Outcome, String> {
         _ => e.to_string(),
     })?;
 
+    Ok(finish(output))
+}
+
+/// What a privileged run amounts to, whichever way it was run.
+fn finish(output: std::process::Output) -> Outcome {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
     if output.status.success() {
-        return Ok(Outcome { ok: true, output: stdout });
+        return Outcome { ok: true, output: stdout };
     }
 
     // A cancelled prompt is not a failure worth shouting about: the user said
@@ -286,13 +451,13 @@ pub async fn run(action: Action) -> Result<Outcome, String> {
         || stderr.contains("Not authorized");
 
     if cancelled {
-        return Ok(Outcome { ok: false, output: "cancelled".into() });
+        return Outcome { ok: false, output: "cancelled".into() };
     }
 
-    Ok(Outcome {
+    Outcome {
         ok: false,
         output: tidy(&stdout, &stderr),
-    })
+    }
 }
 
 /// Run the CLI as this user, with no prompt.
@@ -379,5 +544,28 @@ mod tests {
         assert!(Action::Join { invite: hosted.into() }.validate().is_ok());
         assert!(Action::Join { invite: "just three words".into() }.validate().is_err());
         assert!(Action::Join { invite: "mk1_has spaces".into() }.validate().is_err());
+    }
+
+    #[test]
+    fn sudoers_rule_is_valid_and_narrow() {
+        let lines = sudoers_lines("huiyun.lee");
+        assert_eq!(sudoers_path("huiyun.lee"), "/etc/sudoers.d/makima_huiyun_lee");
+        assert!(lines[2].starts_with("Cmnd_Alias MAKIMA_HUIYUN_LEE = /Library/PrivilegedHelperTools/makima/makima up, "));
+        assert_eq!(lines[3], "huiyun.lee ALL=(root) NOPASSWD: MAKIMA_HUIYUN_LEE");
+        // Every verb the app can ask for is covered by the rule.
+        for a in [
+            Action::Up,
+            Action::Down,
+            Action::Invite,
+            Action::Pair,
+            Action::LinkCli,
+            Action::AdvertiseExit { on: true },
+            Action::AdvertiseExit { on: false },
+        ] {
+            let spelled = format!("{TRUSTED_DIR}/makima {}", a.argv().join(" "));
+            assert!(sudo_commands().contains(&spelled), "{spelled} is not in the rule");
+        }
+        // And nothing that is not a button — sshd, say — is.
+        assert!(!lines[2].contains("sshd"));
     }
 }

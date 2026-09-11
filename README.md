@@ -89,7 +89,7 @@ From source, which is what a contributor wants:
 
 ```sh
 make          # build and install the four binaries, and the app if Rust and bun are here
-make update   # take the tunnel down, replace everything, bring it back up
+make update   # stop whatever makima is running, replace it all, start that again
 make check    # fmt, vet, test, and the race detector
 make release  # cross-built archives and checksums, in dist/release
 ```
