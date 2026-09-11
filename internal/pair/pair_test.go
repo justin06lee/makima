@@ -161,10 +161,13 @@ func TestMeshAddrIsDeterministicAndInRange(t *testing.T) {
 	}
 }
 
-// Collisions are possible in 22 bits and are handled at pairing time, but they
-// must be rare enough that they are an oddity rather than a routine failure.
+// Collisions are possible in 16 bits and are handled at pairing time, but they
+// must be no more common than chance makes them. 512 keys into 65,534
+// addresses collide about twice on average; a derivation that bunched
+// addresses together would collide far more.
 func TestMeshAddrsAreSpreadOut(t *testing.T) {
 	seen := make(map[netip.Addr]bool)
+	collisions := 0
 	for range 512 {
 		k, err := key.NewPrivate()
 		if err != nil {
@@ -172,9 +175,12 @@ func TestMeshAddrsAreSpreadOut(t *testing.T) {
 		}
 		a := MeshAddr(k.Public())
 		if seen[a] {
-			t.Fatalf("two of 512 keys derived the same address %s", a)
+			collisions++
 		}
 		seen[a] = true
+	}
+	if collisions > 12 {
+		t.Fatalf("%d of 512 keys collided; chance alone makes about 2", collisions)
 	}
 }
 

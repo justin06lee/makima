@@ -88,7 +88,7 @@ func (f *fake) Status() localapi.Status {
 		Version: "dev",
 		Node: localapi.NodeInfo{
 			Name:      "macbook",
-			Address:   addr("100.64.0.3"),
+			Address:   addr("10.77.0.3"),
 			Interface: "utun6",
 		},
 		Managed: true,
@@ -97,7 +97,7 @@ func (f *fake) Status() localapi.Status {
 		Relay:   localapi.RelayInfo{URL: "relay.example:3478", Connected: true},
 		Peers: []localapi.PeerInfo{
 			{
-				Name: "tenet", Address: addr("100.64.0.1"), Online: true,
+				Name: "tenet", Address: addr("10.77.0.1"), Online: true,
 				Path: "direct 192.168.1.253:41641", Direct: true,
 				Latency: 3 * time.Millisecond,
 				Services: []netmap.Service{
@@ -109,13 +109,13 @@ func (f *fake) Status() localapi.Status {
 				ExitNode: true,
 			},
 			{
-				Name: "vps", Address: addr("100.64.0.2"), Online: true,
+				Name: "vps", Address: addr("10.77.0.2"), Online: true,
 				Path: "relay relay.example:3478", RelayURL: "relay.example:3478",
 				Latency:  84 * time.Millisecond,
 				Services: []netmap.Service{{Name: "grafana", Port: 3000, Scheme: "http"}},
 				ExitNode: true,
 			},
-			{Name: "old-laptop", Address: addr("100.64.0.4"), Path: "no path"},
+			{Name: "old-laptop", Address: addr("10.77.0.4"), Path: "no path"},
 		},
 		Services: []serve.Status{
 			{
@@ -137,7 +137,7 @@ func (f *fake) Status() localapi.Status {
 		DNSActive: true,
 		Inbox:     localapi.InboxInfo{Dir: "/Users/you/Downloads/makima", Active: true, Received: 2},
 		SSH: localapi.SSHInfo{
-			Active: true, Addr: "100.64.0.3:2222", User: "you", Keys: 2,
+			Active: true, Addr: "10.77.0.3:2222", User: "you", Keys: 2,
 			Sources:     []string{"github:justin06lee"},
 			Fingerprint: "SHA256:9pQ4t0mKZ1xRc3vLb8yNwE2hJfA6sDgU7oXiP5rTnQk",
 		},
@@ -147,7 +147,7 @@ func (f *fake) Status() localapi.Status {
 
 func (f *fake) Diagnose() localapi.Diagnosis {
 	return localapi.Diagnosis{Checks: []localapi.Check{
-		{Name: "Tunnel", OK: true, Detail: "utun6 is up on 100.64.0.3"},
+		{Name: "Tunnel", OK: true, Detail: "utun6 is up on 10.77.0.3"},
 		{Name: "Control plane", OK: true, Detail: "http://tenet:8080, last polled 2s ago"},
 		{Name: "Relay", OK: true, Detail: "connected to relay.example:3478"},
 		{

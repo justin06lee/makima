@@ -98,13 +98,17 @@ func (c *Conn) SelfEndpoints() []netip.AddrPort {
 	return out
 }
 
-// isMeshAddr reports whether an address is inside the CGNAT range makima and
-// Tailscale both allocate from.
+// isMeshAddr reports whether an address is inside a tunnel's range: makima's
+// own, or 100.64.0.0/10, which older makima networks and Tailscale use.
 //
 // Duplicated from netcfg rather than imported, because netcfg shells out to
 // platform tools and magicsock must stay usable in a unit test.
 func isMeshAddr(a netip.Addr) bool {
-	return meshRange.Contains(a)
+	a = a.Unmap()
+	return meshRange.Contains(a) || legacyMeshRange.Contains(a)
 }
 
-var meshRange = netip.MustParsePrefix("100.64.0.0/10")
+var (
+	meshRange       = netip.MustParsePrefix("10.77.0.0/16")
+	legacyMeshRange = netip.MustParsePrefix("100.64.0.0/10")
+)

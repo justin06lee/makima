@@ -291,7 +291,7 @@ func TestNetmapCarriesTheFilter(t *testing.T) {
 		t.Fatal("the server's netmap carries no packet filter")
 	}
 
-	laptopAddr := netip.MustParseAddr("100.64.0.2")
+	laptopAddr := netip.MustParseAddr("10.77.0.2")
 	serverAddr := resp.Self.Addresses[0].Addr()
 
 	if !resp.Filter.Allow(laptopAddr, serverAddr, 22) {

@@ -65,13 +65,13 @@ func TestRegisterAndPollOverHTTP(t *testing.T) {
 	auth, _ := store.MintAuthKey(true, time.Hour)
 
 	ca, ra := joinClient(t, store, url, "alpha", auth.Secret)
-	if ra.Address.Addr().String() != "100.64.0.1" {
-		t.Errorf("alpha got %s, want 100.64.0.1", ra.Address.Addr())
+	if ra.Address.Addr().String() != "10.77.0.1" {
+		t.Errorf("alpha got %s, want 10.77.0.1", ra.Address.Addr())
 	}
 
 	_, rb := joinClient(t, store, url, "beta", auth.Secret)
-	if rb.Address.Addr().String() != "100.64.0.2" {
-		t.Errorf("beta got %s, want 100.64.0.2", rb.Address.Addr())
+	if rb.Address.Addr().String() != "10.77.0.2" {
+		t.Errorf("beta got %s, want 10.77.0.2", rb.Address.Addr())
 	}
 
 	m, err := ca.PollMap(context.Background(), 0, nil)

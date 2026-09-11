@@ -203,21 +203,28 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		})
 	}
 
-	// 2. Another VPN on the same addresses. Tailscale hands out the same
-	// 100.64.0.0/10 that makima does, and while it runs it claims the whole
-	// range for itself: on Linux with a firewall rule that drops every packet
-	// from that range not arriving on its own interface, on macOS with a
-	// route. Either way the symptom is a tunnel that is up, addresses that
-	// are right, and nothing getting through — which is exactly what a
-	// person who is trying makima instead of Tailscale will see first.
-	if others := otherCGNATInterfaces(listInterfaces(), iface); len(others) > 0 {
-		add(localapi.Check{
-			Name: "Another VPN",
-			Detail: fmt.Sprintf(
-				"%s also uses makima's address range (100.64.0.0/10) — that is Tailscale's range too, and while both run, the other one can swallow makima's traffic",
-				strings.Join(others, ", ")),
-			Fix: "quit Tailscale (or whichever VPN that is) while using makima",
-		})
+	// 2. Another VPN on the same addresses. makima has its own range now, so
+	// this is rare — but a network started by an older makima is still in
+	// 100.64.0.0/10, Tailscale's, and while Tailscale runs it claims that
+	// whole range: on Linux with a firewall rule that drops every packet from
+	// it not arriving on its own interface, on macOS with a route. The
+	// symptom is a tunnel that is up, addresses that are right, and nothing
+	// getting through.
+	if rng, ok := netcfg.MeshRangeOf(addr); addrErr == nil && ok {
+		if others := otherInterfacesIn(listInterfaces(), iface, rng); len(others) > 0 {
+			c := localapi.Check{
+				Name: "Another VPN",
+				Detail: fmt.Sprintf("%s also has addresses in this network's range (%s), and while both run, the other one can swallow makima's traffic",
+					strings.Join(others, ", "), rng),
+				Fix: "quit that VPN while using makima",
+			}
+			if rng == netcfg.LegacyMeshRange {
+				c.Detail = fmt.Sprintf("%s also uses 100.64.0.0/10 — Tailscale's range, which this network was started in by an older makima — and while both run, the other one can swallow makima's traffic",
+					strings.Join(others, ", "))
+				c.Fix = "start the network again with this makima, which uses " + netcfg.MeshRange.String() + " and runs beside Tailscale — or quit Tailscale while using makima"
+			}
+			add(c)
+		}
 	}
 
 	// 3. The host firewall — the single most common reason a home server is
@@ -424,17 +431,17 @@ func listInterfaces() []ifaceAddrs {
 	return out
 }
 
-// otherCGNATInterfaces names every interface other than makima's own that
-// holds an address in makima's range. One name per interface, in the order
-// the system lists them.
-func otherCGNATInterfaces(ifaces []ifaceAddrs, self string) []string {
+// otherInterfacesIn names every interface other than makima's own that holds
+// an address in rng. One name per interface, in the order the system lists
+// them.
+func otherInterfacesIn(ifaces []ifaceAddrs, self string, rng netip.Prefix) []string {
 	var out []string
 	for _, iface := range ifaces {
 		if iface.name == self {
 			continue
 		}
 		for _, p := range iface.addrs {
-			if netcfg.CGNATRange.Contains(p.Addr()) {
+			if rng.Contains(p.Addr()) {
 				out = append(out, iface.name)
 				break
 			}

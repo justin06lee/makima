@@ -82,7 +82,7 @@ func usableEndpoint(addr netip.Addr) bool {
 		return false
 	case addr.IsMulticast(), addr.IsUnspecified():
 		return false
-	case CGNATRange.Contains(addr):
+	case IsMeshAddr(addr):
 		// A mesh address, ours or another VPN's. Advertising it would tell
 		// peers to reach us through a tunnel to reach a tunnel.
 		return false

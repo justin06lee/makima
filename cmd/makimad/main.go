@@ -277,6 +277,7 @@ func run(opts options) error {
 	n.firewall = netcfg.NewFirewall(engine.Name())
 	if !opts.noFirewall {
 		n.openFirewall()
+		n.openListenPort(int(f.ListenPort))
 	}
 	defer n.firewall.Reset()
 

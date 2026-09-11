@@ -59,23 +59,9 @@ pub enum Action {
     /// Moving from Tailscale: join the network, leaving Tailscale running —
     /// it is still how this machine reaches the others.
     MigrateJoin { invite: String, name: String },
-    /// Moving from Tailscale: this machine's own switch, last of all. Stops
-    /// Tailscale, proves makima works, then removes Tailscale — or puts it
-    /// back exactly if makima does not come up.
-    MigrateCutover {
-        name: String,
-        controller: String,
-        #[serde(default)]
-        server_self: bool,
-        #[serde(default)]
-        remove: bool,
-    },
-    /// Moving from Tailscale: the verdict on this machine's held switch —
-    /// remove Tailscale, keep it running alongside, or call it off.
-    MigrateCommit {
-        #[serde(default)]
-        verdict: String,
-    },
+    /// Moving from Tailscale: take Tailscale off this machine — the last step,
+    /// once every device that came along has been reached over makima.
+    MigrateRetire,
 }
 
 impl Action {
@@ -111,19 +97,7 @@ impl Action {
             Action::MigrateJoin { invite, name } => {
                 vec![s("migrate"), s("join"), s("-name"), name.clone(), invite.clone()]
             }
-            Action::MigrateCutover { name, controller, server_self, remove } => {
-                let mut v = vec![s("migrate"), s("cutover"), s("-detach"), s("-name"), name.clone(), s("-controller"), controller.clone()];
-                if *server_self {
-                    v.push(s("-server-self"));
-                }
-                v.push(format!("-remove={remove}"));
-                v
-            }
-            Action::MigrateCommit { verdict } => match verdict.as_str() {
-                "keep" => vec![s("migrate"), s("commit"), s("-keep")],
-                "abort" => vec![s("migrate"), s("commit"), s("-abort")],
-                _ => vec![s("migrate"), s("commit")],
-            },
+            Action::MigrateRetire => vec![s("migrate"), s("retire")],
         }
     }
 
@@ -149,11 +123,7 @@ impl Action {
             Action::LinkCli => "makima needs to put its command in /usr/local/bin".into(),
             Action::MigrateHost { .. } => "makima needs to start your network on this device, to move your devices from Tailscale".into(),
             Action::MigrateJoin { .. } => "makima needs to join this device to your new network".into(),
-            Action::MigrateCutover { remove: true, .. } => "makima needs to switch this device from Tailscale to makima, and uninstall Tailscale".into(),
-            Action::MigrateCutover { .. } => "makima needs to switch this device from Tailscale to makima".into(),
-            Action::MigrateCommit { verdict } if verdict == "abort" => "makima needs to put Tailscale back on this device".into(),
-            Action::MigrateCommit { verdict } if verdict == "keep" => "makima needs to finish the move, keeping Tailscale on this device".into(),
-            Action::MigrateCommit { .. } => "makima needs to finish the move: every device is confirmed on makima".into(),
+            Action::MigrateRetire => "makima needs to remove Tailscale from this device — every device is on makima and has been reached over it".into(),
         }
     }
 
@@ -212,14 +182,6 @@ impl Action {
                 machine_name(name)?;
                 Action::Join { invite: invite.clone() }.validate()
             }
-            Action::MigrateCutover { name, controller, .. } => {
-                machine_name(name)?;
-                machine_name(controller)
-            }
-            Action::MigrateCommit { verdict } => match verdict.as_str() {
-                "" | "commit" | "keep" | "abort" => Ok(()),
-                _ => Err("that is not a verdict".into()),
-            },
             _ => Ok(()),
         }
     }
@@ -652,26 +614,21 @@ mod tests {
         assert_eq!(host.argv().join(" "), "migrate host -json -advertise 192.168.1.20 -name tenet -invites 2");
         let join = Action::MigrateJoin { invite: "mk1_abcDEF123-_".into(), name: "mac".into() };
         assert_eq!(join.argv().join(" "), "migrate join -name mac mk1_abcDEF123-_");
-        let cut = Action::MigrateCutover { name: "mac".into(), controller: "tenet".into(), server_self: false, remove: true };
-        assert_eq!(cut.argv().join(" "), "migrate cutover -detach -name mac -controller tenet -remove=true");
-        let own = Action::MigrateCutover { name: "mac".into(), controller: "mac".into(), server_self: true, remove: false };
-        assert_eq!(own.argv().join(" "), "migrate cutover -detach -name mac -controller mac -server-self -remove=false");
-        let commit: Action = serde_json::from_str(r#"{"kind":"migrate-commit","verdict":"commit","server_self":false,"remove":false}"#).unwrap();
-        assert_eq!(commit.argv().join(" "), "migrate commit");
-        let keep: Action = serde_json::from_str(r#"{"kind":"migrate-commit","verdict":"keep","server_self":false,"remove":false}"#).unwrap();
-        assert_eq!(keep.argv().join(" "), "migrate commit -keep");
-        assert!(Action::MigrateCommit { verdict: "rm -rf".into() }.validate().is_err());
+        let retire = Action::MigrateRetire;
+        assert_eq!(retire.argv().join(" "), "migrate retire");
 
         // The JSON the Go side sends deserializes to exactly these.
-        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-cutover","name":"mac","controller":"tenet","server_self":false,"remove":true}"#).unwrap();
-        assert_eq!(parsed.argv(), cut.argv());
-        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-host","advertise":"192.168.1.20","name":"tenet","invites":2,"server_self":false,"remove":false}"#).unwrap();
+        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-retire"}"#).unwrap();
+        assert_eq!(parsed.argv(), retire.argv());
+        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-host","advertise":"192.168.1.20","name":"tenet","invites":2}"#).unwrap();
         assert_eq!(parsed.argv(), host.argv());
+        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-join","name":"mac","invite":"mk1_abcDEF123-_"}"#).unwrap();
+        assert_eq!(parsed.argv(), join.argv());
 
-        assert!(host.validate().is_ok() && join.validate().is_ok() && cut.validate().is_ok());
+        assert!(host.validate().is_ok() && join.validate().is_ok() && retire.validate().is_ok());
         assert!(Action::MigrateHost { advertise: "a; rm -rf /".into(), name: "x".into(), invites: 1 }.validate().is_err());
-        assert!(Action::MigrateCutover { name: "Bad Name".into(), controller: "x".into(), server_self: false, remove: true }.validate().is_err());
         assert!(Action::MigrateJoin { invite: "nope".into(), name: "mac".into() }.validate().is_err());
+        assert!(Action::MigrateJoin { invite: "mk1_abc".into(), name: "Bad Name".into() }.validate().is_err());
     }
 
     #[test]

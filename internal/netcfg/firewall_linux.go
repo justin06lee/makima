@@ -2,6 +2,7 @@ package netcfg
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -49,19 +50,25 @@ func firewallStatus(iface string) Report {
 		return r
 
 	case nftablesFiltering():
-		// The one case makima will not touch. In nftables every table sees
-		// every packet and any table may drop it, so an accept rule in a table
-		// of ours would not override somebody else's drop. Installing one
-		// would look like a fix and change nothing.
-		return Report{
+		// An accept in a table of makima's own would not override a drop in
+		// somebody else's, so the rule goes into each chain that drops, at
+		// the top, tagged so it can be found and taken out again (nft.go).
+		drops, mine, _ := nftState()
+		trusted := len(missing(drops, mine, nftIfaceComment(iface))) == 0
+		r := Report{
 			Backend:   BackendNFTables,
 			Active:    true,
-			Trusted:   false,
-			Automatic: false,
+			Trusted:   trusted,
+			Automatic: true,
 			Manual: fmt.Sprintf(
 				"sudo nft insert rule inet filter input iifname \"%s\" accept", iface),
-			Detail: "a bare nftables ruleset is filtering; makima will not edit it, because an accept rule in a separate table would not override a drop in yours",
 		}
+		if trusted {
+			r.Detail = fmt.Sprintf("nftables is filtering and accepts traffic on %s", iface)
+		} else {
+			r.Detail = fmt.Sprintf("nftables drops input by default and %s is not accepted, so mesh traffic is being dropped", iface)
+		}
+		return r
 
 	case iptablesFiltering():
 		trusted := iptablesAllows(iface)
@@ -107,6 +114,19 @@ func firewallAllow(iface string, b Backend) error {
 		// works without a second visit here.
 		return run("ufw", "route", "allow", "in", "on", iface)
 
+	case BackendNFTables:
+		drops, mine, err := nftState()
+		if err != nil {
+			return err
+		}
+		c := nftIfaceComment(iface)
+		for _, ch := range missing(drops, mine, c) {
+			if err := run("nft", nftInsertArgs(ch, []string{"iifname", `"` + iface + `"`}, c)...); err != nil {
+				return err
+			}
+		}
+		return nil
+
 	case BackendIPTables:
 		if iptablesAllows(iface) {
 			return nil
@@ -117,6 +137,33 @@ func firewallAllow(iface string, b Backend) error {
 		return run("iptables", "-I", "INPUT", "1", "-i", iface, "-j", "ACCEPT")
 	}
 	return fmt.Errorf("netcfg: cannot configure %s automatically", b)
+}
+
+// nftState reads the live ruleset.
+func nftState() ([]nftChain, []nftRule, error) {
+	out, err := combined("nft", "-j", "list", "ruleset")
+	if err != nil {
+		return nil, nil, fmt.Errorf("list the nftables ruleset: %w", err)
+	}
+	return parseNFT([]byte(out))
+}
+
+// nftDelete takes out makima's rules with one comment, by handle.
+func nftDelete(comment string) error {
+	_, mine, err := nftState()
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, r := range mine {
+		if r.Comment != comment {
+			continue
+		}
+		if err := run("nft", "delete", "rule", r.Family, r.Table, r.Name, "handle", strconv.Itoa(r.Handle)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func firewallReset(iface string, b Backend) error {
@@ -131,6 +178,9 @@ func firewallReset(iface string, b Backend) error {
 		_ = run("ufw", "--force", "delete", "allow", "in", "on", iface)
 		_ = run("ufw", "--force", "delete", "route", "allow", "in", "on", iface)
 		return nil
+
+	case BackendNFTables:
+		return nftDelete(nftIfaceComment(iface))
 
 	case BackendIPTables:
 		// Delete by specification rather than by index. Deleting by index is
@@ -167,17 +217,15 @@ func ufwAllows(iface string) bool {
 //
 // Only counts when there is no manager on top: firewalld and ufw both drive
 // nftables on a modern distribution, and finding one of those is the answer.
+// A hook input chain whose policy is drop is the thing that silently eats
+// tunnel traffic; a ruleset that exists but accepts by default does not, and
+// iptables-nft's chains are the iptables backend's to handle.
 func nftablesFiltering() bool {
 	if !have("nft") {
 		return false
 	}
-	out := output("nft", "list", "ruleset")
-	if out == "" {
-		return false
-	}
-	// A hook input chain whose policy is drop is the thing that silently eats
-	// tunnel traffic. A ruleset that exists but accepts by default does not.
-	return strings.Contains(out, "hook input") && strings.Contains(out, "policy drop")
+	drops, _, err := nftState()
+	return err == nil && len(drops) > 0
 }
 
 func iptablesFiltering() bool {
@@ -193,15 +241,24 @@ func iptablesAllows(iface string) bool {
 	return strings.Contains(out, "-i "+iface+" -j ACCEPT")
 }
 
-// OpenPort lets one port in through the host firewall, where makima can do
-// that the way the firewall's own manager expects — firewalld or ufw — and
-// says which. It is how the network's server becomes reachable on a machine
-// that filters its LAN. Plain nftables and iptables rules are left alone for
-// the reason firewallStatus gives, and the error says exactly what to add.
+// OpenPort lets one port in through the host firewall and says which firewall
+// it told, or "" when nothing is filtering. It is how the network's server
+// and WireGuard's own UDP port become reachable on a machine that filters its
+// LAN — which, left alone, looks exactly like a machine that is down.
+//
+// firewalld and ufw are told the way they expect, and remember it. In a bare
+// nftables or iptables ruleset the accept goes at the top of the chain that
+// drops, tagged "makima <proto> <port>" so it is added once and can be found
+// again; dist/uninstall.sh takes those out. They last until the ruleset is
+// next reloaded, and makima puts them back each time it starts.
 func OpenPort(proto string, port int) (string, error) {
 	spec := fmt.Sprintf("%d/%s", port, proto)
+	comment := nftPortComment(proto, port)
 	switch {
 	case firewalldRunning():
+		if runOK("firewall-cmd", "--query-port="+spec) {
+			return "firewalld", nil
+		}
 		if err := run("firewall-cmd", "--permanent", "--add-port="+spec); err != nil {
 			return "", err
 		}
@@ -209,9 +266,22 @@ func OpenPort(proto string, port int) (string, error) {
 	case ufwActive():
 		return "ufw", run("ufw", "allow", spec)
 	case nftablesFiltering():
-		return "", fmt.Errorf("this machine's nftables rules may drop %s, and makima does not edit them — allow it with: sudo nft insert rule inet filter input %s dport %d accept", spec, proto, port)
+		drops, mine, err := nftState()
+		if err != nil {
+			return "", err
+		}
+		for _, c := range missing(drops, mine, comment) {
+			if err := run("nft", nftInsertArgs(c, []string{proto, "dport", strconv.Itoa(port)}, comment)...); err != nil {
+				return "", err
+			}
+		}
+		return "nftables", nil
 	case iptablesFiltering():
-		return "", fmt.Errorf("this machine's iptables rules may drop %s, and makima does not edit them — allow it with: sudo iptables -I INPUT -p %s --dport %d -j ACCEPT", spec, proto, port)
+		rule := []string{"INPUT", "-p", proto, "--dport", strconv.Itoa(port), "-m", "comment", "--comment", comment, "-j", "ACCEPT"}
+		if runOK("iptables", append([]string{"-C"}, rule...)...) {
+			return "iptables", nil
+		}
+		return "iptables", run("iptables", append([]string{"-I", rule[0], "1"}, rule[1:]...)...)
 	}
 	return "", nil
 }

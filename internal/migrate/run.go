@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,15 +28,11 @@ type Choice struct {
 // grant it — the app's password prompt, or sudo in a terminal. The same kinds
 // and fields are an enum in the app (desktop/src-tauri/src/privileged.rs).
 type Action struct {
-	Kind       string `json:"kind"`
-	Advertise  string `json:"advertise,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Invites    int    `json:"invites,omitempty"`
-	Invite     string `json:"invite,omitempty"`
-	Controller string `json:"controller,omitempty"`
-	ServerSelf bool   `json:"server_self"`
-	Remove     bool   `json:"remove"`
-	Verdict    string `json:"verdict,omitempty"`
+	Kind      string `json:"kind"`
+	Advertise string `json:"advertise,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Invites   int    `json:"invites,omitempty"`
+	Invite    string `json:"invite,omitempty"`
 }
 
 // Args is the makima command line for an action. privileged.rs spells the
@@ -46,20 +40,11 @@ type Action struct {
 func (a Action) Args() []string {
 	switch a.Kind {
 	case "migrate-host":
-		return []string{"migrate", "host", "-json", "-advertise", a.Advertise, "-name", a.Name, "-invites", strconv.Itoa(a.Invites)}
+		return []string{"migrate", "host", "-json", "-advertise", a.Advertise, "-name", a.Name, "-invites", fmt.Sprint(a.Invites)}
 	case "migrate-join":
 		return []string{"migrate", "join", "-name", a.Name, a.Invite}
-	case "migrate-cutover":
-		args := []string{"migrate", "cutover", "-detach", "-name", a.Name, "-controller", a.Controller}
-		if a.ServerSelf {
-			args = append(args, "-server-self")
-		}
-		return append(args, "-remove="+strconv.FormatBool(a.Remove))
-	case "migrate-commit":
-		if a.Verdict == VerdictKeep || a.Verdict == VerdictAbort {
-			return []string{"migrate", "commit", "-" + a.Verdict}
-		}
-		return []string{"migrate", "commit"}
+	case "migrate-retire":
+		return []string{"migrate", "retire"}
 	}
 	return nil
 }
@@ -73,10 +58,9 @@ type HostResult struct {
 
 // Outcomes a machine can end with.
 const (
-	Moved       = "moved"       // on makima, verified
-	MovedLikely = "moved?"      // on makima as far as the network can tell; not read back
-	RolledBack  = "rolled_back" // tried, did not come up, Tailscale put back
-	Stayed      = "stayed"      // never touched
+	Moved  = "moved"  // on makima, reached over it, Tailscale removed
+	Both   = "both"   // on makima, reached over it, Tailscale still running beside it
+	Stayed = "stayed" // Tailscale as it was — never joined, or joined but not reached over makima
 )
 
 // Outcome is how one machine ended.
@@ -101,6 +85,7 @@ type Result struct {
 type MeshPeer struct {
 	Address string
 	Online  bool
+	Direct  bool
 }
 
 // Runner carries out a Choice.
@@ -120,268 +105,171 @@ type Runner struct {
 	// while this machine is not on it.
 	Peers func() map[string]MeshPeer
 
-	// Pubkeys are this person's SSH public keys, given to machines that were
-	// reached through Tailscale SSH so makima's own SSH server lets them in.
+	// Pubkeys are this person's SSH public keys. Every machine gets them, so
+	// that ssh reaches it the ordinary way once Tailscale SSH is gone.
 	Pubkeys func() string
-
-	// LocalState reads this machine's switch report. The state file unless
-	// a test says otherwise.
-	LocalState func() (State, error)
 
 	// Kit finds binaries for another machine. KitFor unless a test says
 	// otherwise.
 	Kit func(ctx context.Context, goos, goarch, version string) ([]byte, string, error)
 
-	// Poll is how often a switching machine is checked on, and Wait how long
-	// it is given to finish.
-	Poll time.Duration
+	// Wait is how long a machine that has joined is given to be reached over
+	// makima, and Poll how often it is tried in that time.
 	Wait time.Duration
+	Poll time.Duration
 
-	mu        sync.Mutex
-	outcomes  map[string]*Outcome
-	dropped   map[string]bool // machines out of the run, left as they were
-	ctrlName  string
-	ctrlLate  bool // the controller is this Linux machine, still behind Tailscale's firewall
-	localDown bool // this machine's Tailscale is off, so only makima reaches the rest
+	mu       sync.Mutex
+	outcomes map[string]*Outcome
+	dropped  map[string]bool // machines out of the run
 }
 
 // Makima is where the migration puts makima on other machines.
 const Makima = "/usr/local/bin/makima"
 
-// ErrAborted is a run that stopped before changing any machine's network.
-var ErrAborted = errors.New("stopped before anything was switched")
-
 type job struct {
 	*Candidate
 	password string
 	invite   string
-	server   string
-	mesh     bool // uses makima's own SSH server once it is across
+	mesh     bool // makima's own SSH server takes the person's keys: nothing else listens for SSH
+	path     string
 }
 
-// Run moves every chosen machine, the controller first and this machine last.
+// Run puts every chosen machine on makima, then takes Tailscale off the ones
+// this machine has reached over makima.
 //
-// The order is the safety. Nothing leaves Tailscale until makima is on every
-// machine and each has shown it can reach the network's server by some route
-// that is not Tailscale. The controller switches first, so the rest have
-// somewhere to land. This machine switches last, because the whole time before
-// that it is steering the others through Tailscale.
+// Nothing here stops Tailscale. makima runs beside it, on addresses of its own
+// (netcfg.MeshRange), so every step before the last only adds: makima goes on
+// each machine, the network starts, each machine joins it — and Tailscale is
+// how each is reached the whole time. A machine loses Tailscale only once this
+// one has logged in to it over makima, and that removal is itself done over
+// makima, so the session doing it does not depend on what it is removing. A
+// machine that cannot be reached over makima keeps Tailscale, exactly as
+// reachable as it was.
 func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 	if r.Kit == nil {
 		r.Kit = KitFor
 	}
-	if r.Poll == 0 {
-		r.Poll = 4 * time.Second
-	}
 	if r.Wait == 0 {
-		r.Wait = 6 * time.Minute
+		r.Wait = 2 * time.Minute
+	}
+	if r.Poll == 0 {
+		r.Poll = 3 * time.Second
 	}
 	r.outcomes = map[string]*Outcome{}
 	r.dropped = map[string]bool{}
 
 	res := Result{Controller: ch.Controller}
+	keys := r.pubkeys()
+	if keys == "" {
+		res.Error = "this device has no SSH key to log in to the others with once Tailscale SSH is gone — make one with 'ssh-keygen -t ed25519' and try again. Nothing was changed"
+		return r.finish(res, ch)
+	}
 	jobs, ctrl, err := r.prepare(ch)
 	if err != nil {
 		res.Error = err.Error()
 		return r.finish(res, ch)
 	}
-	r.ctrlName = ctrl.Name
-	r.ctrlLate = ctrl.Local && ctrl.Facts != nil && ctrl.Facts.OS == "linux" && ctrl.Facts.Tailscale != ""
 	var local *job
-	var others []*job
+	var remotes, others []*job
 	for _, j := range jobs {
-		if j.Local && j != ctrl {
+		switch {
+		case j.Local:
 			local = j
-		} else if j != ctrl {
-			others = append(others, j)
+		default:
+			remotes = append(remotes, j)
+			if j != ctrl {
+				others = append(others, j)
+			}
 		}
 	}
+	if local == nil {
+		res.Error = "this device has to come along — it is the one that reaches each of the others over makima. Nothing was changed"
+		return r.finish(res, ch)
+	}
 
-	// 1. makima on every machine, over Tailscale. Harmless: nothing starts.
-	r.parallel(jobs, func(j *job) {
-		if j.Local {
-			return
-		}
+	// 1. makima on every machine, over Tailscale. Nothing starts.
+	r.parallel(remotes, func(j *job) {
 		if err := r.install(ctx, j); err != nil {
 			r.fail(j, "install", Stayed, "could not put makima on it: "+err.Error())
 		}
 	})
 	if r.gone(ctrl) {
-		res.Error = fmt.Sprintf("%s could not be set up to hold the network, so nothing was switched", ctrl.Name)
+		res.Error = fmt.Sprintf("%s could not be set up to hold the network, so nothing was changed", ctrl.Name)
 		return r.finish(res, ch)
 	}
 
-	// 2. The network, on the machine chosen to hold it.
+	// 2. This person's SSH keys on each, so ssh keeps working without
+	// Tailscale SSH.
+	r.parallel(r.live(remotes), func(j *job) { r.authorize(ctx, j, keys) })
+
+	// 3. The network, on the machine chosen to hold it.
 	advertise := strings.TrimSpace(ch.Advertise)
 	if advertise == "" {
 		advertise = ctrl.Reach
 	}
 	if err := CheckAdvertise(advertise); err != nil {
 		r.fail(ctrl, "network", Stayed, err.Error())
-		res.Error = err.Error()
+		res.Error = err.Error() + ". Nothing was changed"
 		return r.finish(res, ch)
 	}
-	var pending []*job
-	for _, j := range append(others, local) {
-		if j != nil && !r.gone(j) {
-			pending = append(pending, j)
-		}
+	pending := r.live(others)
+	if local != ctrl {
+		pending = append(pending, local)
 	}
 	r.step(ctrl, "network", "running", "starting the network at "+advertise)
-	host, err := r.host(ctx, ctrl, advertise, len(pending))
+	host, err := r.host(ctx, ctrl, advertise, len(pending), keys)
 	if err != nil {
 		r.fail(ctrl, "network", Stayed, err.Error())
-		res.Error = fmt.Sprintf("the network could not be started on %s: %v", ctrl.Name, err)
+		res.Error = fmt.Sprintf("the network could not be started on %s: %v. Every device still has Tailscale, exactly as before", ctrl.Name, err)
 		return r.finish(res, ch)
 	}
 	res.Server = host.Server
 	r.step(ctrl, "network", "ok", "holding the network at "+host.Server)
 	for i, j := range pending {
-		j.server = host.Server
 		if i < len(host.Invites) {
 			j.invite = host.Invites[i]
 		}
 	}
-	ctrl.server = host.Server
 
-	// 3. Every other machine proves it can reach the server without
-	// Tailscale. One that cannot would lose everything the moment Tailscale
-	// stopped, so it is left alone.
-	r.parallel(pending, func(j *job) {
-		r.step(j, "reach", "running", "checking it can reach "+ctrl.Name+" without Tailscale")
-		if j.invite == "" {
-			r.fail(j, "reach", Stayed, "no invite was made for it")
-			return
+	// 4. Each of the rest checks it can reach the server without Tailscale,
+	// and joins. Tailscale stays up on all of them.
+	r.parallel(pending, func(j *job) { r.join(ctx, j, host.Server, ctrl.Name, keys) })
+	if r.gone(local) {
+		res.Error = "this device could not join the network, so no device could be reached over makima — and Tailscale was removed from none of them. " + r.outcome(local).Detail
+		for _, j := range r.live(remotes) {
+			r.set(j, Stayed, "on makima beside Tailscale, but not reached over it from this device — Tailscale is untouched")
 		}
-		if err := r.reach(ctx, j); err != nil {
-			r.fail(j, "reach", Stayed, fmt.Sprintf("cannot reach %s without Tailscale (%v) — it stays on Tailscale", ctrl.Name, err))
-			return
-		}
-		r.step(j, "reach", "ok", "")
-	})
-
-	// 4. This machine joins now, alongside Tailscale. It has to: every
-	// removal of Tailscale below is confirmed by this machine reaching the
-	// device over makima, so it must be on makima before anything is.
-	self := ctrl
-	if !ctrl.Local {
-		self = local
-	}
-	if local != nil && !r.gone(local) {
-		r.step(local, "join", "running", "joining the network")
-		if _, err := r.Elevate(ctx, Action{Kind: "migrate-join", Name: local.Name, Invite: local.invite}); err != nil {
-			r.fail(local, "join", Stayed, "could not join: "+err.Error())
-		} else {
-			r.step(local, "join", "ok", "")
-		}
-	}
-
-	// The gate. Past this point devices start leaving Tailscale, so it is
-	// passed only when this machine is on the network — having reached the
-	// device holding it without Tailscale — and somebody else is coming too.
-	var remotes []*job
-	for _, j := range jobs {
-		if !j.Local && !r.gone(j) {
-			remotes = append(remotes, j)
-		}
-	}
-	switch {
-	case self == nil:
-		res.Error = "this device has to come along — it is the one that confirms each of the others over makima. Nothing was switched"
-		return r.finish(res, ch)
-	case r.gone(self) && !ctrl.Local:
-		res.Error = fmt.Sprintf("this device could not get onto the network at %s without Tailscale, so moving anything would have left it cut off. Nothing was switched", host.Server)
-		return r.finish(res, ch)
-	case !ctrl.Local && r.gone(ctrl):
-		res.Error = fmt.Sprintf("%s could not be set up, so nothing was switched", ctrl.Name)
-		return r.finish(res, ch)
-	case len(remotes) == 0:
-		res.Error = "no other device can reach the network without Tailscale, so there is nothing to move. Nothing was switched"
 		return r.finish(res, ch)
 	}
 
-	// 5. Every device starts its switch — the remote ones first, while
-	// Tailscale still reaches them, then this one. Each stops Tailscale,
-	// joins, checks the tunnel, and then holds: Tailscale stopped but still
-	// installed, waiting to be confirmed.
-	r.parallel(remotes, func(j *job) { r.startRemote(ctx, j, ch.Remove, j == ctrl) })
-	var started []*job
+	// 5. Reached over makima, from here: ssh to its makima address.
+	r.parallel(r.live(remotes), func(j *job) { r.check(ctx, j) })
+	reached := r.live(remotes)
+
+	// 6. Tailscale off the ones that were reached — or left running beside
+	// makima everywhere, if that was the choice.
+	if !ch.Remove {
+		for _, j := range append(reached, local) {
+			r.set(j, Both, "on makima"+j.pathNote()+"; Tailscale left running beside it")
+		}
+		return r.finish(res, ch)
+	}
+	r.parallel(reached, func(j *job) { r.retireRemote(ctx, j) })
+
+	// This device last, and only once every device that came along was
+	// reached: until then it may still need Tailscale to get to one of them.
+	var behind []string
 	for _, j := range remotes {
-		if !r.gone(j) {
-			started = append(started, j)
+		if r.outcome(j).Outcome != Moved {
+			behind = append(behind, j.Name)
 		}
 	}
-	if !ctrl.Local && r.gone(ctrl) {
-		r.abortAll(ctx, started)
-		res.Error = fmt.Sprintf("%s's switch did not start, so the rest were called off", ctrl.Name)
+	if len(behind) > 0 {
+		r.set(local, Both, fmt.Sprintf("on makima; Tailscale kept here, because %s %s not on makima yet", list(behind), map[bool]string{true: "is", false: "are"}[len(behind) == 1]))
+		r.step(local, "remove", "ok", r.outcome(local).Detail)
 		return r.finish(res, ch)
 	}
-	if !r.startLocal(ctx, self, ctrl, ch.Remove) {
-		r.abortAll(ctx, started)
-		res.Error = "this device's switch did not start, so the rest were called off and go back to Tailscale"
-		return r.finish(res, ch)
-	}
-	r.localDown = true
-
-	// 6. Wait for each to be holding, reading its report over makima.
-	holding := map[string]bool{}
-	var mu sync.Mutex
-	r.parallel(append(append([]*job{}, started...), self), func(j *job) {
-		if r.awaitHolding(ctx, j) {
-			mu.Lock()
-			holding[j.ID] = true
-			mu.Unlock()
-		}
-	})
-
-	// 7. Confirm, over makima and nothing else. The controller first: if it
-	// cannot be confirmed nothing else should be.
-	order := append([]*job{}, started...)
-	for i, j := range order {
-		if j == ctrl {
-			order[0], order[i] = order[i], order[0]
-		}
-	}
-	committed := 0
-	if !ctrl.Local && !holding[ctrl.ID] {
-		r.abortAll(ctx, append(started, self))
-		res.Error = fmt.Sprintf("%s never came up on makima, so everything was called off and goes back to Tailscale", ctrl.Name)
-		return r.finish(res, ch)
-	}
-	if !ctrl.Local {
-		if r.commit(ctx, ctrl, VerdictCommit) {
-			committed++
-		} else {
-			r.abortAll(ctx, append(started, self))
-			res.Error = fmt.Sprintf("%s could not be confirmed over makima, so everything was called off and goes back to Tailscale", ctrl.Name)
-			return r.finish(res, ch)
-		}
-		order = order[1:]
-	}
-	var cmu sync.Mutex
-	r.parallel(order, func(j *job) {
-		if holding[j.ID] && r.commit(ctx, j, VerdictCommit) {
-			cmu.Lock()
-			committed++
-			cmu.Unlock()
-		}
-	})
-
-	// 8. This machine last. It gives up Tailscale only if everybody it
-	// could still need Tailscale for has left it too. On a Mac, where the
-	// two can run side by side, a partial move keeps both; elsewhere
-	// Tailscale's firewall would break makima, so it is one or the other.
-	failed := len(started) - committed
-	verdict := VerdictCommit
-	switch {
-	case !holding[self.ID]:
-		verdict = VerdictAbort
-	case failed > 0 && self.Facts != nil && self.Facts.OS == "darwin":
-		verdict = VerdictKeep
-	case failed > 0 && committed == 0:
-		verdict = VerdictAbort
-	}
-	r.commit(ctx, self, verdict)
+	r.retireLocal(ctx, local)
 	return r.finish(res, ch)
 }
 
@@ -392,7 +280,7 @@ func (r *Runner) prepare(ch Choice) ([]*job, *job, error) {
 		chosen[id] = true
 	}
 	chosen[ch.Controller] = true
-	// This device always comes: it is what confirms each of the others.
+	// This device always comes: it is what reaches each of the others.
 	for _, c := range ch.Plan.Machines {
 		if c.Local {
 			chosen[c.ID] = true
@@ -410,15 +298,13 @@ func (r *Runner) prepare(ch Choice) ([]*job, *job, error) {
 			return nil, nil, fmt.Errorf("%q is not a name makima can use", c.Name)
 		}
 		j := &job{Candidate: c, password: ch.Passwords[c.ID]}
+		r.outcomes[c.ID] = &Outcome{ID: c.ID, Name: c.Name, Outcome: Stayed}
 		if c.NeedsPassword && j.password == "" {
 			r.fail(j, "install", Stayed, "its sudo needs a password, and none was given")
-			continue
 		}
-		// Reached through Tailscale SSH, with nothing else listening: once
-		// Tailscale is gone makima's own SSH server takes over, with this
-		// person's keys, so `ssh` to it keeps working.
+		// Reached through Tailscale SSH, with nothing else listening: makima's
+		// own SSH server takes this person's keys, so ssh to it keeps working.
 		j.mesh = c.Facts != nil && c.Facts.Via == "tailscale" && !c.Facts.OpenSSH
-		r.outcomes[c.ID] = &Outcome{ID: c.ID, Name: c.Name, Outcome: Stayed}
 		jobs = append(jobs, j)
 		if c.ID == ch.Controller {
 			ctrl = j
@@ -429,12 +315,6 @@ func (r *Runner) prepare(ch Choice) ([]*job, *job, error) {
 	}
 	if r.gone(ctrl) {
 		return nil, nil, fmt.Errorf("%s needs its sudo password to hold the network", ctrl.Name)
-	}
-	// The controller goes first in every list.
-	for i, j := range jobs {
-		if j == ctrl {
-			jobs[0], jobs[i] = jobs[i], jobs[0]
-		}
 	}
 	return jobs, ctrl, nil
 }
@@ -451,7 +331,7 @@ func CheckAdvertise(advertise string) error {
 		host = h
 	}
 	if IsTailscaleHost(host) {
-		return fmt.Errorf("%s is a Tailscale address, and Tailscale is what is being turned off — use the machine's LAN or public address", host)
+		return fmt.Errorf("%s is a Tailscale address, and Tailscale is what is being replaced — use the machine's LAN or public address", host)
 	}
 	if a, err := netip.ParseAddr(host); err == nil && (a.IsLoopback() || a.IsUnspecified()) {
 		return fmt.Errorf("%s is not an address other machines can reach", host)
@@ -459,6 +339,7 @@ func CheckAdvertise(advertise string) error {
 	return nil
 }
 
+// target is a machine through Tailscale, as the scan logged in to it.
 func (r *Runner) target(j *job) Target {
 	t := Target{Addr: j.IPv4()}
 	if j.Access != nil {
@@ -487,6 +368,7 @@ func asRoot(j *job, script string, stdin []byte) (string, []byte) {
 	}
 }
 
+// remote runs a script on j through Tailscale.
 func (r *Runner) remote(ctx context.Context, j *job, script string, stdin []byte, root bool, short time.Duration) (string, error) {
 	if root {
 		script, stdin = asRoot(j, script, stdin)
@@ -499,6 +381,9 @@ func (r *Runner) remote(ctx context.Context, j *job, script string, stdin []byte
 // install puts the four binaries on a machine, unless the same version is
 // there already.
 func (r *Runner) install(ctx context.Context, j *job) error {
+	if r.gone(j) {
+		return nil
+	}
 	if j.Facts.Makima == r.Version && r.Version != "" && r.Version != "dev" {
 		r.step(j, "install", "ok", "makima "+r.Version+" is already there")
 		return nil
@@ -525,15 +410,60 @@ func (r *Runner) install(ctx context.Context, j *job) error {
 	return nil
 }
 
+// authorize puts this person's public keys in the authorized_keys of the
+// account the scan logged in as, then tries an ordinary ssh login at the
+// machine's own address — no Tailscale, no makima — to say whether that works
+// too. A machine with nothing listening for ordinary SSH gets makima's own SSH
+// server instead, when it joins.
+//
+// Nothing here is fatal. What matters is ssh over makima, and that is what
+// decides, later, whether Tailscale comes off.
+func (r *Runner) authorize(ctx context.Context, j *job, keys string) {
+	if j.mesh {
+		r.step(j, "keys", "ok", "nothing listens for ordinary SSH there, so makima's own SSH server takes your keys")
+		return
+	}
+	who := j.Facts.User
+	r.step(j, "keys", "running", "adding your SSH keys for "+who)
+	out, err := r.remote(ctx, j, AuthorizeScript, []byte(keys+"\n"), false, 30*time.Second)
+	if err != nil || !strings.Contains(out, "added=") {
+		if err == nil {
+			err = fmt.Errorf("unexpected answer %q", lastLine(out))
+		}
+		r.step(j, "keys", "failed", "could not add your SSH keys ("+err.Error()+") — ssh over makima may not let you in")
+		return
+	}
+	detail := "your SSH keys are there for " + who
+	if j.Reach != "" {
+		_ = r.SSH.Pin(j.Reach, j.HostKeys)
+		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		out, err := r.SSH.Run(cctx, Target{Addr: j.Reach, User: who}, CheckScript, nil, nil)
+		cancel()
+		if err == nil && strings.Contains(out, "makima-ok") {
+			detail = "ordinary SSH works at " + j.Reach + ", without Tailscale"
+		} else {
+			detail += "; ordinary SSH at " + j.Reach + " did not answer from here, so makima is what it is reached over"
+		}
+	}
+	r.step(j, "keys", "ok", detail)
+}
+
 // host starts the network on the controller and mints an invite per machine.
-func (r *Runner) host(ctx context.Context, ctrl *job, advertise string, invites int) (HostResult, error) {
+func (r *Runner) host(ctx context.Context, ctrl *job, advertise string, invites int, keys string) (HostResult, error) {
 	a := Action{Kind: "migrate-host", Advertise: advertise, Name: ctrl.Name, Invites: invites}
 	var out string
 	var err error
 	if ctrl.Local {
 		out, err = r.Elevate(ctx, a)
 	} else {
-		out, err = r.remote(ctx, ctrl, commandLine(Makima, a.Args()), nil, true, 2*time.Minute)
+		args := append(a.Args(), "-stdin")
+		in := Input{}
+		if ctrl.mesh {
+			args = append(args, "-ssh-user", ctrl.Facts.User)
+			in.SSHKeys = keys
+		}
+		stdin, _ := json.Marshal(in)
+		out, err = r.remote(ctx, ctrl, commandLine(Makima, args), append(stdin, '\n'), true, 3*time.Minute)
 	}
 	if err != nil {
 		return HostResult{}, err
@@ -548,74 +478,107 @@ func (r *Runner) host(ctx context.Context, ctrl *job, advertise string, invites 
 	return h, nil
 }
 
-// reach asks a machine whether it can get to the server without Tailscale.
-func (r *Runner) reach(ctx context.Context, j *job) error {
+// join puts a machine on the network, beside Tailscale, once it has shown it
+// can reach the server by a route that is not Tailscale's.
+func (r *Runner) join(ctx context.Context, j *job, server, ctrlName, keys string) {
+	r.step(j, "join", "running", "checking it can reach "+ctrlName+" without Tailscale")
+	if j.invite == "" {
+		r.fail(j, "join", Stayed, "no invite was made for it")
+		return
+	}
+	var err error
 	if j.Local {
-		return r.Probe(ctx, j.server)
-	}
-	_, err := r.remote(ctx, j, commandLine(Makima, []string{"migrate", "probe", j.server}), nil, false, 30*time.Second)
-	return err
-}
-
-// startRemote starts a machine's switch, over Tailscale.
-//
-// The switch runs on the machine by itself, detached from this SSH session —
-// which dies the moment Tailscale stops, and with Tailscale SSH takes every
-// process it started down with it.
-func (r *Runner) startRemote(ctx context.Context, j *job, remove, serverSelf bool) {
-	r.step(j, "switch", "running", "leaving Tailscale")
-	args := []string{"migrate", "cutover", "-detach", "-stdin", "-name", j.Name, "-remove=" + strconv.FormatBool(remove)}
-	if serverSelf {
-		args = append(args, "-server-self")
+		err = r.Probe(ctx, server)
 	} else {
-		args = append(args, "-controller", r.ctrlName)
-		if r.ctrlLate {
-			args = append(args, "-controller-on-tailscale")
-		}
+		_, err = r.remote(ctx, j, commandLine(Makima, []string{"migrate", "probe", server}), nil, false, 30*time.Second)
 	}
-	in := Input{Invite: j.invite}
-	if j.mesh {
-		if keys := r.pubkeys(); keys != "" {
-			in.SSHKeys = keys
+	if err != nil {
+		r.fail(j, "join", Stayed, fmt.Sprintf("cannot reach %s without Tailscale (%v) — it stays on Tailscale, untouched", ctrlName, err))
+		return
+	}
+
+	r.step(j, "join", "running", "joining the network, beside Tailscale")
+	if j.Local {
+		_, err = r.Elevate(ctx, Action{Kind: "migrate-join", Name: j.Name, Invite: j.invite})
+	} else {
+		// The invite is a credential, so it goes down stdin — never onto a
+		// command line where ps would show it.
+		args := []string{"migrate", "join", "-stdin", "-name", j.Name}
+		in := Input{Invite: j.invite}
+		if j.mesh {
 			args = append(args, "-ssh-user", j.Facts.User)
+			in.SSHKeys = keys
+		}
+		stdin, _ := json.Marshal(in)
+		_, err = r.remote(ctx, j, commandLine(Makima, args), append(stdin, '\n'), true, 3*time.Minute)
+	}
+	if err != nil {
+		r.fail(j, "join", Stayed, "could not join: "+err.Error()+" — Tailscale is untouched")
+		return
+	}
+	r.step(j, "join", "ok", "on the network, beside Tailscale")
+}
+
+// check logs in to a machine over makima: ssh to its makima address, and a
+// command that answers. Only a machine reached that way may lose Tailscale —
+// it is the proof that makima is a way in once Tailscale is gone.
+func (r *Runner) check(ctx context.Context, j *job) {
+	r.step(j, "verify", "running", "reaching it over makima")
+	deadline := time.Now().Add(r.Wait)
+	why := "it never showed up on the network"
+	for {
+		peers := r.peers()
+		p, ok := peers[j.Name]
+		switch {
+		case peers == nil:
+			why = "this device's makima is not answering"
+		case !ok:
+			why = "it never showed up on the network"
+		case !p.Online:
+			why = "it is on the network, but no connection to it came up — something between the two, most likely a firewall, is dropping UDP 51820"
+		default:
+			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			out, err := r.SSH.Run(cctx, r.meshTarget(j, p), CheckScript, nil, nil)
+			cancel()
+			if err == nil && strings.Contains(out, "makima-ok") {
+				j.path = "direct"
+				if !p.Direct {
+					j.path = "via relay"
+				}
+				r.step(j, "verify", "ok", "reached over makima, "+j.path)
+				return
+			}
+			why = fmt.Sprintf("makima reaches it, but ssh over makima did not get in (%v)", err)
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			why = ctx.Err().Error()
+			deadline = time.Now()
+		case <-time.After(r.Poll):
 		}
 	}
-	stdin, _ := json.Marshal(in)
-	if _, err := r.remote(ctx, j, commandLine(Makima, args), append(stdin, '\n'), true, time.Minute); err != nil {
-		r.fail(j, "switch", Stayed, "could not start the switch: "+err.Error())
-	}
+	r.fail(j, "verify", Stayed, "on makima beside Tailscale, but not reached over it: "+why+". Tailscale is untouched")
 }
 
-// startLocal starts this machine's own switch, detached like the others.
-func (r *Runner) startLocal(ctx context.Context, self, ctrl *job, remove bool) bool {
-	r.step(self, "switch", "running", "leaving Tailscale")
-	a := Action{Kind: "migrate-cutover", Name: self.Name, Controller: ctrl.Name, ServerSelf: self == ctrl, Remove: remove}
-	if _, err := r.Elevate(ctx, a); err != nil {
-		r.fail(self, "switch", Stayed, "could not start: "+err.Error())
-		return false
-	}
-	return true
-}
-
-// awaitHolding waits for a machine to report it is on makima and holding.
-func (r *Runner) awaitHolding(ctx context.Context, j *job) bool {
-	deadline := time.Now().Add(r.Wait)
-	last := ""
-	for time.Now().Before(deadline) {
-		st, err := r.stateOf(ctx, j)
-		if err == nil {
-			if st.State == StateWaiting {
-				r.step(j, "switch", "ok", "on makima, "+firstNonEmpty(st.Path, "tunnel checked")+" — confirming")
+// reachable says whether a machine still answers over makima, trying for a
+// while: a machine that has just had Tailscale taken off it may take a moment
+// to settle.
+func (r *Runner) reachable(ctx context.Context, j *job, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
+		if p, ok := r.peers()[j.Name]; ok && p.Online {
+			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			out, err := r.SSH.Run(cctx, r.meshTarget(j, p), CheckScript, nil, nil)
+			cancel()
+			if err == nil && strings.Contains(out, "makima-ok") {
 				return true
 			}
-			if st.Final() {
-				r.settle(j, st)
-				return false
-			}
-			if st.Detail != last && st.Detail != "" {
-				last = st.Detail
-				r.step(j, "switch", "running", st.Detail)
-			}
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		select {
 		case <-ctx.Done():
@@ -623,170 +586,88 @@ func (r *Runner) awaitHolding(ctx context.Context, j *job) bool {
 		case <-time.After(r.Poll):
 		}
 	}
-	r.set(j, Stayed, "could not be reached over makima; it puts Tailscale back by itself")
-	r.step(j, "switch", "failed", "could not be reached over makima — it goes back to Tailscale by itself")
-	return false
 }
 
-// commit gives a holding machine its verdict — for another machine, over
-// makima and only over makima: reaching it that way is the proof that it
-// may give up Tailscale.
-func (r *Runner) commit(ctx context.Context, j *job, verdict string) bool {
-	if verdict == VerdictCommit {
-		r.step(j, "confirm", "running", "confirmed over makima — removing Tailscale")
-	}
-	var out string
-	var err error
-	if j.Local {
-		out, err = r.Elevate(ctx, Action{Kind: "migrate-commit", Verdict: verdict})
-	} else {
-		args := []string{"migrate", "commit"}
-		if verdict != VerdictCommit {
-			args = append(args, "-"+verdict)
-		}
-		t, ok := r.meshTarget(j)
-		if !ok {
-			err = errors.New("it is not on the network as far as this device can see")
-		} else {
-			script, stdin := asRoot(j, commandLine(Makima, args), nil)
-			cctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
-			out, err = r.SSH.Run(cctx, t, script, stdin, nil)
-			cancel()
-		}
+// retireRemote takes Tailscale off a machine, over makima.
+func (r *Runner) retireRemote(ctx context.Context, j *job) {
+	r.step(j, "remove", "running", "removing Tailscale, over makima")
+	p := r.peers()[j.Name]
+	script, stdin := asRoot(j, commandLine(Makima, []string{"migrate", "retire"}), nil)
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	out, err := r.SSH.Run(cctx, r.meshTarget(j, p), script, stdin, nil)
+	cancel()
+	var rt Retired
+	if err == nil {
+		err = json.Unmarshal([]byte(lastJSON(out)), &rt)
 	}
 	if err != nil {
-		if verdict == VerdictCommit {
-			r.set(j, Stayed, "could not be confirmed over makima ("+err.Error()+"); it puts Tailscale back by itself")
-			r.step(j, "confirm", "failed", "could not be confirmed over makima — it goes back to Tailscale by itself")
-		}
-		return false
+		detail := "on makima" + j.pathNote() + "; Tailscale could not be removed (" + err.Error() + ") and is still running beside it"
+		r.set(j, Both, detail)
+		r.step(j, "remove", "failed", detail)
+		return
 	}
-	st, perr := ReadState([]byte(lastJSON(out)))
-	if perr != nil || !st.Final() {
-		r.set(j, Stayed, "confirmed, but it did not say how it finished")
-		return false
+	if !r.reachable(ctx, j, time.Minute) {
+		rt.Notes = append(rt.Notes, "makima did not answer again straight after Tailscale came off — if it stays that way, 'makima down' and 'makima up' there")
 	}
-	r.settle(j, st)
-	return st.State == StateDone
+	r.settle(j, rt)
 }
 
-// abortAll calls off switches that have started, where they can be reached.
-// Any that cannot be reached call themselves off when nobody confirms them.
-func (r *Runner) abortAll(ctx context.Context, jobs []*job) {
-	r.parallel(jobs, func(j *job) {
-		if j == nil || r.outcome(j).Outcome == RolledBack {
-			return // finished already, and back on Tailscale
-		}
-		if !r.commit(ctx, j, VerdictAbort) && r.outcome(j).Outcome != RolledBack {
-			r.set(j, Stayed, "called off; it goes back to Tailscale by itself")
-		}
-	})
+// retireLocal takes Tailscale off this machine.
+func (r *Runner) retireLocal(ctx context.Context, j *job) {
+	r.step(j, "remove", "running", "removing Tailscale")
+	out, err := r.Elevate(ctx, Action{Kind: "migrate-retire"})
+	var rt Retired
+	if err == nil {
+		err = json.Unmarshal([]byte(lastJSON(out)), &rt)
+	}
+	if err != nil {
+		detail := "on makima; Tailscale could not be removed here (" + err.Error() + ") and is still running beside it"
+		r.set(j, Both, detail)
+		r.step(j, "remove", "failed", detail)
+		return
+	}
+	r.settle(j, rt)
 }
 
-// stateOf reads a machine's switch report: this machine's from disk, the
-// others' over SSH.
-func (r *Runner) stateOf(ctx context.Context, j *job) (State, error) {
-	if j.Local {
-		if r.LocalState != nil {
-			return r.LocalState()
-		}
-		b, err := os.ReadFile(StatePath)
-		if err != nil {
-			return State{}, err
-		}
-		return ReadState(b)
+// settle records a machine that lost Tailscale.
+func (r *Runner) settle(j *job, rt Retired) {
+	detail := "on makima" + j.pathNote() + "; Tailscale removed"
+	if !rt.Removed {
+		detail = "on makima" + j.pathNote() + "; there was no Tailscale left to remove"
 	}
-	return r.readState(ctx, j)
+	r.mu.Lock()
+	r.outcomes[j.ID].Notes = rt.Notes
+	r.mu.Unlock()
+	r.set(j, Moved, detail)
+	r.step(j, "remove", "ok", detail)
 }
 
-// meshTarget is where a machine is reached over makima.
-func (r *Runner) meshTarget(j *job) (Target, bool) {
-	p, ok := r.peers()[j.Name]
-	if !ok || p.Address == "" {
-		return Target{}, false
+func (j *job) pathNote() string {
+	if j.path == "" {
+		return ""
 	}
-	t := Target{Addr: p.Address, User: r.target(j).User}
+	return ", " + j.path
+}
+
+// meshTarget is where a machine is reached over makima: its makima address,
+// through ordinary SSH with the host key Tailscale published for it, or
+// through makima's own SSH server where that is all there is.
+func (r *Runner) meshTarget(j *job, p MeshPeer) Target {
+	t := Target{Addr: p.Address, User: j.Facts.User}
 	if j.mesh {
 		t.Port = 2222
-		if j.Facts != nil {
-			t.User = j.Facts.User
-		}
 	} else {
 		_ = r.SSH.Pin(p.Address, j.HostKeys)
 	}
-	return t, true
-}
-
-// readState reads a machine's switch report, through Tailscale while that
-// still works and over makima once it is on it — whichever answers first.
-func (r *Runner) readState(ctx context.Context, j *job) (State, error) {
-	type answer struct {
-		st  State
-		err error
-	}
-	var targets []Target
-	if !r.localDown {
-		targets = append(targets, r.target(j))
-	}
-	if t, ok := r.meshTarget(j); ok {
-		targets = append(targets, t)
-	}
-	if len(targets) == 0 {
-		return State{}, errors.New("no way to reach it")
-	}
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	ch := make(chan answer, len(targets))
-	for _, t := range targets {
-		go func(t Target) {
-			out, err := r.SSH.Run(cctx, t, "cat "+StatePath, nil, nil)
-			if err != nil {
-				ch <- answer{err: err}
-				return
-			}
-			st, err := ReadState([]byte(out))
-			ch <- answer{st, err}
-		}(t)
-	}
-	var last error
-	for range targets {
-		a := <-ch
-		if a.err == nil {
-			return a.st, nil
-		}
-		last = a.err
-	}
-	return State{}, last
-}
-
-// settle records a machine's final report.
-func (r *Runner) settle(j *job, st State) {
-	r.mu.Lock()
-	o := r.outcomes[j.ID]
-	o.Notes = st.Notes
-	r.mu.Unlock()
-	switch st.State {
-	case StateDone:
-		detail := "on makima"
-		if st.Path != "" {
-			detail += ", " + st.Path
-		}
-		if st.Removed {
-			detail += "; Tailscale removed"
-		}
-		r.set(j, Moved, detail)
-		r.step(j, "switch", "ok", detail)
-	case StateRolledBack:
-		r.set(j, RolledBack, st.Detail)
-		r.step(j, "switch", "failed", "put back on Tailscale: "+st.Detail)
-	default:
-		r.set(j, Stayed, st.Detail)
-		r.step(j, "switch", "failed", st.Detail)
-	}
+	return t
 }
 
 func (r *Runner) finish(res Result, ch Choice) Result {
 	res.OK = res.Error == ""
+	want := Moved
+	if !ch.Remove {
+		want = Both
+	}
 	for _, c := range ch.Plan.Sorted() {
 		o, ok := r.outcomes[c.ID]
 		if !ok {
@@ -797,7 +678,7 @@ func (r *Runner) finish(res Result, ch Choice) Result {
 			res.Machines = append(res.Machines, Outcome{ID: c.ID, Name: c.Name, Outcome: Stayed, Detail: why})
 			continue
 		}
-		if o.Outcome != Moved && o.Outcome != MovedLikely {
+		if o.Outcome != want {
 			res.OK = false
 		}
 		if o.Outcome == Stayed && o.Detail == "" {
@@ -813,7 +694,7 @@ func (r *Runner) pubkeys() string {
 	if r.Pubkeys == nil {
 		return ""
 	}
-	return r.Pubkeys()
+	return strings.TrimSpace(r.Pubkeys())
 }
 
 func (r *Runner) peers() map[string]MeshPeer {
@@ -821,6 +702,17 @@ func (r *Runner) peers() map[string]MeshPeer {
 		return nil
 	}
 	return r.Peers()
+}
+
+// live is the jobs still in the run.
+func (r *Runner) live(jobs []*job) []*job {
+	var out []*job
+	for _, j := range jobs {
+		if !r.gone(j) {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 func (r *Runner) parallel(jobs []*job, f func(*job)) {
@@ -901,11 +793,10 @@ func lastJSON(out string) string {
 	return strings.TrimSpace(out)
 }
 
-func firstNonEmpty(s ...string) string {
-	for _, v := range s {
-		if v != "" {
-			return v
-		}
+// list joins names for a sentence.
+func list(names []string) string {
+	if len(names) <= 1 {
+		return strings.Join(names, "")
 	}
-	return ""
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }

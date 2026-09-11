@@ -60,7 +60,7 @@ func TestLocalEndpointsNeedAPort(t *testing.T) {
 // that would tell peers to reach us through a tunnel.
 func TestLocalEndpointsExcludeMeshAddresses(t *testing.T) {
 	for _, e := range LocalEndpoints(51820) {
-		if CGNATRange.Contains(e.Addr()) {
+		if IsMeshAddr(e.Addr()) {
 			t.Errorf("advertised a mesh address: %s", e)
 		}
 	}

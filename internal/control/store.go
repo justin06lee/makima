@@ -184,14 +184,11 @@ type Store struct {
 	changed chan struct{}
 }
 
-// DefaultPrefix is where node addresses come from.
-//
-// Deliberately the low end of the CGNAT range: Tailscale hashes its
-// allocations across the whole /10, so sequential allocation from the bottom
-// keeps makima out of its way on a machine running both. Only /32 host routes
-// are ever installed, so even a collision would be resolved by longest-prefix
-// match rather than breaking either network.
-var DefaultPrefix = netip.MustParsePrefix("100.64.0.0/10")
+// DefaultPrefix is where a new network's addresses come from: makima's own
+// range, clear of Tailscale's, so both can run on a machine at once (see
+// netcfg.MeshRange). A network started before it existed keeps the prefix
+// written in its state, and its addresses with it.
+var DefaultPrefix = netip.MustParsePrefix("10.77.0.0/16")
 
 // OpenStore loads state from path, creating it — and the control plane's
 // identity — on first run.

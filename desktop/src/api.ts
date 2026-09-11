@@ -172,7 +172,10 @@ export type Choice = {
   remove_tailscale: boolean;
 };
 
-export type MachineOutcome = { id: string; name: string; outcome: "moved" | "moved?" | "rolled_back" | "stayed"; detail?: string; notes?: string[] };
+/// moved: on makima, reached over it, Tailscale removed. both: on makima,
+/// reached over it, Tailscale still running beside it. stayed: Tailscale as it
+/// was — never joined, or joined but not reached over makima.
+export type MachineOutcome = { id: string; name: string; outcome: "moved" | "both" | "stayed"; detail?: string; notes?: string[] };
 export type MigrationResult = { ok: boolean; server?: string; controller?: string; machines: MachineOutcome[]; error?: string };
 
 export type MigrateEvent =
@@ -323,33 +326,29 @@ const pretend = {
     const chosen = choice.plan.machines.filter((m) => choice.selected.includes(m.id) || m.id === choice.controller);
     const ctrl = chosen.find((m) => m.id === choice.controller)!;
     const others = chosen.filter((m) => m !== ctrl);
-    for (const m of chosen.filter((m) => !m.local)) step(m.id, "install", "running", "putting makima on it", 250);
-    for (const m of chosen.filter((m) => !m.local)) step(m.id, "install", "ok", "makima v0.3.0", 500);
+    const remote = chosen.filter((m) => !m.local);
+    const local = chosen.find((m) => m.local);
+    for (const m of remote) step(m.id, "install", "running", "putting makima on it", 250);
+    for (const m of remote) step(m.id, "install", "ok", "makima v0.3.0", 500);
+    for (const m of remote) step(m.id, "keys", "ok", `ordinary SSH works at ${m.reach}, without Tailscale`, 400);
     step(ctrl.id, "network", "running", `starting the network at ${choice.advertise || ctrl.reach}`);
     step(ctrl.id, "network", "ok", `holding the network at http://${choice.advertise || ctrl.reach}:8080`, 1200);
-    for (const m of others) step(m.id, "reach", "running", `checking it can reach ${ctrl.name} without Tailscale`, 200);
-    for (const m of others) step(m.id, "reach", "ok", "", 500);
-    const local = chosen.find((m) => m.local);
-    if (local && local !== ctrl) {
-      pretend.send({ type: "prompt" }, (t += 300));
-      step(local.id, "join", "running", "joining the network", 200);
-      step(local.id, "join", "ok", "", 1400);
+    for (const m of others) {
+      if (m.local) pretend.send({ type: "prompt" }, (t += 300));
+      step(m.id, "join", "running", "joining the network, beside Tailscale", 200);
     }
-    const remote = chosen.filter((m) => !m.local);
-    for (const m of remote) step(m.id, "switch", "running", "leaving Tailscale", 200);
-    const self = ctrl.local ? ctrl : local;
-    if (self) {
-      pretend.send({ type: "prompt" }, (t += 300));
-      step(self.id, "switch", "running", "leaving Tailscale", 200);
-    }
-    for (const m of remote) step(m.id, "switch", "running", "checking the tunnel", 600);
-    for (const m of [...remote, ...(self ? [self] : [])]) step(m.id, "switch", "ok", "on makima, direct — confirming", 900);
-    for (const m of remote) step(m.id, "confirm", "running", "confirmed over makima — removing Tailscale", 500);
-    for (const m of remote) step(m.id, "confirm", "ok", "on makima, direct; Tailscale removed", 1400);
-    if (self) {
-      pretend.send({ type: "prompt" }, (t += 300));
-      step(self.id, "confirm", "running", "confirmed over makima — removing Tailscale", 200);
-      step(self.id, "confirm", "ok", "on makima, direct; Tailscale removed", 1600);
+    for (const m of others) step(m.id, "join", "ok", "on the network, beside Tailscale", 900);
+    for (const m of remote) step(m.id, "verify", "running", "reaching it over makima", 200);
+    for (const m of remote) step(m.id, "verify", "ok", "reached over makima, direct", 800);
+    const detail = choice.remove_tailscale ? "on makima, direct; Tailscale removed" : "on makima, direct; Tailscale left running beside it";
+    if (choice.remove_tailscale) {
+      for (const m of remote) step(m.id, "remove", "running", "removing Tailscale, over makima", 300);
+      for (const m of remote) step(m.id, "remove", "ok", detail, 1400);
+      if (local) {
+        pretend.send({ type: "prompt" }, (t += 300));
+        step(local.id, "remove", "running", "removing Tailscale", 200);
+        step(local.id, "remove", "ok", "on makima; Tailscale removed", 1600);
+      }
     }
     const result: MigrationResult = {
       ok: choice.plan.machines.every((m) => !m.eligible || chosen.includes(m)),
@@ -357,7 +356,7 @@ const pretend = {
       controller: ctrl.id,
       machines: choice.plan.machines.map((m) =>
         chosen.includes(m)
-          ? { id: m.id, name: m.name, outcome: "moved", detail: "on makima, direct; Tailscale removed" }
+          ? { id: m.id, name: m.name, outcome: choice.remove_tailscale ? "moved" : "both", detail }
           : { id: m.id, name: m.name, outcome: "stayed", detail: m.why ?? "not chosen" },
       ),
     };

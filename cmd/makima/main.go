@@ -547,8 +547,8 @@ func meshPrefix(s string) (netip.Prefix, error) {
 	if !addr.Is4() {
 		return netip.Prefix{}, fmt.Errorf("mesh addresses are IPv4 for now, got %q", s)
 	}
-	if !netcfg.CGNATRange.Contains(addr) {
-		return netip.Prefix{}, fmt.Errorf("%s is outside the mesh range %s", addr, netcfg.CGNATRange)
+	if !netcfg.IsMeshAddr(addr) {
+		return netip.Prefix{}, fmt.Errorf("%s is outside the mesh range %s", addr, netcfg.MeshRange)
 	}
 	return netip.PrefixFrom(addr, 32), nil
 }
