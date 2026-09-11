@@ -1,9 +1,23 @@
 import { useEffect, useState } from "react";
-import { api, inTauri, type Check, type Environment, type Status } from "./api";
+import { api, inTauri, type Check, type Environment, type Status, type Tailscale } from "./api";
 import type { Act } from "./App";
 import { Button, Card, Code, Dot, Row, Section, Toggle } from "./ui";
 
-export function Settings({ status, env, busy, act }: { status: Status; env: Environment; busy: boolean; act: Act }) {
+export function Settings({
+  status,
+  env,
+  busy,
+  act,
+  tailscale,
+  onMigrate,
+}: {
+  status: Status;
+  env: Environment;
+  busy: boolean;
+  act: Act;
+  tailscale: Tailscale | null;
+  onMigrate: () => void;
+}) {
   return (
     <div className="fade-in mx-auto w-full max-w-[560px] space-y-6 px-6 pb-8 pt-5">
       <h1 className="text-[22px] font-semibold tracking-tight">Settings</h1>
@@ -49,6 +63,26 @@ export function Settings({ status, env, busy, act }: { status: Status; env: Envi
           )}
         </Card>
       </Section>
+
+      {tailscale?.installed && (
+        <Section title="Tailscale">
+          <Card>
+            <Row
+              value={tailscale.running ? `Running, with ${tailscale.peers} other device${tailscale.peers === 1 ? "" : "s"}` : "Installed, not connected"}
+              caption={
+                tailscale.running
+                  ? "Move every device to makima through it, then take it off each one"
+                  : "Connect Tailscale to move your devices through it"
+              }
+              right={
+                <Button size="sm" disabled={!tailscale.running} onClick={onMigrate}>
+                  Move from Tailscale…
+                </Button>
+              }
+            />
+          </Card>
+        </Section>
+      )}
 
       <Diagnostics />
 

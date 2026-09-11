@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { looksLikeInvite, type Environment } from "./api";
+import { looksLikeInvite, type Environment, type Tailscale } from "./api";
 import type { Act } from "./App";
 import { Button, Input, Notice } from "./ui";
 import { Icon } from "./icons";
+import { TailscaleOffer } from "./Migrate";
 
 /// The first screen, and the only one that asks a question.
 ///
@@ -18,6 +19,8 @@ export function Setup({
   notice,
   dismiss,
   mac,
+  tailscale,
+  onMigrate,
 }: {
   env: Environment;
   busy: boolean;
@@ -25,6 +28,8 @@ export function Setup({
   notice: string | null;
   dismiss: () => void;
   mac: boolean;
+  tailscale: Tailscale | null;
+  onMigrate: () => void;
 }) {
   const [invite, setInvite] = useState("");
   const [which, setWhich] = useState<"start" | "join" | null>(null);
@@ -61,7 +66,13 @@ export function Setup({
           </p>
         )}
 
-        <div className="mt-8 grid w-full max-w-[640px] grid-cols-2 gap-4">
+        {tailscale && env.cli && (
+          <div className="mt-8 flex w-full justify-center">
+            <TailscaleOffer peers={tailscale.peers} onMove={onMigrate} />
+          </div>
+        )}
+
+        <div className={`${tailscale && env.cli ? "mt-4" : "mt-8"} grid w-full max-w-[640px] grid-cols-2 gap-4`}>
           <Choice
             title="Start a network"
             body="This is the first device. It holds the network together, and every other device joins through it."

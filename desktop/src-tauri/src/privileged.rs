@@ -48,6 +48,28 @@ pub enum Action {
     Pair,
     /// Put the `makima` command on PATH.
     LinkCli,
+    /// Moving from Tailscale: start the network here, or find it running
+    /// here, and mint an invite for every machine coming along.
+    MigrateHost {
+        advertise: String,
+        name: String,
+        #[serde(default)]
+        invites: u8,
+    },
+    /// Moving from Tailscale: join the network, leaving Tailscale running —
+    /// it is still how this machine reaches the others.
+    MigrateJoin { invite: String, name: String },
+    /// Moving from Tailscale: this machine's own switch, last of all. Stops
+    /// Tailscale, proves makima works, then removes Tailscale — or puts it
+    /// back exactly if makima does not come up.
+    MigrateCutover {
+        name: String,
+        controller: String,
+        #[serde(default)]
+        server_self: bool,
+        #[serde(default)]
+        remove: bool,
+    },
 }
 
 impl Action {
@@ -69,6 +91,28 @@ impl Action {
             Action::Invite => vec![s("invite"), s("-json")],
             Action::Pair => vec![s("pair")],
             Action::LinkCli => vec![s("link-cli"), s("-q")],
+            Action::MigrateHost { advertise, name, invites } => vec![
+                s("migrate"),
+                s("host"),
+                s("-json"),
+                s("-advertise"),
+                advertise.clone(),
+                s("-name"),
+                name.clone(),
+                s("-invites"),
+                invites.to_string(),
+            ],
+            Action::MigrateJoin { invite, name } => {
+                vec![s("migrate"), s("join"), s("-name"), name.clone(), invite.clone()]
+            }
+            Action::MigrateCutover { name, controller, server_self, remove } => {
+                let mut v = vec![s("migrate"), s("cutover"), s("-name"), name.clone(), s("-controller"), controller.clone()];
+                if *server_self {
+                    v.push(s("-server-self"));
+                }
+                v.push(format!("-remove={remove}"));
+                v
+            }
         }
     }
 
@@ -92,6 +136,10 @@ impl Action {
             Action::Invite => "makima needs to create an invite".into(),
             Action::Pair => "makima needs to publish a pairing address".into(),
             Action::LinkCli => "makima needs to put its command in /usr/local/bin".into(),
+            Action::MigrateHost { .. } => "makima needs to start your network on this device, to move your devices from Tailscale".into(),
+            Action::MigrateJoin { .. } => "makima needs to join this device to your new network".into(),
+            Action::MigrateCutover { remove: true, .. } => "makima needs to switch this device from Tailscale to makima, and uninstall Tailscale".into(),
+            Action::MigrateCutover { .. } => "makima needs to switch this device from Tailscale to makima".into(),
         }
     }
 
@@ -136,8 +184,41 @@ impl Action {
                 }
                 Ok(())
             }
+            Action::MigrateHost { advertise, name, .. } => {
+                machine_name(name)?;
+                let ok = !advertise.is_empty()
+                    && advertise.len() <= 253
+                    && advertise.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:/[]_".contains(&b));
+                if !ok {
+                    return Err("that is not an address other devices can reach".into());
+                }
+                Ok(())
+            }
+            Action::MigrateJoin { invite, name } => {
+                machine_name(name)?;
+                Action::Join { invite: invite.clone() }.validate()
+            }
+            Action::MigrateCutover { name, controller, .. } => {
+                machine_name(name)?;
+                machine_name(controller)
+            }
             _ => Ok(()),
         }
+    }
+}
+
+/// A name as the migration gives machines: lowercase letters, digits and
+/// hyphens, as `migrate.ValidName` in Go checks too.
+fn machine_name(n: &str) -> Result<(), String> {
+    let ok = !n.is_empty()
+        && n.len() <= 63
+        && !n.starts_with('-')
+        && !n.ends_with('-')
+        && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{n:?} is not a device name makima can use"))
     }
 }
 
@@ -544,6 +625,30 @@ mod tests {
         assert!(Action::Join { invite: hosted.into() }.validate().is_ok());
         assert!(Action::Join { invite: "just three words".into() }.validate().is_err());
         assert!(Action::Join { invite: "mk1_has spaces".into() }.validate().is_err());
+    }
+
+    #[test]
+    fn migrate_actions_spell_what_go_expects() {
+        // Pinned on the Go side too, in internal/migrate: TestActionArgs.
+        let host = Action::MigrateHost { advertise: "192.168.1.20".into(), name: "tenet".into(), invites: 2 };
+        assert_eq!(host.argv().join(" "), "migrate host -json -advertise 192.168.1.20 -name tenet -invites 2");
+        let join = Action::MigrateJoin { invite: "mk1_abcDEF123-_".into(), name: "mac".into() };
+        assert_eq!(join.argv().join(" "), "migrate join -name mac mk1_abcDEF123-_");
+        let cut = Action::MigrateCutover { name: "mac".into(), controller: "tenet".into(), server_self: false, remove: true };
+        assert_eq!(cut.argv().join(" "), "migrate cutover -name mac -controller tenet -remove=true");
+        let own = Action::MigrateCutover { name: "mac".into(), controller: "mac".into(), server_self: true, remove: false };
+        assert_eq!(own.argv().join(" "), "migrate cutover -name mac -controller mac -server-self -remove=false");
+
+        // The JSON the Go side sends deserializes to exactly these.
+        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-cutover","name":"mac","controller":"tenet","server_self":false,"remove":true}"#).unwrap();
+        assert_eq!(parsed.argv(), cut.argv());
+        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-host","advertise":"192.168.1.20","name":"tenet","invites":2,"server_self":false,"remove":false}"#).unwrap();
+        assert_eq!(parsed.argv(), host.argv());
+
+        assert!(host.validate().is_ok() && join.validate().is_ok() && cut.validate().is_ok());
+        assert!(Action::MigrateHost { advertise: "a; rm -rf /".into(), name: "x".into(), invites: 1 }.validate().is_err());
+        assert!(Action::MigrateCutover { name: "Bad Name".into(), controller: "x".into(), server_self: false, remove: true }.validate().is_err());
+        assert!(Action::MigrateJoin { invite: "nope".into(), name: "mac".into() }.validate().is_err());
     }
 
     #[test]

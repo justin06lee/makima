@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, inTauri, type Action, type Environment, type Snapshot, type Status } from "./api";
+import { api, inTauri, type Action, type Environment, type Snapshot, type Status, type Tailscale } from "./api";
 import { Button, Empty, IconButton, Notice, Toggle } from "./ui";
 import { Icon } from "./icons";
 import { Setup } from "./Setup";
@@ -8,6 +8,10 @@ import { Devices } from "./Devices";
 import { ExitNodes } from "./ExitNodes";
 import { Settings } from "./Settings";
 import { AddDevice } from "./AddDevice";
+import { Migrate, TailscaleOffer } from "./Migrate";
+
+/// Where "not now" on the Tailscale offer is remembered.
+const OFFER_DISMISSED = "makima:tailscale-offer-dismissed";
 
 /// How often the window refreshes while it is open.
 ///
@@ -30,6 +34,15 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [page, setPage] = useState<Page>("devices");
   const [adding, setAdding] = useState(false);
+  const [tailscale, setTailscale] = useState<Tailscale | null>(null);
+  const [migrating, setMigrating] = useState(false);
+  const [offerDismissed, setOfferDismissed] = useState(() => localStorage.getItem(OFFER_DISMISSED) === "1");
+
+  // Tailscale is looked for once, when the window opens, and again after a
+  // move — it is the one thing that changes it.
+  useEffect(() => {
+    if (!migrating) api.migrate.detect().then(setTailscale).catch(() => setTailscale(null));
+  }, [migrating]);
 
   const refresh = useCallback(async () => {
     try {
@@ -94,9 +107,33 @@ export default function App() {
 
   const running = snap.running && !!snap.status;
   const mac = env.platform === "macos";
+  const offer = tailscale?.running && tailscale.peers > 0 ? tailscale : null;
+
+  if (migrating) {
+    return (
+      <Migrate
+        mac={mac}
+        onClose={() => {
+          setMigrating(false);
+          void refresh();
+        }}
+      />
+    );
+  }
 
   if (!running && !env.member) {
-    return <Setup env={env} busy={busy} act={act} notice={notice} dismiss={() => setNotice(null)} mac={mac} />;
+    return (
+      <Setup
+        env={env}
+        busy={busy}
+        act={act}
+        notice={notice}
+        dismiss={() => setNotice(null)}
+        mac={mac}
+        tailscale={offer}
+        onMigrate={() => setMigrating(true)}
+      />
+    );
   }
 
   return (
@@ -113,6 +150,17 @@ export default function App() {
       />
 
       {notice && <Notice text={notice} onDismiss={() => setNotice(null)} />}
+      {offer && !offerDismissed && (
+        <TailscaleOffer
+          compact
+          peers={offer.peers}
+          onMove={() => setMigrating(true)}
+          onDismiss={() => {
+            localStorage.setItem(OFFER_DISMISSED, "1");
+            setOfferDismissed(true);
+          }}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1">
         <Sidebar page={page} setPage={setPage} />
@@ -124,7 +172,7 @@ export default function App() {
           ) : page === "exit" ? (
             <ExitNodes status={snap.status} busy={busy} act={act} />
           ) : (
-            <Settings status={snap.status} env={env} busy={busy} act={act} />
+            <Settings status={snap.status} env={env} busy={busy} act={act} tailscale={tailscale} onMigrate={() => setMigrating(true)} />
           )}
         </main>
       </div>

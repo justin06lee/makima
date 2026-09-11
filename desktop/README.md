@@ -56,6 +56,16 @@ launchd or systemd, so from then on the device is connected whenever it is on,
 and the app becomes a login item so the menu bar is there too; Disconnect
 takes the registration away, and Settings turns the login item off.
 
+**Move from Tailscale** appears when Tailscale is running here — on the first
+run beside the two cards, over the device list, and in Settings. It is a
+full-window sheet over `makima migrate`: *Look* lists every device on the
+tailnet as it is examined over SSH (with an Approve button when Tailscale SSH
+wants a browser check), *Choose* picks the Control Devil and what comes along
+(and takes sudo passwords for devices that need one), and *Move* follows each
+device's switch to the end. The CLI runs as you, so it has your SSH keys; the
+steps on this device that need root come back up to the app and go through the
+same prompt as every other button.
+
 ## How it talks to the daemon
 
 Two channels, deliberately unequal.
@@ -112,12 +122,15 @@ src/Devices.tsx   the list and the detail pane, including the drop zone
 src/ExitNodes.tsx pick an exit node
 src/Settings.tsx  login item, CLI install, diagnostics
 src/AddDevice.tsx the invite sheet
+src/Migrate.tsx   moving from Tailscale: look, choose the Control Devil, move
 src-tauri/        the Rust half
   daemon.rs       reading status over the read-only socket, and the facts on disk
   privileged.rs   the named actions, and the auth prompt in front of them
+  migrate.rs      runs `makima migrate`, streams it to the window, answers its root steps
   tray.rs         the menu bar, rebuilt from the snapshot when it changes
   lib.rs          the window, the plugins, and what closing the window means
   binaries/       the four Go binaries, built by `make sidecars`
+  kits/           the same four for every other platform, built by `make kits`
 devserver/        a pretend mesh, for working on the UI without root
 ```
 

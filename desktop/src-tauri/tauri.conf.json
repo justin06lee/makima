@@ -66,6 +66,9 @@
       "binaries/makimad",
       "binaries/makima-server",
       "binaries/makima-relay"
-    ]
+    ],
+    "resources": {
+      "kits/*": "kits/"
+    }
   }
 }
