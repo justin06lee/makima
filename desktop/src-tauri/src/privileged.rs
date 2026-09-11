@@ -70,6 +70,12 @@ pub enum Action {
         #[serde(default)]
         remove: bool,
     },
+    /// Moving from Tailscale: the verdict on this machine's held switch —
+    /// remove Tailscale, keep it running alongside, or call it off.
+    MigrateCommit {
+        #[serde(default)]
+        verdict: String,
+    },
 }
 
 impl Action {
@@ -106,13 +112,18 @@ impl Action {
                 vec![s("migrate"), s("join"), s("-name"), name.clone(), invite.clone()]
             }
             Action::MigrateCutover { name, controller, server_self, remove } => {
-                let mut v = vec![s("migrate"), s("cutover"), s("-name"), name.clone(), s("-controller"), controller.clone()];
+                let mut v = vec![s("migrate"), s("cutover"), s("-detach"), s("-name"), name.clone(), s("-controller"), controller.clone()];
                 if *server_self {
                     v.push(s("-server-self"));
                 }
                 v.push(format!("-remove={remove}"));
                 v
             }
+            Action::MigrateCommit { verdict } => match verdict.as_str() {
+                "keep" => vec![s("migrate"), s("commit"), s("-keep")],
+                "abort" => vec![s("migrate"), s("commit"), s("-abort")],
+                _ => vec![s("migrate"), s("commit")],
+            },
         }
     }
 
@@ -140,6 +151,9 @@ impl Action {
             Action::MigrateJoin { .. } => "makima needs to join this device to your new network".into(),
             Action::MigrateCutover { remove: true, .. } => "makima needs to switch this device from Tailscale to makima, and uninstall Tailscale".into(),
             Action::MigrateCutover { .. } => "makima needs to switch this device from Tailscale to makima".into(),
+            Action::MigrateCommit { verdict } if verdict == "abort" => "makima needs to put Tailscale back on this device".into(),
+            Action::MigrateCommit { verdict } if verdict == "keep" => "makima needs to finish the move, keeping Tailscale on this device".into(),
+            Action::MigrateCommit { .. } => "makima needs to finish the move: every device is confirmed on makima".into(),
         }
     }
 
@@ -202,6 +216,10 @@ impl Action {
                 machine_name(name)?;
                 machine_name(controller)
             }
+            Action::MigrateCommit { verdict } => match verdict.as_str() {
+                "" | "commit" | "keep" | "abort" => Ok(()),
+                _ => Err("that is not a verdict".into()),
+            },
             _ => Ok(()),
         }
     }
@@ -635,9 +653,14 @@ mod tests {
         let join = Action::MigrateJoin { invite: "mk1_abcDEF123-_".into(), name: "mac".into() };
         assert_eq!(join.argv().join(" "), "migrate join -name mac mk1_abcDEF123-_");
         let cut = Action::MigrateCutover { name: "mac".into(), controller: "tenet".into(), server_self: false, remove: true };
-        assert_eq!(cut.argv().join(" "), "migrate cutover -name mac -controller tenet -remove=true");
+        assert_eq!(cut.argv().join(" "), "migrate cutover -detach -name mac -controller tenet -remove=true");
         let own = Action::MigrateCutover { name: "mac".into(), controller: "mac".into(), server_self: true, remove: false };
-        assert_eq!(own.argv().join(" "), "migrate cutover -name mac -controller mac -server-self -remove=false");
+        assert_eq!(own.argv().join(" "), "migrate cutover -detach -name mac -controller mac -server-self -remove=false");
+        let commit: Action = serde_json::from_str(r#"{"kind":"migrate-commit","verdict":"commit","server_self":false,"remove":false}"#).unwrap();
+        assert_eq!(commit.argv().join(" "), "migrate commit");
+        let keep: Action = serde_json::from_str(r#"{"kind":"migrate-commit","verdict":"keep","server_self":false,"remove":false}"#).unwrap();
+        assert_eq!(keep.argv().join(" "), "migrate commit -keep");
+        assert!(Action::MigrateCommit { verdict: "rm -rf".into() }.validate().is_err());
 
         // The JSON the Go side sends deserializes to exactly these.
         let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-cutover","name":"mac","controller":"tenet","server_self":false,"remove":true}"#).unwrap();

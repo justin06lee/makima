@@ -147,6 +147,19 @@ func choosePort(advertise string) (int, error) {
 	return port, nil
 }
 
+// openServerPort lets the other machines through the host firewall to the
+// server, where makima can do that properly, and says what to do where it
+// cannot. A server nobody can reach looks exactly like one that is down.
+func openServerPort(port int) {
+	via, err := netcfg.OpenPort("tcp", port)
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "note: %v\n", err)
+	case via != "":
+		fmt.Printf("Opened TCP %d in %s, so the other machines can reach the server.\n", port, via)
+	}
+}
+
 func controlDaemon() supervise.Daemon {
 	return supervise.Daemon{
 		Name:    "makima-server",
@@ -224,6 +237,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	if port != defaultServerPort {
 		fmt.Printf("Port %d is taken here, so the network's server listens on %d.\n", defaultServerPort, port)
 	}
+	openServerPort(port)
 
 	server := controlDaemon()
 	if err := server.Start(ctx, startWait); err != nil {

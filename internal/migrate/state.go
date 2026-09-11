@@ -27,6 +27,7 @@ const InputPath = "/var/lib/makima/migrate-input.json"
 const (
 	StateStarting   = "starting"
 	StateRunning    = "running"
+	StateWaiting    = "waiting"     // on makima, Tailscale stopped but not removed, waiting for a verdict
 	StateDone       = "done"        // on makima, Tailscale off (or kept, if asked)
 	StateRolledBack = "rolled_back" // makima did not come up; Tailscale is back
 	StateFailed     = "failed"      // could not even begin; nothing was changed
@@ -75,6 +76,18 @@ func ReadState(b []byte) (State, error) {
 	err := json.Unmarshal(b, &s)
 	return s, err
 }
+
+// CommitPath is where the verdict on a waiting switch is written, by
+// `makima migrate commit` — which the machine running the move can only
+// run here over makima itself.
+const CommitPath = "/var/lib/makima/migrate-commit"
+
+// The verdicts.
+const (
+	VerdictCommit = "commit" // remove Tailscale (or switch it off, as chosen)
+	VerdictKeep   = "keep"   // stay on makima, and put Tailscale back running too
+	VerdictAbort  = "abort"  // leave makima, put Tailscale back
+)
 
 // Input is what a detached switch is handed.
 type Input struct {

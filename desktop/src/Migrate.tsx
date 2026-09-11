@@ -130,7 +130,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
   const movable = machines.filter((m) => m.eligible);
   const staying = machines.filter((m) => !m.eligible);
   const ctrl = machines.find((m) => m.id === controller);
-  const chosen = movable.filter((m) => selected.has(m.id) || m.id === controller);
+  const chosen = movable.filter((m) => selected.has(m.id) || m.id === controller || m.local);
   const missingPassword = chosen.filter((m) => m.needs_password && !passwords[m.id]);
   const left = [...staying, ...movable.filter((m) => !chosen.includes(m))];
 
@@ -228,8 +228,17 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                     <ComingRow
                       key={m.id}
                       m={m}
-                      on={selected.has(m.id) || m.id === controller}
-                      locked={m.id === controller}
+                      on={selected.has(m.id) || m.id === controller || !!m.local}
+                      locked={m.id === controller || !!m.local}
+                      role={
+                        m.id === controller
+                          ? m.local
+                            ? "holds the network, and confirms each of the others over makima"
+                            : "holds the network"
+                          : m.local
+                            ? "always comes along — it confirms each of the others over makima"
+                            : undefined
+                      }
                       onToggle={(on) =>
                         setSelected((s) => {
                           const n = new Set(s);
@@ -262,7 +271,8 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                     <div className="min-w-0 flex-1">
                       <div className="text-[14px] text-ink">Uninstall Tailscale from each device</div>
                       <div className="mt-0.5 text-[12px] leading-relaxed text-dim">
-                        Only once that device is working on makima. One that does not come up on makima gets Tailscale back by itself.
+                        Only once this device has reached it over makima and confirmed it. One that cannot be confirmed puts
+                        Tailscale back by itself.
                         {!remove && " Left off, Tailscale stays installed but switched off."}
                       </div>
                     </div>
@@ -301,8 +311,8 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
               </Card>
               {phase === "run" && (
                 <p className="text-[12px] leading-relaxed text-dimmer">
-                  The device holding the network goes first and this one goes last. Each switches by itself once started, so
-                  closing the window does not strand it halfway.
+                  Each device keeps Tailscale installed until this one reaches it over makima and confirms it. If that never
+                  happens — a firewall, a closed window — it puts Tailscale back by itself within 15 minutes.
                 </p>
               )}
             </>
@@ -516,6 +526,7 @@ function ComingRow({
   m,
   on,
   locked,
+  role,
   onToggle,
   password,
   setPassword,
@@ -523,6 +534,7 @@ function ComingRow({
   m: Candidate;
   on: boolean;
   locked: boolean;
+  role?: string;
   onToggle: (on: boolean) => void;
   password: string;
   setPassword: (v: string) => void;
@@ -542,7 +554,9 @@ function ComingRow({
             {m.name}
             {m.local && <span className="ml-2 text-[11px] font-medium text-dimmer">THIS DEVICE</span>}
           </div>
-          <div className="mt-0.5 text-[12px] leading-snug text-dim">{locked ? "holds the network" : m.why ?? readyCaption(m)}</div>
+          <div className="mt-0.5 text-[12px] leading-snug text-dim">
+            {role ?? m.why ?? readyCaption(m)}
+          </div>
         </div>
       </label>
       {on && m.needs_password && (
@@ -567,13 +581,14 @@ const stepLabel: Record<string, [string, string]> = {
   network: ["starting the network", "holding the network"],
   reach: ["checking it can reach the network", "can reach the network — waiting its turn"],
   join: ["joining the network", "joined — it leaves Tailscale last"],
-  switch: ["leaving Tailscale", "on makima"],
+  switch: ["leaving Tailscale", "on makima — confirming"],
+  confirm: ["confirming it over makima", "on makima"],
 };
 
 function stepText(s: Step): string {
   const [running, ok] = stepLabel[s.step] ?? [s.step, s.step];
   if (s.state === "running") return s.detail || running;
-  if (s.state === "ok") return s.step === "switch" || s.step === "network" ? s.detail || ok : ok;
+  if (s.state === "ok") return s.step === "switch" || s.step === "network" || s.step === "confirm" ? s.detail || ok : ok;
   return s.detail || "failed";
 }
 
@@ -605,7 +620,7 @@ function ProgressRow({
   // Red is for a device something went wrong on. One the run stopped short
   // of was never touched, and says so in grey.
   const failed = step?.state === "failed" || outcome?.outcome === "rolled_back";
-  const finished = outcome ? outcome.outcome === "moved" || outcome.outcome === "moved?" : step?.step === "switch" && step.state === "ok";
+  const finished = outcome ? outcome.outcome === "moved" || outcome.outcome === "moved?" : step?.step === "confirm" && step.state === "ok";
   const text = outcome?.detail ?? (step ? stepText(step) : "Waiting its turn");
   return (
     <div className="flex items-start gap-3 border-b border-line px-4 py-3 last:border-0">

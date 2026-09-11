@@ -192,3 +192,26 @@ func iptablesAllows(iface string) bool {
 	out := output("iptables", "-S", "INPUT")
 	return strings.Contains(out, "-i "+iface+" -j ACCEPT")
 }
+
+// OpenPort lets one port in through the host firewall, where makima can do
+// that the way the firewall's own manager expects — firewalld or ufw — and
+// says which. It is how the network's server becomes reachable on a machine
+// that filters its LAN. Plain nftables and iptables rules are left alone for
+// the reason firewallStatus gives, and the error says exactly what to add.
+func OpenPort(proto string, port int) (string, error) {
+	spec := fmt.Sprintf("%d/%s", port, proto)
+	switch {
+	case firewalldRunning():
+		if err := run("firewall-cmd", "--permanent", "--add-port="+spec); err != nil {
+			return "", err
+		}
+		return "firewalld", run("firewall-cmd", "--reload")
+	case ufwActive():
+		return "ufw", run("ufw", "allow", spec)
+	case nftablesFiltering():
+		return "", fmt.Errorf("this machine's nftables rules may drop %s, and makima does not edit them — allow it with: sudo nft insert rule inet filter input %s dport %d accept", spec, proto, port)
+	case iptablesFiltering():
+		return "", fmt.Errorf("this machine's iptables rules may drop %s, and makima does not edit them — allow it with: sudo iptables -I INPUT -p %s --dport %d -j ACCEPT", spec, proto, port)
+	}
+	return "", nil
+}

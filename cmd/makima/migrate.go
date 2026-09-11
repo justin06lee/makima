@@ -51,6 +51,8 @@ func migrateCmd(args []string) error {
 		return migrateProbe(args[1:])
 	case "cutover":
 		return migrateCutover(args[1:])
+	case "commit":
+		return migrateCommit(args[1:])
 	case "status":
 		b, err := os.ReadFile(migrate.StatePath)
 		if err != nil {
@@ -75,7 +77,8 @@ The app does the same from its Move from Tailscale button. The steps it is made 
   detect                  is Tailscale here, and running?
   scan                    look at every machine over Tailscale SSH; change nothing
   run                     carry out a choice made from a scan
-  host | join | cutover   the parts run as root on each machine
+  host | join | cutover | commit
+                          the parts run as root on each machine
   probe URL               can this machine reach a server without Tailscale?
   status                  how this machine's switch went
 `
@@ -441,8 +444,19 @@ func probeServer(ctx context.Context, server string) error {
 			return fmt.Errorf("the only route to %s here goes through Tailscale", host)
 		}
 	}
+	// A TCP connection first, because how it fails says what is wrong: a
+	// refusal is nothing listening, silence is a firewall.
+	d := net.Dialer{Timeout: 6 * time.Second}
+	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return fmt.Errorf("nothing is listening at %s:%s", host, port)
+	case err != nil:
+		return fmt.Errorf("%s does not answer on TCP %s — its firewall is probably dropping it; allow TCP %s there", host, port, port)
+	}
+	c.Close()
 	if _, err := control.FetchServerKey(ctx, server); err != nil {
-		return fmt.Errorf("no answer from %s", server)
+		return fmt.Errorf("%s answers, but not as a makima server", net.JoinHostPort(host, port))
 	}
 	return nil
 }
@@ -543,6 +557,7 @@ func holdNetwork(ctx context.Context, path, name, advertise string) (string, err
 	if !holdsOwn(f) {
 		return "", elsewhere
 	}
+	openServerPort(serverPort())
 	if err := bringUp(ctx, path); err != nil {
 		return "", err
 	}
@@ -613,13 +628,19 @@ type cutoverOpts struct {
 
 	// statePath is where progress is written; migrate.StatePath but in tests.
 	statePath string
+
+	// confirmWithin is how long a switched machine waits, Tailscale stopped
+	// but not removed, for the machine running the move to confirm it can
+	// reach it over makima. No verdict in that time and it undoes itself.
+	confirmWithin time.Duration
+	commitPath    string
 }
 
 // migrateCutover moves this machine off Tailscale and onto makima, or puts it
 // back exactly as it was.
 func migrateCutover(args []string) error {
 	fs := flag.NewFlagSet("migrate cutover", flag.ExitOnError)
-	o := cutoverOpts{statePath: migrate.StatePath}
+	o := cutoverOpts{statePath: migrate.StatePath, commitPath: migrate.CommitPath}
 	fs.StringVar(&o.path, "config", conf.DefaultPath, "config path")
 	fs.StringVar(&o.name, "name", "", "this machine's name on the network")
 	fs.StringVar(&o.controller, "controller", "", "the machine holding the network, to check the tunnel against")
@@ -627,6 +648,7 @@ func migrateCutover(args []string) error {
 	fs.BoolVar(&o.remove, "remove", true, "uninstall Tailscale once makima works (otherwise it is left installed, off)")
 	fs.StringVar(&o.sshUser, "ssh-user", "", "turn on makima's SSH server for this account, with the keys given on stdin")
 	fs.BoolVar(&o.ctrlOnTailscale, "controller-on-tailscale", false, "the controller has not left Tailscale yet; check the path to it, not the tunnel")
+	fs.DurationVar(&o.confirmWithin, "confirm-within", 15*time.Minute, "how long to wait, Tailscale stopped but installed, for the move to confirm this machine over makima")
 	detach := fs.Bool("detach", false, "run in the background, surviving the SSH session that started it")
 	fromStdin := fs.Bool("stdin", false, "read the invite and SSH keys as JSON on stdin")
 	inputFile := fs.String("input", "", "read them from this file, and delete it")
@@ -767,6 +789,8 @@ func runCutover(ctx context.Context, o cutoverOpts) migrate.State {
 		return finish(migrate.StateFailed, "no invite to join with")
 	}
 
+	_ = os.Remove(o.commitPath)
+
 	// 2. Tailscale off. It is only stopped here — nothing is forgotten — so
 	// starting it again is a complete undo.
 	host := migrate.ThisHost()
@@ -831,7 +855,35 @@ func runCutover(ctx context.Context, o cutoverOpts) migrate.State {
 		}
 	}
 
-	// 6. Tailscale away — or left installed and off, if that was the choice.
+	// 6. Hold. Everything up to here is undone by starting Tailscale again;
+	// what comes next is not. So it waits for the machine running the move
+	// to confirm it — which that machine can only do by reaching this one
+	// over makima, the bridge that is about to be the only one. Nothing
+	// arrives, and this machine goes back to Tailscale by itself.
+	if o.confirmWithin > 0 {
+		st.State = migrate.StateWaiting
+		save("confirm", "on makima — waiting to be confirmed over it before Tailscale is removed")
+		switch verdict := waitForVerdict(ctx, o.commitPath, o.confirmWithin); verdict {
+		case migrate.VerdictCommit:
+			st.State = migrate.StateRunning
+		case migrate.VerdictKeep:
+			st.State = migrate.StateRunning
+			if found {
+				if err := ts.Start(ctx); err != nil {
+					st.Notes = append(st.Notes, err.Error())
+				}
+			}
+			st.Notes = append(st.Notes, "Tailscale is running here again alongside makima, because some devices stayed on it")
+			save("done", "on makima, Tailscale kept")
+			return finish(migrate.StateDone, "on makima; Tailscale kept for the devices still on it")
+		case migrate.VerdictAbort:
+			return rollback("the move was called off")
+		default:
+			return rollback(fmt.Sprintf("nothing confirmed it over makima within %s", o.confirmWithin))
+		}
+	}
+
+	// 7. Tailscale away — or left installed and off, if that was the choice.
 	if found {
 		if o.remove {
 			save("remove", "removing Tailscale")
@@ -855,6 +907,78 @@ func runCutover(ctx context.Context, o cutoverOpts) migrate.State {
 	}
 	save("done", "on makima")
 	return finish(migrate.StateDone, "on makima")
+}
+
+// waitForVerdict waits for `makima migrate commit` to say what happens next.
+func waitForVerdict(ctx context.Context, path string, within time.Duration) string {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil {
+			os.Remove(path)
+			switch v := strings.TrimSpace(string(b)); v {
+			case migrate.VerdictCommit, migrate.VerdictKeep, migrate.VerdictAbort:
+				return v
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(time.Second):
+		}
+	}
+	return ""
+}
+
+// migrateCommit hands a waiting switch its verdict and reports how it ends.
+func migrateCommit(args []string) error {
+	fs := flag.NewFlagSet("migrate commit", flag.ExitOnError)
+	keep := fs.Bool("keep", false, "stay on makima, but put Tailscale back running too")
+	abort := fs.Bool("abort", false, "call the switch off: leave makima, put Tailscale back")
+	wait := fs.Duration("wait", 3*time.Minute, "how long to wait for the switch to finish")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 {
+		return migrate.ErrNotRoot
+	}
+	verdict := migrate.VerdictCommit
+	switch {
+	case *abort:
+		verdict = migrate.VerdictAbort
+	case *keep:
+		verdict = migrate.VerdictKeep
+	}
+	b, err := os.ReadFile(migrate.StatePath)
+	if err != nil {
+		return errors.New("no switch is running on this machine")
+	}
+	if st, _ := migrate.ReadState(b); st.Final() {
+		os.Stdout.Write(compact(b))
+		return nil
+	}
+	if err := os.WriteFile(migrate.CommitPath, []byte(verdict+"\n"), 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(*wait)
+	for time.Now().Before(deadline) {
+		time.Sleep(time.Second)
+		if b, err := os.ReadFile(migrate.StatePath); err == nil {
+			if st, _ := migrate.ReadState(b); st.Final() {
+				os.Stdout.Write(compact(b))
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("the switch has not finished after %s — see %s", *wait, migrate.LogPath)
+}
+
+func compact(b []byte) []byte {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return b
+	}
+	out, _ := json.Marshal(v)
+	return append(out, '\n')
 }
 
 // verifyTunnel waits for this machine to be properly on the network: for the
