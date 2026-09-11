@@ -24,9 +24,15 @@ RELEASE := dist/release
 TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-.PHONY: all build install update update-stop update-delete update-start trusted-copy restart clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-skip app-dev dmg
+.PHONY: all build install update clean-slate clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
 
-all: build install $(if $(HAVE_APP),app,app-skip) restart
+# Everything is built before anything is taken down, so a build that fails
+# leaves the machine exactly as it was rather than with nothing on it.
+all: build $(if $(HAVE_APP),app-build) install $(if $(HAVE_APP),app-place app-open,app-skip)
+
+# update is the golden path: every install is already a full stop, delete and
+# replace, so there is nothing left for a separate update to do differently.
+update: all
 
 build:
 	@mkdir -p $(BUILD)
@@ -35,137 +41,23 @@ build:
 		go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD)/$$b ./cmd/$$b || exit 1; \
 	done
 
-install: build
+install: build clean-slate
 	@for b in $(BINS); do \
 		echo "  install $(BINDIR)/$$b"; \
 		sudo install -m 0755 $(BUILD)/$$b $(BINDIR)/$$b || exit 1; \
 	done
+	@$(if $(HAVE_APP),true,echo "  makima installed. start with: makima up")
 
-# Back up with the new binary, if this machine is on a network at all. A
-# machine that is not is left alone: `makima up` on it would start a network,
-# and that is a thing to be asked for.
-restart:
-	@if [ -f /etc/makima/node.json ]; then \
-		echo "  bringing makima back up"; sudo $(BINDIR)/makima up; \
-	else \
-		echo "  makima installed. start with: makima up"; \
-	fi
-
-# update: stop everything running the old binaries, delete them, build and
-# install the new ones, then start again exactly what was stopped.
+# Every install starts from a machine that has never seen makima: the app and
+# daemons stopped, their registrations gone, the network this machine was on or
+# held forgotten, and every file any earlier version left behind deleted —
+# dist/uninstall.sh says what that is. A new build meeting an old network's
+# state is how "this machine is already on the network held at …" happens.
 #
-# "Exactly what was stopped" is the point. Up to three daemons can be running —
-# the node, and on the machine holding the mesh its server and relay — and
-# `makima down`/`up` only know about the node, so an update that went through
-# them left the server running the old code indefinitely. A node that was down
-# on purpose stays down, too. What was running is written to $(UPSTATE) on the
-# way down and read back on the way up.
-LABELS  := sh.makima.makimad sh.makima.server sh.makima.relay
-UNITS   := makimad makima-server makima-relay
-UPSTATE := $(BUILD)/.update
-# Root's copy of the binaries, which the app runs through sudo so its buttons
-# stop asking for a password (desktop/src-tauri/src/privileged.rs). Replaced
-# alongside the app; left stale, the app's first click would ask again.
-TRUSTED := /Library/PrivilegedHelperTools/makima
-
-update:
-	@app=""; if [ -n "$(HAVE_APP)" ] && [ -d $(APP) -o -x /usr/bin/makima-desktop ]; then app=1; fi; \
-	$(MAKE) --no-print-directory update-stop && \
-	$(MAKE) --no-print-directory update-delete UPDATE_APP=$$app && \
-	$(MAKE) --no-print-directory install && \
-	if [ -n "$$app" ]; then $(MAKE) --no-print-directory app-build app-place trusted-copy; fi && \
-	$(MAKE) --no-print-directory update-start
-
-# launchd and systemd first: a service killed out from under its manager is
-# started straight back up on the old binary. bootout is also what `makima
-# down` does, so the node gets its SIGTERM and puts the routes back — but the
-# definition stays on disk to be bootstrapped again. Anything left after that
-# was started by hand and is stopped directly, with its command line kept so it
-# can be started the same way.
-update-stop:
-	@mkdir -p $(UPSTATE) && rm -f $(UPSTATE)/*
-	@if [ "$$(uname -s)" = Darwin ]; then \
-		for l in $(LABELS); do \
-			if sudo launchctl print system/$$l >/dev/null 2>&1; then \
-				echo "  stop    $$l"; echo $$l >> $(UPSTATE)/launchd; \
-				sudo launchctl bootout system/$$l 2>/dev/null || true; \
-			fi; \
-		done; \
-	elif command -v systemctl >/dev/null 2>&1; then \
-		for u in $(UNITS); do \
-			if systemctl is-active --quiet $$u; then \
-				echo "  stop    $$u"; echo $$u >> $(UPSTATE)/systemd; sudo systemctl stop $$u; \
-			fi; \
-		done; \
-	fi
-	@for b in $(UNITS); do \
-		for pid in $$(pgrep -x $$b); do \
-			echo "  stop    $$b (pid $$pid)"; \
-			echo "$$b $$(ps -o args= -p $$pid)" >> $(UPSTATE)/spawned; \
-			sudo kill -TERM $$pid 2>/dev/null || true; \
-		done; \
-	done
-	@i=0; while pgrep -x 'makimad|makima-server|makima-relay' >/dev/null 2>&1 && [ $$i -lt 80 ]; do sleep 0.25; i=$$((i+1)); done; \
-	if pgrep -x 'makimad|makima-server|makima-relay' >/dev/null 2>&1; then echo "  a makima daemon did not exit within 20s"; exit 1; fi
-	@if pgrep -x makima-desktop >/dev/null 2>&1; then \
-		echo "  stop    makima app"; touch $(UPSTATE)/app; \
-		osascript -e 'quit app "makima"' >/dev/null 2>&1 || true; \
-		pkill -x makima-desktop 2>/dev/null || true; \
-		i=0; while pgrep -x makima-desktop >/dev/null 2>&1 && [ $$i -lt 40 ]; do sleep 0.25; i=$$((i+1)); done; \
-	fi
-
-# The binaries, and — when the app is being rebuilt — the app and root's copy.
-# On Linux the app is a package, and installing the new one replaces it.
-update-delete:
-	@for b in $(BINS); do sudo rm -f $(BINDIR)/$$b; done; echo "  delete  $(BINDIR)/{$$(echo $(BINS) | tr ' ' ,)}"
-	@if [ -n "$(UPDATE_APP)" ] && [ "$$(uname -s)" = Darwin ]; then \
-		echo "  delete  $(APP)"; rm -rf $(APP); \
-		if [ -d $(TRUSTED) ]; then echo "  delete  $(TRUSTED)/*"; sudo rm -f $(TRUSTED)/*; fi; \
-	fi
-
-# Put back what update-stop wrote down. A definition that will not bootstrap —
-# one naming a binary that no longer exists — is re-registered by `makima up`
-# for the node, and reported for anything else.
-update-start:
-	@if [ -f $(UPSTATE)/launchd ]; then \
-		for l in $$(cat $(UPSTATE)/launchd); do \
-			echo "  start   $$l"; \
-			sudo launchctl bootstrap system /Library/LaunchDaemons/$$l.plist 2>/dev/null || \
-				[ $$l = sh.makima.makimad ] || echo "  could not start $$l — see /var/log/makima/"; \
-		done; \
-	fi
-	@if [ -f $(UPSTATE)/systemd ]; then \
-		for u in $$(cat $(UPSTATE)/systemd); do echo "  start   $$u"; sudo systemctl start $$u; done; \
-	fi
-	@if [ -f $(UPSTATE)/spawned ]; then \
-		while read -r name args; do \
-			[ $$name = makimad ] && continue; \
-			bin=$(BINDIR)/$$name; set -- $$args; shift; \
-			echo "  start   $$name"; \
-			sudo mkdir -p /var/log/makima; \
-			sudo sh -c "nohup $$bin $$* >>/var/log/makima/$$name.log 2>&1 &"; \
-		done < $(UPSTATE)/spawned; \
-	fi
-	@if grep -qs -e sh.makima.makimad -e '^makimad' $(UPSTATE)/launchd $(UPSTATE)/systemd $(UPSTATE)/spawned && \
-		! pgrep -x makimad >/dev/null 2>&1; then \
-		sleep 1; pgrep -x makimad >/dev/null 2>&1 || { echo "  start   makimad"; sudo $(BINDIR)/makima up; }; \
-	fi
-	@if [ -f $(UPSTATE)/app ]; then \
-		echo "  start   makima app"; \
-		if [ "$$(uname -s)" = Darwin ]; then open $(APP); else (setsid makima-desktop >/dev/null 2>&1 &); fi; \
-	fi
-	@rm -rf $(UPSTATE)
-
-# Refresh root's copy of the binaries from the app just installed, if the app
-# has made one. `install -p` keeps the modification times, which is how the app
-# tells its copy is current.
-trusted-copy:
-	@if [ "$$(uname -s)" = Darwin ] && [ -d $(TRUSTED) ] && [ -d $(APP) ]; then \
-		echo "  install $(TRUSTED)"; \
-		for b in $(BINS); do \
-			[ -f $(APP)/Contents/MacOS/$$b ] && sudo install -p -o root -g wheel -m 0755 $(APP)/Contents/MacOS/$$b $(TRUSTED)/$$b; \
-		done; true; \
-	fi
+# Nothing is restarted afterwards, because there is nothing left to restart:
+# the app opens on its first screen, where a network is started or joined.
+clean-slate:
+	@sudo sh dist/uninstall.sh
 
 check: fmt vet test race
 
@@ -214,7 +106,7 @@ release: release-clean
 				-o $$dir/$$b$$ext ./cmd/$$b || exit 1; \
 		done; \
 		cp README.md LICENSE $$dir/; \
-		cp -R dist/install-service.sh dist/*.service dist/*.plist $$dir/ 2>/dev/null || true; \
+		cp -R dist/install-service.sh dist/uninstall.sh dist/*.service dist/*.plist $$dir/ 2>/dev/null || true; \
 		if [ "$$os" = windows ]; then \
 			(cd $(RELEASE) && zip -qr $$(basename $$dir).zip $$(basename $$dir)); \
 		else \
@@ -271,8 +163,9 @@ kits:
 	done
 
 # Build it and put it where apps go, then open it — so `make` ends with the
-# new app in the menu bar, not with a bundle in a target directory.
-app: app-build app-install
+# new app in the menu bar, not with a bundle in a target directory. Like every
+# install, it replaces all of makima on this machine, not just the app.
+app: app-build clean-slate app-place app-open
 
 # On a Mac only the .app is built here: the .dmg is for handing the app to
 # somebody else, and its packaging step leaves a mounted volume behind when it
@@ -285,18 +178,12 @@ app-build: sidecars
 dmg: sidecars
 	@cd desktop && bun install --frozen-lockfile && bun run tauri build --bundles dmg
 
-app-install: app-place trusted-copy
-	@if [ "$$(uname -s)" = Darwin ]; then open $(APP); fi
+app-install: clean-slate app-place app-open
 
-# The app where apps go, without opening it: `update` decides that itself,
-# from whether it was running before.
+# The app where apps go. clean-slate has already stopped and removed the old one.
 app-place:
 	@if [ "$$(uname -s)" = Darwin ]; then \
 		echo "  install $(APP)"; \
-		osascript -e 'quit app "makima"' >/dev/null 2>&1 || true; \
-		pkill -x makima-desktop 2>/dev/null || true; \
-		i=0; while pgrep -x makima-desktop >/dev/null 2>&1 && [ $$i -lt 40 ]; do sleep 0.25; i=$$((i+1)); done; \
-		rm -rf $(APP); \
 		cp -R $(BUNDLE)/macos/makima.app $(APP); \
 	elif command -v dpkg >/dev/null 2>&1 && ls $(BUNDLE)/deb/*.deb >/dev/null 2>&1; then \
 		echo "  install $$(ls $(BUNDLE)/deb/*.deb | tail -1)"; \
@@ -309,6 +196,13 @@ app-place:
 		sudo install -m 0755 $$(ls $(BUNDLE)/appimage/*.AppImage | tail -1) /usr/local/bin/makima-desktop; \
 	else \
 		echo "  the app is built under $(BUNDLE); nothing here knows how to install it"; \
+	fi
+
+app-open:
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		echo "  open    $(APP)"; open $(APP); \
+	elif [ -n "$${DISPLAY:-}$${WAYLAND_DISPLAY:-}" ] && command -v makima-desktop >/dev/null 2>&1; then \
+		echo "  open    makima-desktop"; (setsid makima-desktop >/dev/null 2>&1 &); \
 	fi
 
 app-skip:

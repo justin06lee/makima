@@ -88,14 +88,25 @@ docker run -p 3478:3478 ghcr.io/justin06lee/makima   # a relay
 From source, which is what a contributor wants:
 
 ```sh
-make          # build and install the four binaries, and the app if Rust and bun are here
-make update   # stop whatever makima is running, replace it all, start that again
+make          # build, wipe every earlier makima off this machine, install the new one, open the app
+make update   # the same thing
 make check    # fmt, vet, test, and the race detector
 make release  # cross-built archives and checksums, in dist/release
 ```
 
 Requires Go 1.25 or newer. The app needs Rust and bun as well, and `make`
 skips it with a note when they are absent.
+
+Every install target (`make`, `make install`, `make update`, `make app`,
+`make app-install`) starts from a clean slate: it runs
+[`dist/uninstall.sh`](dist/uninstall.sh), which stops the app and all three
+daemons and removes everything any version left behind. That includes the
+network this machine was on or held, the launchd and systemd registrations,
+logs, the resolver file, the app's sudoers rule and data, and its privacy
+grants. The new build opens on the app's first screen. The old network's keys
+are copied to `/tmp/makima-uninstalled-*` first, in case you wiped the machine
+holding a network by mistake. Run `sh dist/uninstall.sh` on its own to take
+makima off a machine for good.
 
 </details>
 
