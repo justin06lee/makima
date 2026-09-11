@@ -16,7 +16,9 @@ make app-dev    # develop against a pretend mesh, no root and no tunnel
 ```
 
 `make` on its own does the same whenever Rust and bun are present, so the app
-on the machine is never older than the code. Both targets build the four Go
+on the machine is never older than the code. Both first run
+`dist/uninstall.sh`, so the new app opens on its first screen with no network,
+sudoers rule or saved data from an earlier build. Both targets build the four Go
 binaries first and drop them in `src-tauri/binaries/`, named for the target
 triple, which is how Tauri bundles "sidecars". The app runs the `makima`
 beside its own executable, so a downloaded bundle works with nothing else
