@@ -142,7 +142,8 @@ just did.
 If you already self-host something on a public name, you have already solved
 this and can reuse it. Whatever carries `something.example.dev` into your
 network — a reverse proxy, a Cloudflare tunnel, a port forward — can carry the
-coordination plane too. Point it at port 8080 and say so:
+coordination plane too. Point it at the server's port — 8080, or the next free
+one if something already has 8080, which `makima up` says — and say so:
 
 ```sh
 makima up -advertise https://makima.example.dev
