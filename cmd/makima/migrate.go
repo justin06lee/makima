@@ -262,7 +262,7 @@ func runChoice(ctx context.Context, ch migrate.Choice, emit func(migrate.Event),
 		Elevate: elevate,
 		Probe:   probeServer,
 		Peers:   meshPeers,
-		Pubkeys: ownPubkeys,
+		Keys:    migrate.FindKeys,
 	}
 	return r.Run(ctx, ch)
 }
@@ -365,39 +365,6 @@ func meshPeers() map[string]migrate.MeshPeer {
 		m[p.Name] = migrate.MeshPeer{Address: p.Address.String(), Online: p.Online, Direct: p.Direct}
 	}
 	return m
-}
-
-// ownPubkeys are the SSH public keys of whoever is running this, from their
-// agent and their ~/.ssh — the keys every machine is given, so that ssh
-// reaches it without Tailscale.
-func ownPubkeys() string {
-	seen := map[string]bool{}
-	var keys []string
-	add := func(text string) {
-		for _, l := range strings.Split(text, "\n") {
-			l = strings.TrimSpace(l)
-			f := strings.Fields(l)
-			if len(f) < 2 || seen[f[1]] {
-				continue
-			}
-			if strings.HasPrefix(f[0], "ssh-") || strings.HasPrefix(f[0], "ecdsa-") || strings.HasPrefix(f[0], "sk-") {
-				seen[f[1]] = true
-				keys = append(keys, l)
-			}
-		}
-	}
-	if out, err := exec.Command("ssh-add", "-L").Output(); err == nil {
-		add(string(out))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		matches, _ := filepath.Glob(filepath.Join(home, ".ssh", "*.pub"))
-		for _, m := range matches {
-			if b, err := os.ReadFile(m); err == nil {
-				add(string(b))
-			}
-		}
-	}
-	return strings.Join(keys, "\n")
 }
 
 // --- probe --------------------------------------------------------------

@@ -31,6 +31,9 @@ type SSH struct {
 	// known_hosts is read but never written.
 	knownHosts string
 
+	// identities are the key files every login offers, besides the agent's.
+	identities []string
+
 	mu     sync.Mutex
 	pinned map[string]bool
 }
@@ -69,7 +72,7 @@ func NewSSH() (*SSH, error) {
 		return nil, err
 	}
 	f.Close()
-	return &SSH{bin: bin, knownHosts: f.Name(), pinned: map[string]bool{}}, nil
+	return &SSH{bin: bin, knownHosts: f.Name(), identities: FindKeys().Files, pinned: map[string]bool{}}, nil
 }
 
 // Close removes the known-hosts file.
@@ -164,6 +167,12 @@ func (s *SSH) Run(ctx context.Context, t Target, script string, stdin []byte, on
 		args = append(args,
 			"-o", "StrictHostKeyChecking=accept-new",
 			"-o", "UserKnownHostsFile="+s.knownHosts+" ~/.ssh/known_hosts")
+	}
+	// The keys put in each machine's authorized_keys, offered by file: on its
+	// own ssh only tries a few default names, so a key called anything else
+	// would be put there and then never used.
+	for _, f := range s.identities {
+		args = append(args, "-i", f)
 	}
 	if t.Port != 0 {
 		args = append(args, "-p", strconv.Itoa(t.Port))
