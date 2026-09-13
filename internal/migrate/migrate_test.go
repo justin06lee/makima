@@ -519,7 +519,7 @@ func runner(sh *fakeShell, l *fakeLocal, peers map[string]MeshPeer) *Runner {
 		Elevate: l.elevate,
 		Probe:   func(context.Context, string) error { return nil },
 		Peers:   func() map[string]MeshPeer { return peers },
-		Pubkeys: func() string { return "ssh-ed25519 AAAAkey me@mac" },
+		Keys:    func() Keys { return Keys{Public: "ssh-ed25519 AAAAkey me@mac"} },
 		Kit: func(context.Context, string, string, string) ([]byte, string, error) {
 			return []byte("kit"), "test", nil
 		},
@@ -623,13 +623,59 @@ func TestRunAddsEverythingBeforeRemovingAnything(t *testing.T) {
 func TestRunNeedsAnSSHKey(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
 	r := runner(sh, l, nil)
-	r.Pubkeys = func() string { return "" }
+	r.Keys = func() Keys { return Keys{} }
 	res := r.Run(context.Background(), everyone())
 	if res.OK || !strings.Contains(res.Error, "ssh-keygen") {
 		t.Fatalf("result = %+v", res)
 	}
 	if len(sh.calls) != 0 || len(l.actions) != 0 {
 		t.Fatalf("something was done: %v %v", sh.calls, l.actions)
+	}
+}
+
+// A key with a passphrase and no agent holding it would be put on every
+// machine and then refused at every login: the run stops first, and says how
+// to unlock it.
+func TestRunNeedsAKeyItCanUseUnattended(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	r := runner(sh, l, nil)
+	r.Keys = func() Keys { return Keys{Locked: []string{"/keys/id_ed25519_me"}} }
+	res := r.Run(context.Background(), everyone())
+	if res.OK || !strings.Contains(res.Error, "passphrase") || !strings.Contains(res.Error, "ssh-add") || !strings.Contains(res.Error, "/keys/id_ed25519_me") {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(sh.calls) != 0 || len(l.actions) != 0 {
+		t.Fatalf("something was done: %v %v", sh.calls, l.actions)
+	}
+}
+
+func TestFindKeys(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("no ssh-keygen")
+	}
+	dir := t.TempDir()
+	gen := func(name, pass string) string {
+		p := filepath.Join(dir, name)
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", pass, "-C", name, "-f", p).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen: %v %s", err, out)
+		}
+		b, _ := os.ReadFile(p + ".pub")
+		return strings.TrimSpace(string(b))
+	}
+	open := gen("id_open", "")
+	locked := gen("id_locked", "secret")
+	held := gen("id_held", "secret")
+	os.WriteFile(filepath.Join(dir, "orphan.pub"), []byte("ssh-ed25519 AAAAorphan nobody\n"), 0o644)
+
+	k := findKeys(held+"\n", dir)
+	if !strings.Contains(k.Public, open) || !strings.Contains(k.Public, held) || strings.Contains(k.Public, locked) || strings.Contains(k.Public, "orphan") {
+		t.Errorf("public = %q", k.Public)
+	}
+	if len(k.Files) != 1 || k.Files[0] != filepath.Join(dir, "id_open") {
+		t.Errorf("files = %v", k.Files)
+	}
+	if len(k.Locked) != 1 || k.Locked[0] != filepath.Join(dir, "id_locked") {
+		t.Errorf("locked = %v", k.Locked)
 	}
 }
 

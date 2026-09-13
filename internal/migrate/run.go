@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -105,9 +107,10 @@ type Runner struct {
 	// while this machine is not on it.
 	Peers func() map[string]MeshPeer
 
-	// Pubkeys are this person's SSH public keys. Every machine gets them, so
-	// that ssh reaches it the ordinary way once Tailscale SSH is gone.
-	Pubkeys func() string
+	// Keys are this person's SSH keys. Every machine gets the ones a login
+	// can use unattended, so that ssh reaches it the ordinary way once
+	// Tailscale SSH is gone.
+	Keys func() Keys
 
 	// Kit finds binaries for another machine. KitFor unless a test says
 	// otherwise.
@@ -159,9 +162,10 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 	r.dropped = map[string]bool{}
 
 	res := Result{Controller: ch.Controller}
-	keys := r.pubkeys()
+	found := r.keys()
+	keys := found.Public
 	if keys == "" {
-		res.Error = "this device has no SSH key to log in to the others with once Tailscale SSH is gone — make one with 'ssh-keygen -t ed25519' and try again. Nothing was changed"
+		res.Error = noKeyError(found.Locked)
 		return r.finish(res, ch)
 	}
 	jobs, ctrl, err := r.prepare(ch)
@@ -690,11 +694,33 @@ func (r *Runner) finish(res Result, ch Choice) Result {
 	return res
 }
 
-func (r *Runner) pubkeys() string {
-	if r.Pubkeys == nil {
-		return ""
+func (r *Runner) keys() Keys {
+	if r.Keys == nil {
+		return Keys{}
 	}
-	return strings.TrimSpace(r.Pubkeys())
+	k := r.Keys()
+	k.Public = strings.TrimSpace(k.Public)
+	return k
+}
+
+// noKeyError says why this device has no key to log in to the others with,
+// and what to do about it.
+func noKeyError(locked []string) string {
+	if len(locked) == 0 {
+		return "this device has no SSH key to log in to the others with once Tailscale SSH is gone — make one with 'ssh-keygen -t ed25519' and try again. Nothing was changed"
+	}
+	path := locked[0]
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home+"/") {
+		path = "~" + strings.TrimPrefix(path, home)
+	}
+	if strings.ContainsAny(path, " '\"") {
+		path = ShellQuote(locked[0])
+	}
+	unlock := "ssh-add " + path
+	if runtime.GOOS == "darwin" {
+		unlock = "ssh-add --apple-use-keychain " + path
+	}
+	return fmt.Sprintf("your SSH key %s has a passphrase, and the move logs in to each device with nobody there to type it, so every login would be refused. Unlock it once with '%s', then try again. Nothing was changed", path, unlock)
 }
 
 func (r *Runner) peers() map[string]MeshPeer {

@@ -230,9 +230,14 @@ Then, for every device you chose:
    once — so ordinary `ssh` keeps working once Tailscale SSH is gone. It then
    tries a plain `ssh` to the device's own LAN or public address and says
    whether that works. A device with nothing listening for ordinary SSH gets
-   makima's own SSH server on port 2222, with the same keys. If this device
-   has no SSH key at all, the move stops before changing anything and says to
-   run `ssh-keygen -t ed25519`.
+   makima's own SSH server on port 2222, with the same keys. The move logs in
+   with nobody there to type a passphrase, so only keys the agent holds or
+   key files without one count, and each is offered by file, whatever it is
+   named. If this device has no SSH key at all, the move stops before
+   changing anything and says to run `ssh-keygen -t ed25519`. If its keys all
+   have passphrases, it stops and says to unlock one first with
+   `ssh-add --apple-use-keychain ~/.ssh/<key>` (`ssh-add ~/.ssh/<key>` on
+   Linux).
 3. The network starts on the Control Devil, reachable at its LAN or public
    address — never a Tailscale one, since the network has to work once
    Tailscale is gone. If the Control Devil was on a network from an older
