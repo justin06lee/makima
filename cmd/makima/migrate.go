@@ -55,6 +55,8 @@ func migrateCmd(args []string) error {
 		return migrateProbe(args[1:])
 	case "retire":
 		return migrateRetire(args[1:])
+	case "unkey":
+		return migrateUnkey(args[1:])
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stderr, migrateUsage)
 		return nil
@@ -76,6 +78,8 @@ The app does the same from its Move from Tailscale button. The steps it is made 
                           which keeps running
   retire                  remove Tailscale from this machine; refused unless
                           makima is up here
+  unkey                   take the move's temporary key out of makima's own
+                          SSH server
   probe URL               can this machine reach a server without Tailscale?
 `
 
@@ -263,6 +267,7 @@ func runChoice(ctx context.Context, ch migrate.Choice, emit func(migrate.Event),
 		Probe:   probeServer,
 		Peers:   meshPeers,
 		Keys:    migrate.FindKeys,
+		TempKey: ssh.TempKey,
 	}
 	return r.Run(ctx, ch)
 }
@@ -754,6 +759,47 @@ func enableOwnSSH(path, keys, user string) error {
 		return err
 	}
 	return c.SetSSH(true, []string{file}, user)
+}
+
+// --- unkey --------------------------------------------------------------
+
+// migrateUnkey takes the move's temporary key out of makima's own SSH server:
+// the last thing a move does on a machine with no sshd of its own.
+func migrateUnkey(args []string) error {
+	fs := flag.NewFlagSet("migrate unkey", flag.ExitOnError)
+	path := fs.String("config", conf.DefaultPath, "config path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := mustBeRoot(); err != nil {
+		return err
+	}
+	file := filepath.Join(filepath.Dir(*path), "authorized_keys")
+	b, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	kept := migrate.WithoutTempKeys(string(b))
+	if kept == string(b) {
+		return nil
+	}
+	if err := os.WriteFile(file, []byte(kept), 0o644); err != nil {
+		return err
+	}
+	// The server reads its keys when told to, not when the file changes, and
+	// reading them again keeps every session it has — this one included.
+	c, err := localapi.Dial(localapi.SocketPath(*path))
+	if err != nil {
+		return err
+	}
+	st, err := c.Status()
+	if err != nil || !st.SSH.Active {
+		return err
+	}
+	return c.SetSSH(true, nil, "")
 }
 
 // --- retire -------------------------------------------------------------

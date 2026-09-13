@@ -226,18 +226,19 @@ Then, for every device you chose:
 1. makima goes on it, copied from this device. The app carries builds for the
    other platforms, so a Mac can set up a Linux server with nothing downloaded.
 2. Your SSH keys go on it — this device's public keys, from `ssh-agent` and
-   `~/.ssh/*.pub`, into the login account's `~/.ssh/authorized_keys`, each
-   once — so ordinary `ssh` keeps working once Tailscale SSH is gone. It then
-   tries a plain `ssh` to the device's own LAN or public address and says
-   whether that works. A device with nothing listening for ordinary SSH gets
-   makima's own SSH server on port 2222, with the same keys. The move logs in
-   with nobody there to type a passphrase, so only keys the agent holds or
-   key files without one count, and each is offered by file, whatever it is
-   named. If this device has no SSH key at all, the move stops before
-   changing anything and says to run `ssh-keygen -t ed25519`. If its keys all
-   have passphrases, it stops and says to unlock one first with
-   `ssh-add --apple-use-keychain ~/.ssh/<key>` (`ssh-add ~/.ssh/<key>` on
-   Linux).
+   `~/.ssh/*.pub`, into `~/.ssh/authorized_keys`, each once — so ordinary
+   `ssh` keeps working once Tailscale SSH is gone. Where the move gets in as
+   root, they go to the account named after your tailnet login instead
+   (`justin06lee` for `justin06lee@github`), if the device has one. Beside
+   them goes a key made for this move alone: no passphrase, and good only from
+   makima's own addresses. It is what the move logs in over makima with, so a
+   key of yours that has a passphrase is never in the way, and it comes off
+   every device, and this one, when the move ends. The move then tries a plain
+   `ssh` to the device's own LAN or public address and says whether that
+   works. A device with nothing listening for ordinary SSH gets makima's own
+   SSH server on port 2222, with the same keys. If this device has no SSH key
+   at all, the move stops before changing anything and says to run
+   `ssh-keygen -t ed25519`.
 3. The network starts on the Control Devil, reachable at its LAN or public
    address — never a Tailscale one, since the network has to work once
    Tailscale is gone. If the Control Devil was on a network from an older
