@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,6 +34,9 @@ type SSH struct {
 
 	// identities are the key files every login offers, besides the agent's.
 	identities []string
+
+	// tempDir holds the run's temporary key, once there is one.
+	tempDir string
 
 	mu     sync.Mutex
 	pinned map[string]bool
@@ -75,11 +79,46 @@ func NewSSH() (*SSH, error) {
 	return &SSH{bin: bin, knownHosts: f.Name(), identities: FindKeys().Files, pinned: map[string]bool{}}, nil
 }
 
-// Close removes the known-hosts file.
+// Close removes the known-hosts file, and the temporary key.
 func (s *SSH) Close() {
-	if s != nil && s.knownHosts != "" {
+	if s == nil {
+		return
+	}
+	if s.knownHosts != "" {
 		os.Remove(s.knownHosts)
 	}
+	if s.tempDir != "" {
+		os.RemoveAll(s.tempDir)
+	}
+}
+
+// TempKey makes a key for this run alone, with no passphrase, and has every
+// login from here on offer it first. It returns the public half. Close
+// deletes it.
+func (s *SSH) TempKey() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tempDir != "" {
+		b, err := os.ReadFile(filepath.Join(s.tempDir, "key.pub"))
+		return strings.TrimSpace(string(b)), err
+	}
+	dir, err := os.MkdirTemp("", "makima-move-key-")
+	if err != nil {
+		return "", err
+	}
+	file := filepath.Join(dir, "key")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", TempKeyComment, "-f", file).CombinedOutput(); err != nil {
+		os.RemoveAll(dir)
+		return "", fmt.Errorf("ssh-keygen: %v %s", err, strings.TrimSpace(string(out)))
+	}
+	b, err := os.ReadFile(file + ".pub")
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	s.tempDir = dir
+	s.identities = append([]string{file}, s.identities...)
+	return strings.TrimSpace(string(b)), nil
 }
 
 // Pin records the host keys an address must present.
@@ -148,6 +187,7 @@ func (s *SSH) Run(ctx context.Context, t Target, script string, stdin []byte, on
 	// server, on its own port, has a key of its own.
 	s.mu.Lock()
 	pinned := s.pinned[t.Addr] && (t.Port == 0 || t.Port == 22)
+	identities := append([]string(nil), s.identities...)
 	s.mu.Unlock()
 
 	args := []string{
@@ -168,10 +208,10 @@ func (s *SSH) Run(ctx context.Context, t Target, script string, stdin []byte, on
 			"-o", "StrictHostKeyChecking=accept-new",
 			"-o", "UserKnownHostsFile="+s.knownHosts+" ~/.ssh/known_hosts")
 	}
-	// The keys put in each machine's authorized_keys, offered by file: on its
-	// own ssh only tries a few default names, so a key called anything else
-	// would be put there and then never used.
-	for _, f := range s.identities {
+	// The run's temporary key first, then the person's own that open without
+	// a passphrase, offered by file: on its own ssh only tries a few default
+	// names, so a key called anything else would never be offered.
+	for _, f := range identities {
 		args = append(args, "-i", f)
 	}
 	if t.Port != 0 {

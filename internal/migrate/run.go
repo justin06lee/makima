@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -107,10 +105,15 @@ type Runner struct {
 	// while this machine is not on it.
 	Peers func() map[string]MeshPeer
 
-	// Keys are this person's SSH keys. Every machine gets the ones a login
-	// can use unattended, so that ssh reaches it the ordinary way once
-	// Tailscale SSH is gone.
+	// Keys are this person's SSH keys. Every machine gets them, so that ssh
+	// reaches it the ordinary way once Tailscale SSH is gone.
 	Keys func() Keys
+
+	// TempKey makes a key for this run alone, with no passphrase, that every
+	// login offers from then on. It is what the run logs in over makima with
+	// — the person's own keys may want a passphrase, and nobody is there to
+	// type it — and it comes off every machine when the run ends.
+	TempKey func() (string, error)
 
 	// Kit finds binaries for another machine. KitFor unless a test says
 	// otherwise.
@@ -124,6 +127,8 @@ type Runner struct {
 	mu       sync.Mutex
 	outcomes map[string]*Outcome
 	dropped  map[string]bool // machines out of the run
+	jobs     []*job
+	login    string // this person's account name, from their tailnet login
 }
 
 // Makima is where the migration puts makima on other machines.
@@ -134,6 +139,7 @@ type job struct {
 	password string
 	invite   string
 	mesh     bool // makima's own SSH server takes the person's keys: nothing else listens for SSH
+	temp     bool // the run's temporary key went on it
 	path     string
 }
 
@@ -162,17 +168,22 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 	r.dropped = map[string]bool{}
 
 	res := Result{Controller: ch.Controller}
-	found := r.keys()
-	keys := found.Public
+	keys := r.keys().Public
 	if keys == "" {
-		res.Error = noKeyError(found.Locked)
-		return r.finish(res, ch)
+		res.Error = "this device has no SSH key to log in to the others with once Tailscale SSH is gone — make one with 'ssh-keygen -t ed25519' and try again. Nothing was changed"
+		return r.finish(ctx, res, ch)
+	}
+	temp, err := r.tempKey()
+	if err != nil {
+		res.Error = "could not make the move's temporary key: " + err.Error() + ". Nothing was changed"
+		return r.finish(ctx, res, ch)
 	}
 	jobs, ctrl, err := r.prepare(ch)
 	if err != nil {
 		res.Error = err.Error()
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
+	r.jobs = jobs
 	var local *job
 	var remotes, others []*job
 	for _, j := range jobs {
@@ -188,8 +199,9 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 	}
 	if local == nil {
 		res.Error = "this device has to come along — it is the one that reaches each of the others over makima. Nothing was changed"
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
+	r.login = local.Login
 
 	// 1. makima on every machine, over Tailscale. Nothing starts.
 	r.parallel(remotes, func(j *job) {
@@ -199,12 +211,12 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 	})
 	if r.gone(ctrl) {
 		res.Error = fmt.Sprintf("%s could not be set up to hold the network, so nothing was changed", ctrl.Name)
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
 
 	// 2. This person's SSH keys on each, so ssh keeps working without
 	// Tailscale SSH.
-	r.parallel(r.live(remotes), func(j *job) { r.authorize(ctx, j, keys) })
+	r.parallel(r.live(remotes), func(j *job) { r.authorize(ctx, j, keys, temp) })
 
 	// 3. The network, on the machine chosen to hold it.
 	advertise := strings.TrimSpace(ch.Advertise)
@@ -214,18 +226,18 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 	if err := CheckAdvertise(advertise); err != nil {
 		r.fail(ctrl, "network", Stayed, err.Error())
 		res.Error = err.Error() + ". Nothing was changed"
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
 	pending := r.live(others)
 	if local != ctrl {
 		pending = append(pending, local)
 	}
 	r.step(ctrl, "network", "running", "starting the network at "+advertise)
-	host, err := r.host(ctx, ctrl, advertise, len(pending), keys)
+	host, err := r.host(ctx, ctrl, advertise, len(pending), keys, temp)
 	if err != nil {
 		r.fail(ctrl, "network", Stayed, err.Error())
 		res.Error = fmt.Sprintf("the network could not be started on %s: %v. Every device still has Tailscale, exactly as before", ctrl.Name, err)
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
 	res.Server = host.Server
 	r.step(ctrl, "network", "ok", "holding the network at "+host.Server)
@@ -237,13 +249,13 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 
 	// 4. Each of the rest checks it can reach the server without Tailscale,
 	// and joins. Tailscale stays up on all of them.
-	r.parallel(pending, func(j *job) { r.join(ctx, j, host.Server, ctrl.Name, keys) })
+	r.parallel(pending, func(j *job) { r.join(ctx, j, host.Server, ctrl.Name, keys, temp) })
 	if r.gone(local) {
 		res.Error = "this device could not join the network, so no device could be reached over makima — and Tailscale was removed from none of them. " + r.outcome(local).Detail
 		for _, j := range r.live(remotes) {
 			r.set(j, Stayed, "on makima beside Tailscale, but not reached over it from this device — Tailscale is untouched")
 		}
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
 
 	// 5. Reached over makima, from here: ssh to its makima address.
@@ -256,7 +268,7 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 		for _, j := range append(reached, local) {
 			r.set(j, Both, "on makima"+j.pathNote()+"; Tailscale left running beside it")
 		}
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
 	r.parallel(reached, func(j *job) { r.retireRemote(ctx, j) })
 
@@ -271,10 +283,10 @@ func (r *Runner) Run(ctx context.Context, ch Choice) Result {
 	if len(behind) > 0 {
 		r.set(local, Both, fmt.Sprintf("on makima; Tailscale kept here, because %s %s not on makima yet", list(behind), map[bool]string{true: "is", false: "are"}[len(behind) == 1]))
 		r.step(local, "remove", "ok", r.outcome(local).Detail)
-		return r.finish(res, ch)
+		return r.finish(ctx, res, ch)
 	}
 	r.retireLocal(ctx, local)
-	return r.finish(res, ch)
+	return r.finish(ctx, res, ch)
 }
 
 // prepare checks the choice against the plan and makes a job for each machine.
@@ -414,28 +426,49 @@ func (r *Runner) install(ctx context.Context, j *job) error {
 	return nil
 }
 
-// authorize puts this person's public keys in the authorized_keys of the
-// account the scan logged in as, then tries an ordinary ssh login at the
-// machine's own address — no Tailscale, no makima — to say whether that works
-// too. A machine with nothing listening for ordinary SSH gets makima's own SSH
-// server instead, when it joins.
+// authorize puts the run's temporary key in the authorized_keys of the account
+// the scan logged in as — it is what logs in over makima later — and this
+// person's own keys in their own account: that same one, or, where the scan
+// got in as root, the account named after their tailnet login if the machine
+// has one. Then it tries an ordinary ssh login at the machine's own address —
+// no Tailscale, no makima — to say whether that works too. A machine with
+// nothing listening for ordinary SSH gets makima's own SSH server instead,
+// when it joins.
 //
 // Nothing here is fatal. What matters is ssh over makima, and that is what
 // decides, later, whether Tailscale comes off.
-func (r *Runner) authorize(ctx context.Context, j *job, keys string) {
+func (r *Runner) authorize(ctx context.Context, j *job, keys, temp string) {
 	if j.mesh {
 		r.step(j, "keys", "ok", "nothing listens for ordinary SSH there, so makima's own SSH server takes your keys")
 		return
 	}
-	who := j.Facts.User
+	who := r.person(j)
 	r.step(j, "keys", "running", "adding your SSH keys for "+who)
-	out, err := r.remote(ctx, j, AuthorizeScript, []byte(keys+"\n"), false, 30*time.Second)
-	if err != nil || !strings.Contains(out, "added=") {
-		if err == nil {
+	var warn string
+	if temp != "" {
+		j.temp = true
+		out, err := r.remote(ctx, j, AuthorizeScript, []byte(tempLine(temp)+"\n"), false, 30*time.Second)
+		if err == nil && !strings.Contains(out, "added=") {
 			err = fmt.Errorf("unexpected answer %q", lastLine(out))
 		}
-		r.step(j, "keys", "failed", "could not add your SSH keys ("+err.Error()+") — ssh over makima may not let you in")
+		if err != nil {
+			warn = "; the move's temporary key could not be added (" + err.Error() + "), so reaching it over makima may not get in"
+		}
+	}
+	script := AuthorizeScript
+	if who != j.Facts.User {
+		script = "set -- " + ShellQuote(who) + "\n" + AuthorizeScript
+	}
+	out, err := r.remote(ctx, j, script, []byte(keys+"\n"), false, 30*time.Second)
+	if err == nil && !strings.Contains(out, "added=") {
+		err = fmt.Errorf("unexpected answer %q", lastLine(out))
+	}
+	if err != nil {
+		r.step(j, "keys", "failed", "could not add your SSH keys ("+err.Error()+") — ssh as yourself may not get in once Tailscale is gone"+warn)
 		return
+	}
+	if as := answer(out, "as"); as != "" {
+		who = as
 	}
 	detail := "your SSH keys are there for " + who
 	if j.Reach != "" {
@@ -443,17 +476,26 @@ func (r *Runner) authorize(ctx context.Context, j *job, keys string) {
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		out, err := r.SSH.Run(cctx, Target{Addr: j.Reach, User: who}, CheckScript, nil, nil)
 		cancel()
-		if err == nil && strings.Contains(out, "makima-ok") {
-			detail = "ordinary SSH works at " + j.Reach + ", without Tailscale"
-		} else {
+		switch {
+		case err == nil && strings.Contains(out, "makima-ok"):
+			detail = "ordinary SSH works at " + j.Reach + " as " + who + ", without Tailscale"
+		case errors.Is(err, ErrDenied):
+			// It answered, and wanted a key that needs a passphrase — or one
+			// the temporary key's makima-only rule keeps out, as it should.
+			detail += "; an SSH server answers at " + j.Reach + ", without Tailscale"
+		default:
 			detail += "; ordinary SSH at " + j.Reach + " did not answer from here, so makima is what it is reached over"
 		}
+	}
+	if warn != "" {
+		r.step(j, "keys", "failed", detail+warn)
+		return
 	}
 	r.step(j, "keys", "ok", detail)
 }
 
 // host starts the network on the controller and mints an invite per machine.
-func (r *Runner) host(ctx context.Context, ctrl *job, advertise string, invites int, keys string) (HostResult, error) {
+func (r *Runner) host(ctx context.Context, ctrl *job, advertise string, invites int, keys, temp string) (HostResult, error) {
 	a := Action{Kind: "migrate-host", Advertise: advertise, Name: ctrl.Name, Invites: invites}
 	var out string
 	var err error
@@ -464,7 +506,8 @@ func (r *Runner) host(ctx context.Context, ctrl *job, advertise string, invites 
 		in := Input{}
 		if ctrl.mesh {
 			args = append(args, "-ssh-user", ctrl.Facts.User)
-			in.SSHKeys = keys
+			in.SSHKeys = withTemp(keys, temp)
+			ctrl.temp = temp != ""
 		}
 		stdin, _ := json.Marshal(in)
 		out, err = r.remote(ctx, ctrl, commandLine(Makima, args), append(stdin, '\n'), true, 3*time.Minute)
@@ -484,7 +527,7 @@ func (r *Runner) host(ctx context.Context, ctrl *job, advertise string, invites 
 
 // join puts a machine on the network, beside Tailscale, once it has shown it
 // can reach the server by a route that is not Tailscale's.
-func (r *Runner) join(ctx context.Context, j *job, server, ctrlName, keys string) {
+func (r *Runner) join(ctx context.Context, j *job, server, ctrlName, keys, temp string) {
 	r.step(j, "join", "running", "checking it can reach "+ctrlName+" without Tailscale")
 	if j.invite == "" {
 		r.fail(j, "join", Stayed, "no invite was made for it")
@@ -511,7 +554,8 @@ func (r *Runner) join(ctx context.Context, j *job, server, ctrlName, keys string
 		in := Input{Invite: j.invite}
 		if j.mesh {
 			args = append(args, "-ssh-user", j.Facts.User)
-			in.SSHKeys = keys
+			in.SSHKeys = withTemp(keys, temp)
+			j.temp = temp != ""
 		}
 		stdin, _ := json.Marshal(in)
 		_, err = r.remote(ctx, j, commandLine(Makima, args), append(stdin, '\n'), true, 3*time.Minute)
@@ -666,7 +710,8 @@ func (r *Runner) meshTarget(j *job, p MeshPeer) Target {
 	return t
 }
 
-func (r *Runner) finish(res Result, ch Choice) Result {
+func (r *Runner) finish(ctx context.Context, res Result, ch Choice) Result {
+	r.revoke(ctx)
 	res.OK = res.Error == ""
 	want := Moved
 	if !ch.Remove {
@@ -703,24 +748,92 @@ func (r *Runner) keys() Keys {
 	return k
 }
 
-// noKeyError says why this device has no key to log in to the others with,
-// and what to do about it.
-func noKeyError(locked []string) string {
-	if len(locked) == 0 {
-		return "this device has no SSH key to log in to the others with once Tailscale SSH is gone — make one with 'ssh-keygen -t ed25519' and try again. Nothing was changed"
+func (r *Runner) tempKey() (string, error) {
+	if r.TempKey == nil {
+		return "", nil
 	}
-	path := locked[0]
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home+"/") {
-		path = "~" + strings.TrimPrefix(path, home)
+	return r.TempKey()
+}
+
+// person is the account this person's own keys go to on j: the one the scan
+// logged in as, unless that is root and they have a tailnet login to name
+// their own account by.
+func (r *Runner) person(j *job) string {
+	if j.Facts.User == "root" && r.login != "" {
+		return r.login
 	}
-	if strings.ContainsAny(path, " '\"") {
-		path = ShellQuote(locked[0])
+	return j.Facts.User
+}
+
+// withTemp is keys with the run's temporary key after them, when there is one.
+func withTemp(keys, temp string) string {
+	if temp == "" {
+		return keys
 	}
-	unlock := "ssh-add " + path
-	if runtime.GOOS == "darwin" {
-		unlock = "ssh-add --apple-use-keychain " + path
+	return keys + "\n" + tempLine(temp)
+}
+
+// revoke takes the run's temporary key back off every machine it went on:
+// over makima from one that has lost Tailscale, over Tailscale from one that
+// still has it. A key that could not be taken off is said, not hidden.
+func (r *Runner) revoke(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
+	var with []*job
+	for _, j := range r.jobs {
+		if j.temp {
+			with = append(with, j)
+		}
 	}
-	return fmt.Sprintf("your SSH key %s has a passphrase, and the move logs in to each device with nobody there to type it, so every login would be refused. Unlock it once with '%s', then try again. Nothing was changed", path, unlock)
+	r.parallel(with, func(j *job) {
+		script, root := RevokeScript, false
+		if j.mesh {
+			// makima's own SSH server keeps its keys in a file of root's.
+			script, root = commandLine(Makima, []string{"migrate", "unkey"}), true
+		}
+		cctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		var err error
+		// A few tries: a tunnel that drops for a moment should not leave the
+		// key behind.
+		for try := 0; try < 3; try++ {
+			if try > 0 {
+				time.Sleep(r.Poll)
+			}
+			if r.outcome(j).Outcome == Moved {
+				s, in := script, []byte(nil)
+				if root {
+					s, in = asRoot(j, s, nil)
+				}
+				_, err = r.SSH.Run(cctx, r.meshTarget(j, r.peers()[j.Name]), s, in, nil)
+			} else {
+				_, err = r.remote(cctx, j, script, nil, root, 30*time.Second)
+			}
+			if !errors.Is(err, ErrUnreachable) {
+				break
+			}
+		}
+		if err != nil {
+			r.note(j, fmt.Sprintf("the move's temporary key is still in %s's authorized keys there (%v). It only lets makima addresses in, but remove the line ending %q", j.Facts.User, err, TempKeyComment))
+		}
+	})
+}
+
+func (r *Runner) note(j *job, note string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if o, ok := r.outcomes[j.ID]; ok {
+		o.Notes = append(o.Notes, note)
+	}
+}
+
+// answer is the value of a key=value line a script printed.
+func answer(out, key string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(l), key+"="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 func (r *Runner) peers() map[string]MeshPeer {

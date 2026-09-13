@@ -19,7 +19,8 @@ const statusJSON = `{
   "BackendState": "Running",
   "MagicDNSSuffix": "tailddc9d9.ts.net",
   "CurrentTailnet": {"Name": "you@example.com"},
-  "Self": {"ID": "nSELF", "HostName": "Huiyun’s MacBook Air (2)", "DNSName": "huiyuns-macbook-air-2.tailddc9d9.ts.net.", "OS": "macOS", "TailscaleIPs": ["100.98.21.63", "fd7a:115c:a1e0::2833:1540"], "Online": false},
+  "Self": {"ID": "nSELF", "HostName": "Huiyun’s MacBook Air (2)", "DNSName": "huiyuns-macbook-air-2.tailddc9d9.ts.net.", "OS": "macOS", "TailscaleIPs": ["100.98.21.63", "fd7a:115c:a1e0::2833:1540"], "Online": false, "UserID": 1},
+  "User": {"1": {"LoginName": "justin06lee@github"}},
   "Peer": {
     "k1": {"ID": "nTENET", "HostName": "tenet", "DNSName": "tenet.tailddc9d9.ts.net.", "OS": "linux", "TailscaleIPs": ["100.102.72.87"], "Online": true, "sshHostKeys": ["ssh-ed25519 AAAAC3Nza"]},
     "k2": {"ID": "nOLD", "HostName": "justin06lee", "DNSName": "justin06lee.tailddc9d9.ts.net.", "OS": "linux", "TailscaleIPs": ["100.85.173.117"], "Online": false},
@@ -38,6 +39,9 @@ func TestParseStatus(t *testing.T) {
 	}
 	if tn.Self.Name != "huiyuns-macbook-air-2" || !tn.Self.Local || !tn.Self.Online {
 		t.Fatalf("self = %+v", tn.Self)
+	}
+	if tn.Self.Login != "justin06lee" {
+		t.Errorf("self login = %q", tn.Self.Login)
 	}
 	if len(tn.Peers) != 4 || !tn.Peers[0].Online {
 		t.Fatalf("peers = %+v", tn.Peers)
@@ -160,10 +164,10 @@ func TestAuthorizeScript(t *testing.T) {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	if out := run("ssh-ed25519 AAAAold laptop\nssh-ed25519 AAAAnew me@mac\n\n"); out != "added=1" {
+	if out := run("ssh-ed25519 AAAAold laptop\nssh-ed25519 AAAAnew me@mac\n\n"); answer(out, "added") != "1" {
 		t.Fatalf("first run said %q", out)
 	}
-	if out := run("ssh-ed25519 AAAAnew me@mac\n"); out != "added=0" {
+	if out := run("ssh-ed25519 AAAAnew me@mac\n"); answer(out, "added") != "0" {
 		t.Fatalf("a key already there was added again: %q", out)
 	}
 	b, _ := os.ReadFile(file)
@@ -397,8 +401,12 @@ func (f *fakeShell) Run(ctx context.Context, t Target, script string, stdin []by
 		return "/tmp/makima-kit.abc123\n", nil
 	case strings.Contains(script, "install -m 0755"):
 		return "v1.0.0\n", nil
-	case script == AuthorizeScript:
+	case strings.HasSuffix(script, AuthorizeScript):
 		return "added=1\n", nil
+	case script == RevokeScript:
+		return "revoked\n", nil
+	case strings.Contains(norm, "migrate unkey"):
+		return "", nil
 	case script == CheckScript:
 		if f.meshDown[t.Addr] {
 			return "", ErrDenied
@@ -435,7 +443,7 @@ func (f *fakeShell) ran(sub string) (calls []call, at []int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i, c := range f.calls {
-		if c.script == sub || strings.Contains(c.norm(), sub) {
+		if c.script == sub || strings.Contains(c.script, sub) || strings.Contains(c.norm(), sub) {
 			calls = append(calls, c)
 			at = append(at, i)
 		}
@@ -520,6 +528,7 @@ func runner(sh *fakeShell, l *fakeLocal, peers map[string]MeshPeer) *Runner {
 		Probe:   func(context.Context, string) error { return nil },
 		Peers:   func() map[string]MeshPeer { return peers },
 		Keys:    func() Keys { return Keys{Public: "ssh-ed25519 AAAAkey me@mac"} },
+		TempKey: func() (string, error) { return "ssh-ed25519 AAAAtemp " + TempKeyComment, nil },
 		Kit: func(context.Context, string, string, string) ([]byte, string, error) {
 			return []byte("kit"), "test", nil
 		},
@@ -603,15 +612,42 @@ func TestRunAddsEverythingBeforeRemovingAnything(t *testing.T) {
 		}
 	}
 
-	// box has an sshd: your keys go in its authorized_keys, as pi, not root.
-	// tenet has none: makima's own SSH server takes them, when it hosts.
+	// box has an sshd: the run's temporary key goes in its authorized_keys,
+	// good only from makima's addresses, and your own keys beside it, as pi.
+	// tenet has none: makima's own SSH server takes both, when it hosts.
 	auth, _ := sh.ran(AuthorizeScript)
-	if len(auth) != 1 || auth[0].target.Addr != "100.70.0.9" || !strings.Contains(auth[0].stdin, "AAAAkey") {
+	if len(auth) != 2 {
 		t.Fatalf("authorized: %+v", auth)
 	}
+	for _, c := range auth {
+		if c.target.Addr != "100.70.0.9" || c.target.User != "pi" || strings.HasPrefix(c.script, "set --") {
+			t.Errorf("authorized: %+v", c)
+		}
+	}
+	if !strings.Contains(auth[0].stdin, `from="10.77.0.0/16"`) || !strings.Contains(auth[0].stdin, "AAAAtemp") || strings.Contains(auth[0].stdin, "AAAAkey") {
+		t.Errorf("temporary key: %q", auth[0].stdin)
+	}
+	if !strings.Contains(auth[1].stdin, "AAAAkey") || strings.Contains(auth[1].stdin, "AAAAtemp") {
+		t.Errorf("your keys: %q", auth[1].stdin)
+	}
 	hosts, _ := sh.ran("migrate host")
-	if len(hosts) != 1 || !strings.Contains(hosts[0].norm(), "-ssh-user root") || !strings.Contains(hosts[0].stdin, "AAAAkey") {
+	if len(hosts) != 1 || !strings.Contains(hosts[0].norm(), "-ssh-user root") || !strings.Contains(hosts[0].stdin, "AAAAkey") || !strings.Contains(hosts[0].stdin, "AAAAtemp") {
 		t.Fatalf("host: %+v", hosts)
+	}
+
+	// The temporary key came off both once the move was done with it, over
+	// makima — the only way left to either.
+	revokes, revokeAt := sh.ran(RevokeScript)
+	unkeys, unkeyAt := sh.ran("migrate unkey")
+	if len(revokes) != 1 || revokes[0].target.Addr != "10.77.0.2" || len(unkeys) != 1 || unkeys[0].target.Addr != "10.77.0.1" || unkeys[0].target.Port != 2222 {
+		t.Fatalf("revoked: %+v unkeyed: %+v", revokes, unkeys)
+	}
+	for _, i := range append(revokeAt, unkeyAt...) {
+		for _, k := range retireAt {
+			if i < k {
+				t.Error("the temporary key came off before the move was done with it")
+			}
+		}
 	}
 
 	// This device joined, and lost Tailscale last.
@@ -633,19 +669,82 @@ func TestRunNeedsAnSSHKey(t *testing.T) {
 	}
 }
 
-// A key with a passphrase and no agent holding it would be put on every
-// machine and then refused at every login: the run stops first, and says how
-// to unlock it.
-func TestRunNeedsAKeyItCanUseUnattended(t *testing.T) {
+// Where the move gets in as root, your own keys go to the account named after
+// your tailnet login; the work, and the temporary key, stay with root.
+func TestRunGivesYourKeysToYourOwnAccount(t *testing.T) {
 	sh, l := newFakeShell(), &fakeLocal{}
-	r := runner(sh, l, nil)
-	r.Keys = func() Keys { return Keys{Locked: []string{"/keys/id_ed25519_me"}} }
-	res := r.Run(context.Background(), everyone())
-	if res.OK || !strings.Contains(res.Error, "passphrase") || !strings.Contains(res.Error, "ssh-add") || !strings.Contains(res.Error, "/keys/id_ed25519_me") {
+	ch := everyone()
+	ch.Plan.Machines[0].Login = "justin06lee"
+	box := &ch.Plan.Machines[2]
+	box.Facts = &Facts{OS: "linux", Arch: "arm64", Sudo: "root", User: "root", OpenSSH: true}
+	box.Access = &Access{User: "root"}
+	box.NeedsPassword = false
+	res := runner(sh, l, nil).Run(context.Background(), ch)
+	if !res.OK {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(sh.calls) != 0 || len(l.actions) != 0 {
-		t.Fatalf("something was done: %v %v", sh.calls, l.actions)
+	auth, _ := sh.ran(AuthorizeScript)
+	if len(auth) != 2 || strings.HasPrefix(auth[0].script, "set --") || !strings.HasPrefix(auth[1].script, "set -- 'justin06lee'\n") {
+		t.Fatalf("authorized: %+v", auth)
+	}
+	checks, _ := sh.ran(CheckScript)
+	for _, c := range checks {
+		if c.target.Addr == "10.77.0.2" && c.target.User != "root" {
+			t.Errorf("reached box over makima as %q", c.target.User)
+		}
+	}
+}
+
+// A machine that stays on Tailscale has the temporary key taken off over
+// Tailscale, which it still has.
+func TestRunRevokesOverTailscaleWhereTailscaleStays(t *testing.T) {
+	sh, l := newFakeShell(), &fakeLocal{}
+	sh.meshDown["10.77.0.2"] = true
+	res := runner(sh, l, nil).Run(context.Background(), everyone())
+	if o := outcomes(res)["box"]; o.Outcome != Stayed {
+		t.Fatalf("box = %+v", o)
+	}
+	revokes, _ := sh.ran(RevokeScript)
+	if len(revokes) != 1 || revokes[0].target.Addr != "100.70.0.9" {
+		t.Fatalf("revoked: %+v", revokes)
+	}
+}
+
+// The scripts themselves, run by a real shell against a real file.
+func TestAuthorizeAndRevokeScripts(t *testing.T) {
+	home := t.TempDir()
+	run := func(script, stdin string) string {
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return string(out)
+	}
+	os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
+	f := filepath.Join(home, ".ssh", "authorized_keys")
+	os.WriteFile(f, []byte("ssh-ed25519 AAAAold old"), 0o600) // no newline at the end
+	temp := tempLine("ssh-ed25519 AAAAtemp " + TempKeyComment)
+
+	if out := run(AuthorizeScript, "ssh-ed25519 AAAAmine me\n"+temp+"\n"); !strings.Contains(out, "added=2") || !strings.Contains(out, "as=") {
+		t.Fatalf("authorize: %q", out)
+	}
+	if out := run(AuthorizeScript, "ssh-ed25519 AAAAmine me\n"); !strings.Contains(out, "added=0") {
+		t.Fatalf("authorize again: %q", out)
+	}
+	b, _ := os.ReadFile(f)
+	if want := "ssh-ed25519 AAAAold old\nssh-ed25519 AAAAmine me\n" + temp + "\n"; string(b) != want {
+		t.Fatalf("authorized_keys = %q, want %q", b, want)
+	}
+	run(RevokeScript, "")
+	b, _ = os.ReadFile(f)
+	if want := "ssh-ed25519 AAAAold old\nssh-ed25519 AAAAmine me\n"; string(b) != want {
+		t.Fatalf("after revoke = %q, want %q", b, want)
+	}
+	if got := WithoutTempKeys("a x\n" + temp + "\nb y\n"); got != "a x\nb y\n" {
+		t.Errorf("WithoutTempKeys = %q", got)
 	}
 }
 
@@ -667,15 +766,14 @@ func TestFindKeys(t *testing.T) {
 	held := gen("id_held", "secret")
 	os.WriteFile(filepath.Join(dir, "orphan.pub"), []byte("ssh-ed25519 AAAAorphan nobody\n"), 0o644)
 
+	// Every key is yours to log in with later, passphrase or not; only the
+	// ones that open without one are handed to ssh by file.
 	k := findKeys(held+"\n", dir)
-	if !strings.Contains(k.Public, open) || !strings.Contains(k.Public, held) || strings.Contains(k.Public, locked) || strings.Contains(k.Public, "orphan") {
+	if !strings.Contains(k.Public, open) || !strings.Contains(k.Public, held) || !strings.Contains(k.Public, locked) || strings.Contains(k.Public, "orphan") {
 		t.Errorf("public = %q", k.Public)
 	}
 	if len(k.Files) != 1 || k.Files[0] != filepath.Join(dir, "id_open") {
 		t.Errorf("files = %v", k.Files)
-	}
-	if len(k.Locked) != 1 || k.Locked[0] != filepath.Join(dir, "id_locked") {
-		t.Errorf("locked = %v", k.Locked)
 	}
 }
 

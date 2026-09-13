@@ -23,7 +23,9 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -81,6 +83,11 @@ type Machine struct {
 	// They are pinned for every connection the migration makes, so nothing
 	// is trusted on first use and the person's known_hosts is never touched.
 	HostKeys []string `json:"host_keys,omitempty"`
+
+	// Login is the account name in its owner's tailnet login — justin06lee
+	// for justin06lee@github. Where the move gets in as root, this person's
+	// own keys go to the account of that name, if the machine has one.
+	Login string `json:"login,omitempty"`
 }
 
 // IPv4 is the machine's Tailscale IPv4 address, the one SSH is pointed at.
@@ -123,6 +130,7 @@ type tsPeer struct {
 	Online       bool     `json:"Online"`
 	ShareeNode   bool     `json:"ShareeNode"`
 	SSHHostKeys  []string `json:"sshHostKeys"`
+	UserID       int64    `json:"UserID"`
 }
 
 type tsStatus struct {
@@ -131,10 +139,29 @@ type tsStatus struct {
 	MagicDNSSuffix string             `json:"MagicDNSSuffix"`
 	Self           *tsPeer            `json:"Self"`
 	Peer           map[string]*tsPeer `json:"Peer"`
+	User           map[string]struct {
+		LoginName string `json:"LoginName"`
+	} `json:"User"`
 	CurrentTailnet *struct {
 		Name string `json:"Name"`
 	} `json:"CurrentTailnet"`
 }
+
+// login is the account name in a machine's owner's login, if it is one a
+// machine could have: what comes before the @, as a Unix name.
+func (st *tsStatus) login(p *tsPeer) string {
+	u, ok := st.User[strconv.FormatInt(p.UserID, 10)]
+	if !ok {
+		return ""
+	}
+	name, _, _ := strings.Cut(u.LoginName, "@")
+	if !unixAccount.MatchString(name) {
+		return ""
+	}
+	return name
+}
+
+var unixAccount = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 // CLI finds the tailscale command.
 //
@@ -196,12 +223,15 @@ func ParseStatus(raw []byte) (*Tailnet, error) {
 		t.Self = machineFrom(st.Self)
 		t.Self.Local = true
 		t.Self.Online = true
+		t.Self.Login = st.login(st.Self)
 	}
 	for _, p := range st.Peer {
 		if p == nil {
 			continue
 		}
-		t.Peers = append(t.Peers, machineFrom(p))
+		m := machineFrom(p)
+		m.Login = st.login(p)
+		t.Peers = append(t.Peers, m)
 	}
 	// Online first, then by name, so the list reads the same way twice.
 	sort.Slice(t.Peers, func(i, j int) bool {
