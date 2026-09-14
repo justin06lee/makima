@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, inTauri, type Check, type Environment, type Status, type Tailscale } from "./api";
 import type { Act } from "./App";
 import { Button, Card, Code, Dot, Row, Section, Toggle } from "./ui";
+import { TerminalSetting } from "./Terminal";
 
 export function Settings({
   status,
@@ -25,6 +26,7 @@ export function Settings({
       <Section title="General">
         <Card>
           <LoginItem />
+          <TerminalSetting />
           <Row
             value="Command line"
             caption={env.linked ? "makima is on PATH at /usr/local/bin/makima" : "makima is not on PATH for your terminal yet"}
@@ -55,9 +57,9 @@ export function Settings({
             caption={status.dns_active ? "Every device answers to its name" : "Reach devices by address"}
             mono={status.dns_active}
           />
-          {status.firewall?.backend && status.firewall.backend !== "none" && (
+          {status.firewall?.backend && status.firewall.backend !== "none" && status.firewall.backend !== "unsupported" && (
             <Row
-              value={`Firewall: ${status.firewall.backend}`}
+              value={`Firewall: ${status.firewall.backend === "macos" ? "macOS" : status.firewall.backend}`}
               caption={status.firewall.trusted ? "Tunnel traffic is allowed through" : status.firewall.detail ?? "Tunnel traffic may be blocked"}
             />
           )}
