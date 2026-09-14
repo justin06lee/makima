@@ -24,7 +24,7 @@ type Resolver struct {
 	mu        sync.Mutex
 	installed bool
 	domain    string
-	server    netip.Addr
+	server    netip.AddrPort
 }
 
 // NewResolver builds a resolver manager for an interface.
@@ -32,10 +32,14 @@ func NewResolver(iface string) *Resolver { return &Resolver{iface: iface} }
 
 // Set points the OS at server for names under domain.
 //
+// The port matters on macOS only, where this machine asks a resolver on
+// loopback rather than on its own mesh address (see dnsserver.ListenLoopback).
+// Everywhere else it is 53.
+//
 // Idempotent: re-registering the same pair does nothing, which matters because
 // this is called on every netmap update and the platform tools are neither
 // fast nor silent.
-func (r *Resolver) Set(domain string, server netip.Addr) error {
+func (r *Resolver) Set(domain string, server netip.AddrPort) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

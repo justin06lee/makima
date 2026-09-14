@@ -62,6 +62,10 @@ var ErrUnreachable = errors.New("it did not answer")
 // session through. The session waits for it rather than failing.
 var authURL = regexp.MustCompile(`https://login\.tailscale\.com/\S+`)
 
+// ErrNoAnswer is a login that ran out of time — nobody approved a browser
+// check, or the machine never answered — as opposed to one that was refused.
+var ErrNoAnswer = errors.New("did not answer in time")
+
 // NewSSH finds ssh and makes the known-hosts file.
 func NewSSH() (*SSH, error) {
 	bin, err := exec.LookPath("ssh")
@@ -258,7 +262,7 @@ func (s *SSH) Run(ctx context.Context, t Target, script string, stdin []byte, on
 
 	if err != nil {
 		if ctx.Err() != nil {
-			return stdout.String(), fmt.Errorf("%s did not answer in time", t.Addr)
+			return stdout.String(), fmt.Errorf("%s %w", t.Addr, ErrNoAnswer)
 		}
 		return stdout.String(), sshError(err, stderr.String())
 	}

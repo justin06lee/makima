@@ -53,6 +53,8 @@ type Server struct {
 	reverse map[netip.Addr]string // 100.64.0.1 -> "laptop"
 
 	conn      *net.UDPConn
+	local     *net.UDPConn // 127.0.0.1, on macOS; see ListenLoopback
+	localAddr netip.AddrPort
 	closeOnce sync.Once
 }
 
@@ -78,8 +80,42 @@ func New(addr netip.Addr, logger *log.Logger) (*Server, error) {
 		forward: make(map[string]netip.Addr),
 		reverse: make(map[netip.Addr]string),
 	}
-	go s.serve()
+	go s.serve(conn)
 	return s, nil
+}
+
+// ListenLoopback answers on 127.0.0.1 as well, on a port the kernel picks, and
+// returns where.
+//
+// For macOS, where a packet this machine sends to its own utun address is
+// routed into the tunnel rather than looped back. The system resolver here
+// could never reach the mesh address, so every lookup of a mesh name waited
+// out its full timeout — `ssh laptop.makima` just sat there. Peers still ask
+// the mesh address; this machine asks loopback, which /etc/resolver can name
+// with a port. A port of the kernel's choosing, because 53 on loopback is
+// where dnsmasq and its kind already live.
+func (s *Server) ListenLoopback() (netip.AddrPort, error) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("dns: listen on loopback: %w", err)
+	}
+	ap := conn.LocalAddr().(*net.UDPAddr).AddrPort()
+	ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+
+	s.mu.Lock()
+	s.local = conn
+	s.localAddr = ap
+	s.mu.Unlock()
+
+	go s.serve(conn)
+	return ap, nil
+}
+
+// Loopback is where ListenLoopback answers, or nothing if it was not asked to.
+func (s *Server) Loopback() netip.AddrPort {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.localAddr
 }
 
 // Addr is where the resolver is listening.
@@ -131,14 +167,20 @@ func (s *Server) Close() {
 		if s.conn != nil {
 			s.conn.Close()
 		}
+		s.mu.RLock()
+		local := s.local
+		s.mu.RUnlock()
+		if local != nil {
+			local.Close()
+		}
 	})
 }
 
-func (s *Server) serve() {
+func (s *Server) serve(conn *net.UDPConn) {
 	buf := make([]byte, maxMessage)
 
 	for {
-		n, from, err := s.conn.ReadFromUDPAddrPort(buf)
+		n, from, err := conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -152,7 +194,7 @@ func (s *Server) serve() {
 		}
 		// Best effort. A resolver that does not get an answer retries or falls
 		// through to its next server, which is the behaviour we want anyway.
-		_, _ = s.conn.WriteToUDPAddrPort(resp, from)
+		_, _ = conn.WriteToUDPAddrPort(resp, from)
 	}
 }
 

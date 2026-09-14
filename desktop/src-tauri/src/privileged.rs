@@ -248,7 +248,7 @@ pub fn cli_on_path() -> bool {
 /// Single quotes make everything literal except a single quote itself, which
 /// is closed, escaped and reopened. This is the whole reason a peer name can
 /// be passed to osascript without thinking about what is in it.
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
@@ -259,7 +259,7 @@ fn shell_quote(s: &str) -> String {
 /// single-quoted for the shell; this is the second, outer layer, and getting
 /// it wrong is a syntax error before anything runs — which is exactly what
 /// the app's Connect button used to show.
-fn applescript_quote(s: &str) -> String {
+pub(crate) fn applescript_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
@@ -300,9 +300,13 @@ fn sudoers_path(who: &str) -> String {
 /// The commands the rule allows, and nothing else.
 ///
 /// Each is one of the app's own buttons, spelled the way `Action::argv` spells
-/// it, so the rule grants what the person already said yes to — not the whole
-/// CLI. A verb with no arguments is listed bare, which sudo reads as "exactly
-/// these arguments". Anything not here falls back to the password prompt.
+/// it — the steps of a move from Tailscale included — or one of the commands
+/// that only read, and need root only because what they read is root's. So the
+/// rule grants what the person already said yes to, not the whole CLI. The CLI
+/// runs this same copy from a terminal and gets the same answer (see
+/// cmd/makima/elevate.go). A verb with no arguments is listed bare, which sudo
+/// reads as "exactly these arguments". Anything not here falls back to the
+/// password prompt.
 fn sudo_commands() -> Vec<String> {
     let bin = format!("{TRUSTED_DIR}/makima");
     [
@@ -317,6 +321,15 @@ fn sudo_commands() -> Vec<String> {
         "invite -json",
         "pair",
         "link-cli -q",
+        "migrate host *",
+        "migrate join *",
+        "migrate retire",
+        "status",
+        "show",
+        "doctor",
+        "firewall",
+        "firewall status",
+        "sshd",
     ]
     .iter()
     .map(|args| format!("{bin} {args}"))
@@ -646,11 +659,21 @@ mod tests {
             Action::LinkCli,
             Action::AdvertiseExit { on: true },
             Action::AdvertiseExit { on: false },
+            Action::MigrateRetire,
         ] {
             let spelled = format!("{TRUSTED_DIR}/makima {}", a.argv().join(" "));
             assert!(sudo_commands().contains(&spelled), "{spelled} is not in the rule");
         }
-        // And nothing that is not a button — sshd, say — is.
-        assert!(!lines[2].contains("sshd"));
+        // The move's steps with arguments, by their wildcard.
+        for verb in ["migrate host *", "migrate join *"] {
+            assert!(sudo_commands().contains(&format!("{TRUSTED_DIR}/makima {verb}")), "{verb} is not in the rule");
+        }
+        // And the commands a terminal only reads with, exactly as typed.
+        for verb in ["status", "show", "doctor", "firewall", "sshd"] {
+            assert!(sudo_commands().contains(&format!("{TRUSTED_DIR}/makima {verb}")), "{verb} is not in the rule");
+        }
+        // And nothing that hands out a shell: `sshd` bare only reports, and
+        // sudo reads a bare verb as "no arguments", so `sshd -on` still asks.
+        assert!(sudo_commands().iter().all(|c| !c.starts_with(&format!("{TRUSTED_DIR}/makima sshd "))));
     }
 }

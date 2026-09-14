@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, fqdn, inTauri, ms, openExternal, openFolder, pathLabel, type Environment, type Peer, type Ping, type Status } from "./api";
+import { api, fqdn, inTauri, ms, openFolder, pathLabel, type Environment, type Peer, type Ping, type Status } from "./api";
 import type { Act } from "./App";
 import { Button, Card, CopyButton, Dot, Input, Row, Search, Section, Spinner, Toggle } from "./ui";
 import { Icon } from "./icons";
 import { useDrop } from "./useDrop";
+import { useSSH } from "./Terminal";
 
 /// The list on the left and the one thing it selects on the right.
 export function Devices({
@@ -196,19 +197,21 @@ function PeerDetail({ peer, status, busy, act }: { peer: Peer; status: Status; b
     }
   }
 
-  const ssh = () => openExternal(`ssh://${name ?? peer.address}`);
+  const { ssh, picker, error: sshError } = useSSH();
 
   return (
     <div className="fade-in space-y-6 px-6 pb-8 pt-5">
+      {picker}
       <div>
         <Header title={peer.name}>
-          <Button icon={<Icon.Terminal />} onClick={ssh} disabled={!peer.online} title="Open a shell on this device in your terminal">
+          <Button icon={<Icon.Terminal />} onClick={() => ssh(peer.name)} disabled={!peer.online} title="Open a shell on this device in your terminal">
             SSH
           </Button>
           <Button icon={<Icon.Pulse />} onClick={probe} busy={pinging} title="Probe the path to this device">
             Ping
           </Button>
         </Header>
+        {sshError && <p className="selectable mt-1.5 text-[12.5px] text-red">{sshError}</p>}
         <StatusLine tone={peer.online ? "green" : "grey"}>
           <span>{peer.online ? "Connected" : "Offline"}</span>
           {peer.online && (

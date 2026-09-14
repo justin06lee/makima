@@ -22,6 +22,10 @@ import (
 // the daemon knows whether they are, whether anything is listening behind
 // them, and whether the host firewall is quietly eating the traffic.
 
+// errNotYours is a running daemon this account cannot reach. At a terminal,
+// main answers it by asking sudo and running the command again.
+var errNotYours = errors.New("makima is running, but this account cannot reach it — run it again with sudo")
+
 // dialDaemon connects to the local daemon, with an error worth reading when
 // there is not one.
 func dialDaemon(configPath string) (*localapi.Client, error) {
@@ -33,9 +37,9 @@ func dialDaemon(configPath string) (*localapi.Client, error) {
 	// Not root, most likely. The daemon keeps a second, read-only socket for
 	// the person who started it, and everything that only asks — status,
 	// ping, cp — works over that one just as well. Anything that changes
-	// something is refused there with a message that says to use sudo: the
-	// right answer, arriving after the question was actually asked rather
-	// than before.
+	// something is refused there, and main answers the refusal by asking
+	// sudo and running the command again: the right answer, arriving after
+	// the question was actually asked rather than before.
 	if os.Geteuid() != 0 {
 		if g, gerr := localapi.Dial(localapi.GUISocketPath(configPath)); gerr == nil {
 			return g, nil
@@ -43,7 +47,7 @@ func dialDaemon(configPath string) (*localapi.Client, error) {
 		// The root socket is there but out of reach: the daemon is running,
 		// and this account is not the one that started it.
 		if _, serr := os.Stat(localapi.SocketPath(configPath)); serr == nil {
-			return nil, errors.New("makima is running, but this account cannot reach it — run it again with sudo")
+			return nil, errNotYours
 		}
 	}
 

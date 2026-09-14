@@ -12,6 +12,7 @@
 mod daemon;
 mod migrate;
 mod privileged;
+mod terminal;
 mod tray;
 
 use tauri::{AppHandle, Manager};
@@ -89,6 +90,18 @@ async fn migrate_stop(app: AppHandle) -> Result<(), String> {
     migrate::stop(app).await
 }
 
+/// The terminals on this device, most wanted first.
+#[tauri::command]
+fn terminals() -> Vec<terminal::Terminal> {
+    terminal::installed()
+}
+
+/// A shell on another device, in a new window of the chosen terminal.
+#[tauri::command]
+async fn open_ssh(terminal: String, peer: String) -> Result<(), String> {
+    terminal::open_ssh(&terminal, &peer).await
+}
+
 /// Show the window and bring it to the front.
 ///
 /// Both halves matter: a window that is merely visible but behind the browser
@@ -138,7 +151,9 @@ pub fn run() {
             migrate_detect,
             migrate_scan,
             migrate_run,
-            migrate_stop
+            migrate_stop,
+            terminals,
+            open_ssh
         ])
         .setup(|app| {
             let handle = app.handle().clone();

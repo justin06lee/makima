@@ -360,7 +360,15 @@ makima possess desktop     # the same command
 
 Sugar over `ssh desktop.makima`, which has always worked — `sshd` listens on
 every address, so a peer is reachable the moment the tunnel is up. What this
-removes is having to remember the suffix.
+removes is having to remember the suffix, and the account: with no `user@` and
+no `User` in your ssh config for it, it logs in as you when your keys open that
+account, and as root when that is what they open instead — which is where a
+move from Tailscale puts them on a server.
+
+The app's **SSH** button runs the same command, in a new window of your
+terminal. The first time there is more than one — Ghostty, Alacritty, kitty,
+WezTerm or iTerm beside the one the system came with — it asks which, and
+Settings changes it later.
 
 ### A shell on a machine with no sshd
 
@@ -958,11 +966,12 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 - **Published services are TCP only.** A UDP service — a game server, a DNS
   resolver on a peer — is reachable at the peer's mesh address directly, but
   `makima allow` does not forward it, and it is not published automatically.
-- **The firewall is configured automatically on Linux only** — firewalld, ufw,
-  bare nftables and bare iptables. macOS does not filter tunnel traffic by
-  default, so there is nothing to configure there. The rules makima adds to a
-  bare nftables or iptables ruleset last until that ruleset is next reloaded;
-  the daemon adds them again each time it starts.
+- **The firewall is configured automatically on Linux and macOS only** —
+  firewalld, ufw, bare nftables and bare iptables, and the macOS application
+  firewall, which judges by app: there makima allows makimad to accept
+  connections, and cannot override **Block all incoming connections**. The
+  rules makima adds to a bare nftables or iptables ruleset last until that
+  ruleset is next reloaded; the daemon adds them again each time it starts.
 - **Automatic publishing trusts the whole mesh.** Every loopback service on a
   node is reachable by every node permitted to see it — including a Postgres
   with trust auth, a debug port, or an unauthenticated admin panel. Right for

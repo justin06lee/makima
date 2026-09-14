@@ -244,6 +244,20 @@ func TestScanTriesRootWhenRefused(t *testing.T) {
 	}
 }
 
+// A browser check approved for an account that then turns out not to exist
+// there: the scan goes on to root in the same pass, rather than leaving the
+// machine waiting on an approval that was already given.
+func TestScanGoesOnToRootAfterAnApprovedLoginIsRefused(t *testing.T) {
+	sh := newFakeShell()
+	sh.auth = "https://login.tailscale.com/a/abc"
+	sh.refuse[""] = true
+	p := scanWith(t, sh)
+	c, _ := p.Find("nTENET")
+	if !c.Eligible || c.Access.User != "root" || c.Access.AuthURL != "" {
+		t.Fatalf("tenet should be reached as root once approved: %+v %+v", c, c.Access)
+	}
+}
+
 func TestScanReportsTailscaleSSHCheck(t *testing.T) {
 	sh := newFakeShell()
 	sh.auth = "https://login.tailscale.com/a/abc"

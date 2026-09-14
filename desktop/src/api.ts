@@ -106,6 +106,9 @@ export type Ping = {
 
 export type Outcome = { ok: boolean; output: string };
 
+/// A terminal app on this device. builtin is the one the system came with.
+export type Terminal = { id: string; name: string; builtin: boolean };
+
 /// Every privileged operation the app can ask for. Mirrors the Rust enum, so
 /// adding one means touching both sides on purpose.
 export type Action =
@@ -280,6 +283,20 @@ export const api = {
     stop: async (): Promise<void> => {
       if (inTauri) return invoke("migrate_stop");
     },
+  },
+  /// The terminals on this device, most wanted first.
+  terminals: async (): Promise<Terminal[]> => {
+    if (inTauri) return invoke<Terminal[]>("terminals");
+    return [
+      { id: "ghostty", name: "Ghostty", builtin: false },
+      { id: "alacritty", name: "Alacritty", builtin: false },
+      { id: "terminal", name: "Terminal", builtin: true },
+    ];
+  },
+  /// A new window of that terminal, running `makima ssh PEER`.
+  openSSH: async (terminal: string, peer: string): Promise<void> => {
+    if (inTauri) return invoke("open_ssh", { terminal, peer });
+    await browser.wait(300);
   },
   sendFile: async (peer: string, path: string): Promise<Outcome> => {
     if (inTauri) return invoke<Outcome>("send_file", { peer, path });

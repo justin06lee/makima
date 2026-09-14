@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/netip"
@@ -18,6 +19,7 @@ import (
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 )
@@ -29,6 +31,13 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
+	}
+
+	if needsRoot[os.Args[1]] {
+		if err := mustBeRoot(); err != nil {
+			fmt.Fprintf(os.Stderr, "makima: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	var err error
@@ -100,6 +109,12 @@ func main() {
 	}
 
 	if err != nil {
+		// Refused for want of root after all — the daemon said so, or its
+		// socket is out of reach. At a terminal, ask sudo and run the command
+		// again; from the app there is nobody to type a password.
+		if os.Geteuid() != 0 && atTerminal() && (errors.Is(err, localapi.ErrNeedsRoot) || errors.Is(err, errNotYours)) {
+			_ = mustBeRoot()
+		}
 		fmt.Fprintf(os.Stderr, "makima: %v\n", err)
 		os.Exit(1)
 	}
