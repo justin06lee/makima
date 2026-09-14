@@ -177,10 +177,19 @@ func examine(ctx context.Context, c *Candidate, sc Scanner, emit func(Event)) {
 			emit(Event{Type: "auth", Machine: c.ID, URL: u})
 		})
 		if a.AuthURL != "" && err != nil {
-			// Waited out. Once approved in the browser the next attempt
-			// goes straight through, so it is left for a rescan.
-			a.Error = "Tailscale SSH wants this login approved in a browser"
-			return
+			if errors.Is(err, ErrNoAnswer) {
+				// Waited out: nobody approved it in time. Once approved in
+				// the browser the next attempt goes straight through, so it
+				// is left for a rescan.
+				a.Error = "Tailscale SSH wants this login approved in a browser"
+				return
+			}
+			// Approved, and then turned away — most often because there is
+			// no account there by the name ssh asked for. The approval
+			// holds, so the next account goes straight through; the window
+			// hears now, so its Approve button does not linger meanwhile.
+			still := Candidate{Machine: c.Machine, Checking: true}
+			emit(Event{Type: "machine", Machine: c.ID, Cand: &still})
 		}
 		if err == nil {
 			f, perr := ParseFacts(out)
