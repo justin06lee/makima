@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -549,42 +550,6 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 	return nil
 }
 
-// mustBeRoot re-runs this command under sudo rather than telling somebody to.
-//
-// "Permission denied, try again with sudo" is a step, and every step is a place
-// to stop. The daemon genuinely needs root — it creates a network interface and
-// edits the routing table — so the only question is who types the word, and it
-// may as well be the program.
-func mustBeRoot() error {
-	if os.Geteuid() == 0 {
-		return nil
-	}
-
-	sudo, err := exec.LookPath("sudo")
-	if err != nil {
-		return errors.New("this needs root, because it creates a network interface and edits the routing table")
-	}
-
-	self, err := os.Executable()
-	if err != nil {
-		self = os.Args[0]
-	}
-
-	fmt.Fprintln(os.Stderr, "This needs root — asking sudo.")
-
-	cmd := exec.Command(sudo, append([]string{self}, os.Args[1:]...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			os.Exit(ee.ExitCode())
-		}
-		return err
-	}
-	os.Exit(0)
-	return nil
-}
-
 // guessReachableAddr picks the address other machines should use to reach this
 // one's coordination plane.
 //
@@ -680,17 +645,24 @@ func sshCmd(args []string) error {
 	// pairing carries no service list, and a peer that switched its server on
 	// a minute ago has not re-registered anywhere.
 	var extra []string
+	port := 0
 	if builtInSSH(host) {
-		extra = []string{"-p", strconv.Itoa(sshd.DefaultPort)}
-	}
-
-	if user != "" {
-		host = user + "@" + host
+		port = sshd.DefaultPort
+		extra = []string{"-p", strconv.Itoa(port)}
 	}
 
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
 		return errors.New("no ssh client on this machine")
+	}
+
+	if user == "" {
+		if user = sshUser(ssh, host, port); user != "" {
+			fmt.Fprintf(os.Stderr, "Logging in as %s — the account your keys open on %s.\n", user, target)
+		}
+	}
+	if user != "" {
+		host = user + "@" + host
 	}
 
 	args = append(append(extra, host), rest...)
@@ -721,10 +693,64 @@ func builtInSSH(host string) bool {
 	return true
 }
 
+// sshUser picks the account to log in as when none was named.
+//
+// Whatever ssh would use on its own — the person's own name, or the one their
+// ~/.ssh/config gives — when their keys open it; root, when that is what they
+// open instead. A move from Tailscale puts the keys in the account it logged in
+// to, which on a server is root, and the person then types `makima ssh tenet`
+// expecting it to work the way `ssh tenet` did through Tailscale. Each guess is
+// one key-only login that asks nothing. When neither gets in, ssh is left to
+// ask for a password as it always would. A host key it has not seen is taken
+// on first sight: the mesh address has already proved which machine it is.
+func sshUser(ssh, host string, port int) string {
+	try := func(user string) bool {
+		args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new"}
+		if port != 0 {
+			args = append(args, "-p", strconv.Itoa(port))
+		}
+		if user != "" {
+			args = append(args, "-l", user)
+		}
+		return exec.Command(ssh, append(args, host, "true")...).Run() == nil
+	}
+	if try("") || sshConfigNamesUser(ssh, host) {
+		return ""
+	}
+	if try("root") {
+		return "root"
+	}
+	return ""
+}
+
+// sshConfigNamesUser says the person's ssh config picks the account for this
+// host, which is theirs to decide and not something to guess past.
+func sshConfigNamesUser(ssh, host string) bool {
+	me, err := user.Current()
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command(ssh, "-G", host).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if name, ok := strings.CutPrefix(line, "user "); ok {
+			return strings.TrimSpace(name) != me.Username
+		}
+	}
+	return false
+}
+
 // resolvePeer turns a name into something ssh can dial, preferring the mesh
 // address over the name so it works whether or not mesh DNS is on.
 func resolvePeer(name string) (string, error) {
 	c, err := localapi.Dial(localapi.SocketPath(conf.DefaultPath))
+	if err != nil {
+		// Not root, which is who runs ssh: the read-only socket answers this
+		// just as well, and ssh must run as the person, with their keys.
+		c, err = localapi.Dial(localapi.GUISocketPath(conf.DefaultPath))
+	}
 	if err != nil {
 		// No daemon to ask. The name may still resolve, so let ssh try rather
 		// than refusing on the strength of our own unavailability.
