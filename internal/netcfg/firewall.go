@@ -54,6 +54,11 @@ const (
 	// ever taken out again (nft.go).
 	BackendNFTables Backend = "nftables"
 
+	// BackendALF is macOS's application firewall, which allows or blocks
+	// incoming connections by app rather than by port or interface
+	// (firewall_darwin.go).
+	BackendALF Backend = "macos"
+
 	// BackendUnsupported is a platform where none of this applies.
 	BackendUnsupported Backend = "unsupported"
 )

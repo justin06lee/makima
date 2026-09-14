@@ -1,11 +1,9 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package netcfg
 
-// macOS does not filter inbound traffic on a utun interface by default, and
-// the application firewall it does ship judges by application rather than by
-// port or interface — so there is nothing here for makima to configure, and
-// nothing it could configure that would help.
+// Everywhere other than Linux and macOS, makima does not look at the host
+// firewall at all.
 //
 // Reporting "unsupported" rather than "none" keeps the distinction honest: it
 // means makima did not look, not that it looked and found nothing.
@@ -15,7 +13,7 @@ func firewallStatus(iface string) Report {
 		Active:    false,
 		Trusted:   true,
 		Automatic: false,
-		Detail:    "no host firewall configuration is needed on this platform",
+		Detail:    "makima does not check the host firewall on this platform",
 	}
 }
 
