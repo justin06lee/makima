@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log"
+	"net/netip"
+	"runtime"
 
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/dnsserver"
@@ -76,11 +78,26 @@ func (n *node) applyDNS(ctx context.Context, m *netmap.NetMap) {
 		n.dns = srv
 		n.resolver = netcfg.NewResolver(n.engine.Name())
 		log.Printf("mesh DNS on %s for *.%s", srv.Addr(), m.Domain)
+
+		// A Mac sends packets for its own utun address into the tunnel
+		// rather than looping them back, so it can never ask the resolver
+		// above itself. It asks one on loopback instead.
+		if runtime.GOOS == "darwin" {
+			if lp, err := srv.ListenLoopback(); err != nil {
+				log.Printf("warning: %v — mesh names will not resolve on this Mac", err)
+			} else {
+				log.Printf("mesh DNS for this Mac on %s", lp)
+			}
+		}
 	}
 
 	n.dns.SetRecords(m.Domain, m.Self, m.Peers)
 
-	if err := n.resolver.Set(m.Domain, addr); err != nil {
+	server := netip.AddrPortFrom(addr, dnsserver.Port)
+	if lp := n.dns.Loopback(); lp.IsValid() {
+		server = lp
+	}
+	if err := n.resolver.Set(m.Domain, server); err != nil {
 		log.Printf("warning: %v", err)
 	}
 }

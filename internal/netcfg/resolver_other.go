@@ -8,7 +8,7 @@ import (
 	"runtime"
 )
 
-func setResolver(iface, domain string, server netip.Addr) error {
+func setResolver(iface, domain string, server netip.AddrPort) error {
 	return fmt.Errorf("netcfg: mesh DNS is not implemented on %s", runtime.GOOS)
 }
 

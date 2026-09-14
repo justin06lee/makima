@@ -20,7 +20,7 @@ import (
 // operator gets an error explaining why rather than a machine whose DNS
 // quietly now belongs to a tunnel.
 
-func setResolver(iface, domain string, server netip.Addr) error {
+func setResolver(iface, domain string, server netip.AddrPort) error {
 	if !haveResolvectl() {
 		return fmt.Errorf(
 			"mesh DNS needs systemd-resolved for split DNS, and resolvectl was not found.\n"+
@@ -29,7 +29,7 @@ func setResolver(iface, domain string, server netip.Addr) error {
 			domain)
 	}
 
-	if err := run("resolvectl", "dns", iface, server.String()); err != nil {
+	if err := run("resolvectl", "dns", iface, server.Addr().String()); err != nil {
 		return err
 	}
 	// The leading tilde is what makes this a *routing* domain rather than a

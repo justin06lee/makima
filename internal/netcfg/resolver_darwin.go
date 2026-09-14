@@ -16,7 +16,7 @@ import (
 // entitlement — the resolver picks it up on the next lookup.
 const resolverDir = "/etc/resolver"
 
-func setResolver(iface, domain string, server netip.Addr) error {
+func setResolver(iface, domain string, server netip.AddrPort) error {
 	if err := os.MkdirAll(resolverDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", resolverDir, err)
 	}
@@ -24,7 +24,11 @@ func setResolver(iface, domain string, server netip.Addr) error {
 	// search_order keeps this file below anything an administrator has set up
 	// by hand for the same domain, so makima never silently wins a conflict it
 	// did not know about.
-	body := fmt.Sprintf("# Managed by makima. Removed when the daemon exits.\nnameserver %s\nsearch_order 1\n", server)
+	body := fmt.Sprintf("# Managed by makima. Removed when the daemon exits.\nnameserver %s\n", server.Addr())
+	if server.Port() != 53 {
+		body += fmt.Sprintf("port %d\n", server.Port())
+	}
+	body += "search_order 1\n"
 
 	path := filepath.Join(resolverDir, domain)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
