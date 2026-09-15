@@ -1,28 +1,36 @@
 @import "tailwindcss";
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource/instrument-serif/400-italic.css";
 
-/* The palette is the platform's, not makima's. A menu bar app lives next to
-   Finder and System Settings and should look like it came from the same
-   place: white, one blue for the thing that is on, green for the thing that
-   is reachable, and grey for everything else. It follows the system's
-   appearance because every other window on the screen does. */
+/* Makima's colours, in both of her outfits. Light is the white shirt and
+   black tie: warm white, near-black ink, and her red for the thing that is
+   on and the button to press. Dark is the suit: warm black, pale ink, the
+   same red a little brighter. Gold, her eyes, marks what belongs to this
+   device. Green still means reachable, because that is what it means in
+   every other window on the screen. The app follows the system's
+   appearance. */
 :root {
-  --bg: #ffffff;
-  --sidebar: #f4f4f6;
-  --card: #f5f5f7;
-  --card-2: #ececef;
-  --ink: #1d1d1f;
-  --dim: #6e6e73;
-  --dimmer: #a3a3a8;
-  --line: #e6e6ea;
-  --line-2: #d2d2d7;
-  --accent: #3b6fe0;
+  --bg: #fbf9f6;
+  --sidebar: #f3efea;
+  --card: #f4f0eb;
+  --card-2: #ebe5dd;
+  --ink: #1c1616;
+  --dim: #6d6360;
+  --dimmer: #a0958f;
+  --line: #e7e0d7;
+  --line-2: #d4cabf;
+  --accent: #b8403a;
   --accent-ink: #ffffff;
-  --green: #34c759;
-  --grey: #c7c7cc;
-  --red: #e5484d;
-  --amber: #f0a020;
-  --focus: rgba(59, 111, 224, 0.35);
-  --shadow: 0 10px 40px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --gold: #b37514;
+  --green: #2f9e5b;
+  --grey: #c9c1ba;
+  --red: #c93a3a;
+  --amber: #d98a1c;
+  --focus: rgba(184, 64, 58, 0.28);
+  --shadow: 0 18px 50px rgba(40, 20, 16, 0.18), 0 0 0 1px rgba(40, 20, 16, 0.06);
+  --glow: rgba(231, 174, 76, 0.18);
+  --bone-shadow: 0.22;
+  --bone-glow: 0.14;
   color-scheme: light;
 }
 
@@ -31,45 +39,53 @@
    without changing the system. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1e1e20;
-    --sidebar: #29292c;
-    --card: #2b2b2e;
-    --card-2: #353538;
-    --ink: #f2f2f4;
-    --dim: #9a9aa0;
-    --dimmer: #6c6c72;
-    --line: #38383c;
-    --line-2: #47474c;
-    --accent: #4f7ce8;
+    --bg: #141112;
+    --sidebar: #1a1617;
+    --card: #211c1d;
+    --card-2: #2a2425;
+    --ink: #f2ece6;
+    --dim: #a59c96;
+    --dimmer: #6f6662;
+    --line: #2e2728;
+    --line-2: #3e3536;
+    --accent: #d2524a;
     --accent-ink: #ffffff;
-    --green: #30d158;
-    --grey: #5a5a5f;
-    --red: #ff5d62;
-    --amber: #ffb340;
-    --focus: rgba(79, 124, 232, 0.45);
-    --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    --gold: #e7ae4c;
+    --green: #3cc46f;
+    --grey: #5b5354;
+    --red: #ff6159;
+    --amber: #f2b040;
+    --focus: rgba(210, 82, 74, 0.4);
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.07);
+    --glow: rgba(200, 65, 59, 0.16);
+    --bone-shadow: 0.7;
+    --bone-glow: 0.3;
     color-scheme: dark;
   }
 }
 
 :root.dark {
-  --bg: #1e1e20;
-  --sidebar: #29292c;
-  --card: #2b2b2e;
-  --card-2: #353538;
-  --ink: #f2f2f4;
-  --dim: #9a9aa0;
-  --dimmer: #6c6c72;
-  --line: #38383c;
-  --line-2: #47474c;
-  --accent: #4f7ce8;
+  --bg: #141112;
+  --sidebar: #1a1617;
+  --card: #211c1d;
+  --card-2: #2a2425;
+  --ink: #f2ece6;
+  --dim: #a59c96;
+  --dimmer: #6f6662;
+  --line: #2e2728;
+  --line-2: #3e3536;
+  --accent: #d2524a;
   --accent-ink: #ffffff;
-  --green: #30d158;
-  --grey: #5a5a5f;
-  --red: #ff5d62;
-  --amber: #ffb340;
-  --focus: rgba(79, 124, 232, 0.45);
-  --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --gold: #e7ae4c;
+  --green: #3cc46f;
+  --grey: #5b5354;
+  --red: #ff6159;
+  --amber: #f2b040;
+  --focus: rgba(210, 82, 74, 0.4);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --glow: rgba(200, 65, 59, 0.16);
+  --bone-shadow: 0.7;
+  --bone-glow: 0.3;
   color-scheme: dark;
 }
 
@@ -85,6 +101,7 @@
   --color-line-2: var(--line-2);
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);
+  --color-gold: var(--gold);
   --color-green: var(--green);
   --color-grey: var(--grey);
   --color-red: var(--red);
@@ -92,6 +109,8 @@
 
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", monospace;
+  /* Titles only: one weight, and the italic is the point of it. */
+  --font-display: "Instrument Serif", ui-serif, "Iowan Old Style", Georgia, serif;
 }
 
 html, body, #root {
@@ -157,6 +176,20 @@ body {
 }
 .pulse { animation: pulse 2s ease-in-out infinite }
 
+/* The wordmark's bones each turn about their own middle, so hovering it
+   reads as bones knocking together rather than the word swinging. */
+.bone {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes rattle {
+  0%, 100% { transform: rotate(0deg) }
+  20%      { transform: rotate(-4deg) translateY(-1px) }
+  45%      { transform: rotate(3deg) }
+  70%      { transform: rotate(-1.5deg) }
+}
+.bones:hover .bone { animation: rattle 460ms ease-in-out both }
+
 @media (prefers-reduced-motion: reduce) {
-  .fade-in, .pulse { animation: none }
+  .fade-in, .pulse, .bones:hover .bone { animation: none }
 }

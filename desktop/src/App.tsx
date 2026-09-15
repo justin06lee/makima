@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { api, inTauri, type Action, type Environment, type Snapshot, type Status, type Tailscale } from "./api";
 import { Button, Empty, IconButton, Notice, Toggle } from "./ui";
 import { Icon } from "./icons";
+import { Eye } from "./Eye";
+import { Bones } from "./Bones";
 import { Setup } from "./Setup";
 import { Devices } from "./Devices";
 import { ExitNodes } from "./ExitNodes";
@@ -207,12 +209,13 @@ async function openAtLoginOnce() {
 function Splash() {
   return (
     <div className="flex h-full items-center justify-center" data-tauri-drag-region>
-      <Icon.Mark size={28} className="pulse text-dimmer" />
+      <Eye blink className="pulse w-[120px]" />
     </div>
   );
 }
 
-/// The strip under the traffic lights: the switch, what this machine is
+/// The strip under the traffic lights: the switch, her eye — open while this
+/// device is on the network, shut when it is not — what this machine is
 /// called, and the two things somebody opens the window to do.
 function TitleBar({
   status,
@@ -253,6 +256,7 @@ function TitleBar({
         label={running ? "Disconnect" : "Connect"}
         onChange={(next) => act({ kind: next ? "up" : "down" })}
       />
+      <Eye open={running} follow blink detail={24} className="w-[40px] shrink-0 text-dimmer" />
       <div className="min-w-0 flex-1" data-tauri-drag-region>
         <div className="truncate text-[14px] font-semibold leading-tight" data-tauri-drag-region>
           {status?.node.name ?? "makima"}
@@ -278,19 +282,22 @@ function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) 
     { id: "settings", label: "Settings", icon: <Icon.Gear /> },
   ];
   return (
-    <nav className="w-[168px] shrink-0 space-y-0.5 border-r border-line bg-sidebar p-2.5">
+    <nav className="flex w-[176px] shrink-0 flex-col gap-0.5 border-r border-line bg-sidebar p-2.5">
       {items.map((it) => (
         <button
           key={it.id}
           type="button"
           onClick={() => setPage(it.id)}
-          className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] font-medium transition
+          className={`relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-left text-[13px] font-medium transition
             ${page === it.id ? "bg-card-2 text-ink" : "text-dim hover:bg-card hover:text-ink"}`}
         >
+          {page === it.id && <span className="absolute inset-y-2 left-0 w-[3px] rounded-full bg-accent" />}
           <span className={page === it.id ? "text-accent" : "text-dim"}>{it.icon}</span>
           {it.label}
         </button>
       ))}
+      {/* the name, in bones, where the sidebar runs out */}
+      <Bones className="mx-auto mb-3 mt-auto w-[108px]" />
     </nav>
   );
 }
@@ -301,7 +308,10 @@ function Off({ snap, busy, act }: { snap: Snapshot; busy: boolean; act: Act }) {
   const permission = snap.error?.includes("not readable");
   return (
     <div className="flex-1">
-      <Empty title={permission ? "makima is running for another account" : "makima is off"}>
+      <Empty
+        title={permission ? "makima is running for another account" : "makima is off"}
+        art={<Eye open={false} className="mb-6 w-[150px] text-dimmer" />}
+      >
         {permission ? (
           <p>
             The daemon is up, but its socket belongs to whoever started it. Connect again from this account to

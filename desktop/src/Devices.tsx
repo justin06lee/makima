@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, fqdn, inTauri, ms, openExternal, openFolder, pathLabel, type Environment, type Peer, type Ping, type Status } from "./api";
 import type { Act } from "./App";
-import { Button, Card, CopyButton, Dot, Input, Row, Search, Section, Spinner, Toggle } from "./ui";
+import { Button, Card, CopyButton, Dot, Input, Row, Search, Section, Spinner, Title, Toggle } from "./ui";
 import { Icon } from "./icons";
 import { useDrop } from "./useDrop";
 import { useSSH } from "./Terminal";
@@ -44,7 +44,7 @@ export function Devices({
     <>
       <aside className="flex w-[272px] shrink-0 flex-col border-r border-line">
         <div className="px-4 pb-3 pt-5">
-          <h1 className="text-[22px] font-semibold tracking-tight">Devices</h1>
+          <Title>Devices</Title>
           <div className="mt-3">
             <Search value={query} onChange={setQuery} />
           </div>
@@ -106,7 +106,7 @@ export function Devices({
 }
 
 function GroupLabel({ children }: { children: React.ReactNode }) {
-  return <div className="px-2.5 pb-1 pt-3 text-[12px] font-semibold text-dim">{children}</div>;
+  return <div className="px-2.5 pb-1.5 pt-4 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-dimmer">{children}</div>;
 }
 
 function DeviceRow({
@@ -131,21 +131,21 @@ function DeviceRow({
       aria-selected={active}
       onClick={onClick}
       className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition
-        ${active ? "bg-accent text-accent-ink" : "hover:bg-card"}`}
+        ${active ? "bg-accent/10 ring-1 ring-inset ring-accent/25" : "hover:bg-card"}`}
     >
       <span className="mt-[7px]">
         <Dot tone={online ? "green" : "grey"} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className="truncate text-[13.5px] font-medium">{name}</span>
+          <span className={`truncate text-[13.5px] font-medium ${online ? "text-ink" : "text-dim"}`}>{name}</span>
           {exit && (
-            <span className={`rounded px-1 text-[10px] font-semibold uppercase tracking-wide ${active ? "bg-white/20" : "bg-card-2 text-dim"}`}>
+            <span className="rounded bg-gold/15 px-1 text-[10px] font-semibold uppercase tracking-wide text-gold">
               exit
             </span>
           )}
         </span>
-        <span className={`block truncate font-mono text-[12px] ${active ? "text-accent-ink/80" : "text-dim"}`}>{address}</span>
+        <span className="block truncate font-mono text-[12px] text-dim">{address}</span>
       </span>
     </button>
   );
@@ -155,9 +155,9 @@ function Header({ title, tag, children }: { title: string; tag?: string; childre
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
-        <h1 className="flex items-center gap-2 text-[22px] font-semibold tracking-tight">
+        <h1 className="flex items-center gap-3 font-display text-[34px] leading-none tracking-tight">
           <span className="truncate">{title}</span>
-          {tag && <span className="rounded-md bg-card-2 px-1.5 py-0.5 text-[11px] font-medium text-dim">{tag}</span>}
+          {tag && <span className="rounded-full bg-gold/12 px-2 py-0.5 font-sans text-[11px] font-semibold tracking-normal text-gold">{tag}</span>}
         </h1>
       </div>
       {children && <div className="flex shrink-0 items-center gap-1.5 pt-1">{children}</div>}
@@ -327,7 +327,7 @@ function DropZone({ peer, enabled }: { peer: Peer; enabled: boolean }) {
   return (
     <div>
       <div
-        className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-7 text-center transition
+        className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-7 text-center transition
           ${dragging ? "border-accent bg-accent/8" : "border-line-2"} ${enabled ? "" : "opacity-50"}`}
       >
         <Icon.Upload size={22} className={dragging ? "text-accent" : "text-dimmer"} />

@@ -556,7 +556,9 @@ right-hand pane shows its name and address to copy, the services it publishes
 with an Open button beside anything a browser can reach, an SSH button that
 opens a shell in your terminal, and a place to drop a file — which lands in
 that device's inbox. This device's own pane lists what it publishes, with a
-Remove beside each, and where incoming files go.
+Remove beside each, and where incoming files go. Makima's eye sits in the
+title bar as the status light: open, and following the pointer, while this
+device is on the network; shut when it is not.
 
 **The first run** asks one question: is this the first device, or is there a
 network already? *Start a network* is `makima up`. *Join a network* takes a
@@ -577,7 +579,8 @@ macOS and Linux, built with Tauri — about 4 MB of its own, plus the four
 binaries it carries and the same four for each other platform (about 55 MB,
 for moving other machines off Tailscale — `make kits` builds them), using the
 web view already running on the machine rather than shipping another browser. It follows the system's light or dark
-appearance. It opens at login once a network has been started or joined from
+appearance, in Makima's colours either way: her red for the switch and the
+buttons, gold for this device. It opens at login once a network has been started or joined from
 it — the tunnel is up anyway, and this is the menu bar coming back with it —
 and Settings turns that off.
 

@@ -1,6 +1,6 @@
 import { ms, type Status } from "./api";
 import type { Act } from "./App";
-import { Card, Dot } from "./ui";
+import { Card, Dot, Title } from "./ui";
 import { Icon } from "./icons";
 
 /// Pick a device to carry all of this one's internet traffic, or none.
@@ -11,8 +11,8 @@ export function ExitNodes({ status, busy, act }: { status: Status; busy: boolean
   return (
     <div className="fade-in mx-auto w-full max-w-[560px] space-y-6 px-6 pb-8 pt-5">
       <div>
-        <h1 className="text-[22px] font-semibold tracking-tight">Exit nodes</h1>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-dim">
+        <Title>Exit nodes</Title>
+        <p className="mt-2.5 text-[13px] leading-relaxed text-dim">
           Send all of this device's internet traffic through another device on your network — so a laptop on
           café wifi browses from home.
         </p>

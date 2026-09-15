@@ -139,7 +139,7 @@ export function AddDevice({
 function Step({ n, children, muted }: { n: number; children: React.ReactNode; muted?: boolean }) {
   return (
     <div className={`flex gap-3 ${muted ? "opacity-80" : ""}`}>
-      <span className="mt-px flex size-5 shrink-0 items-center justify-center rounded-full bg-card-2 text-[11px] font-semibold text-dim">
+      <span className="mt-px flex size-5 shrink-0 items-center justify-center rounded-full bg-accent/12 text-[11px] font-semibold text-accent">
         {n}
       </span>
       <div className="min-w-0 flex-1 space-y-2 text-[13px] leading-relaxed text-dim">{children}</div>
