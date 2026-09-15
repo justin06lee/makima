@@ -29,15 +29,16 @@ export function Button({
   type?: "button" | "submit";
 }) {
   const variants = {
-    primary: "bg-accent text-accent-ink border-transparent hover:brightness-110 active:brightness-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.15)]",
+    primary:
+      "bg-accent text-accent-ink border-transparent hover:brightness-110 active:brightness-95 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_6px_18px_-8px_var(--accent)]",
     default: "bg-bg text-ink border-line-2 hover:bg-card active:bg-card-2 shadow-[0_1px_1px_rgba(0,0,0,0.04)]",
-    danger: "bg-bg text-red border-line-2 hover:bg-card active:bg-card-2",
+    danger: "bg-bg text-red border-line-2 hover:bg-red/8 active:bg-red/12",
     ghost: "bg-transparent text-dim border-transparent hover:bg-card hover:text-ink",
   }[variant];
   const sizes = {
-    sm: "h-6 px-2 text-[12px] gap-1 rounded-md",
-    md: "h-7 px-3 text-[13px] gap-1.5 rounded-lg",
-    lg: "h-9 px-4 text-[14px] gap-2 rounded-lg",
+    sm: "h-7 px-2.5 text-[12px] gap-1 rounded-lg",
+    md: "h-8 px-3.5 text-[13px] gap-1.5 rounded-lg",
+    lg: "h-10 px-5 text-[14px] gap-2 rounded-xl",
   }[size];
 
   return (
@@ -75,8 +76,8 @@ export function IconButton({
       title={title}
       aria-label={title}
       disabled={busy}
-      className={`inline-flex size-7 items-center justify-center rounded-lg border border-transparent transition
-        hover:bg-card active:bg-card-2 disabled:opacity-50 ${active ? "bg-card text-ink" : "text-dim hover:text-ink"}`}
+      className={`inline-flex size-8 items-center justify-center rounded-lg border border-transparent transition
+        hover:bg-card active:bg-card-2 disabled:opacity-50 ${active ? "bg-card text-accent" : "text-dim hover:text-ink"}`}
     >
       {busy ? <Spinner /> : children}
     </button>
@@ -92,7 +93,7 @@ export function Spinner({ className = "" }: { className?: string }) {
   );
 }
 
-/// The switch. On is blue, like every other switch on the platform.
+/// The switch. On is her red.
 export function Toggle({
   on,
   onChange,
@@ -108,9 +109,9 @@ export function Toggle({
   label: string;
   size?: "md" | "lg";
 }) {
-  const dims = size === "lg" ? "h-[26px] w-[44px]" : "h-[22px] w-[38px]";
+  const dims = size === "lg" ? "h-[26px] w-[46px]" : "h-[22px] w-[38px]";
   const knob = size === "lg" ? "size-[22px]" : "size-[18px]";
-  const travel = size === "lg" ? "translate-x-[18px]" : "translate-x-[16px]";
+  const travel = size === "lg" ? "translate-x-[20px]" : "translate-x-[16px]";
   return (
     <button
       type="button"
@@ -122,7 +123,7 @@ export function Toggle({
       onClick={() => onChange(!on)}
       className={`relative inline-flex shrink-0 items-center rounded-full border transition-colors duration-200
         disabled:cursor-not-allowed ${dims}
-        ${on ? "border-transparent bg-accent" : "border-line-2 bg-card-2"}
+        ${on ? "border-transparent bg-accent shadow-[0_4px_14px_-6px_var(--accent)]" : "border-line-2 bg-card-2"}
         ${busy ? "opacity-70" : ""}`}
     >
       <span
@@ -138,15 +139,24 @@ export function Toggle({
 /// A coloured dot. The only place in the app colour carries meaning on its
 /// own, so it always sits beside a word that says the same thing.
 export function Dot({ tone, size = "md" }: { tone: "green" | "grey" | "amber" | "red"; size?: "sm" | "md" }) {
-  const c = { green: "bg-green", grey: "bg-grey", amber: "bg-amber", red: "bg-red" }[tone];
+  const c = {
+    green: "bg-green shadow-[0_0_0_3px_color-mix(in_oklab,var(--green)_18%,transparent)]",
+    grey: "bg-grey",
+    amber: "bg-amber",
+    red: "bg-red",
+  }[tone];
   const s = size === "sm" ? "size-1.5" : "size-2";
   return <span className={`inline-block shrink-0 rounded-full ${s} ${c}`} />;
 }
 
-/// A rounded group of rows, like the address cards on the platform's own
-/// settings screens.
+/// A page's title, in the serif.
+export function Title({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <h1 className={`font-display text-[30px] leading-none tracking-tight text-ink ${className}`}>{children}</h1>;
+}
+
+/// A group of rows.
 export function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`overflow-hidden rounded-xl bg-card ${className}`}>{children}</div>;
+  return <div className={`overflow-hidden rounded-xl border border-line bg-card ${className}`}>{children}</div>;
 }
 
 /// One row in a Card: a value with a caption beneath it, and room on the
@@ -175,7 +185,7 @@ export function Row({
       {right && <div className="flex shrink-0 items-center gap-1.5">{right}</div>}
     </>
   );
-  const cls = "flex items-center gap-3 border-b border-line px-4 py-2.5 last:border-0";
+  const cls = "flex items-center gap-3 border-b border-line px-4 py-3 last:border-0";
   if (onClick) {
     return (
       <button type="button" onClick={onClick} title={title} className={`${cls} w-full text-left transition hover:bg-card-2`}>
@@ -189,8 +199,8 @@ export function Row({
 export function Section({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-[15px] font-medium text-dim">{title}</h3>
+      <div className="flex min-h-7 items-center justify-between gap-3">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-dimmer">{title}</h3>
         {right}
       </div>
       {children}
@@ -238,7 +248,7 @@ export function Search({ value, onChange, placeholder = "Search…" }: { value: 
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         spellCheck={false}
-        className="selectable h-8 w-full rounded-lg border border-transparent bg-card pl-8 pr-3 text-[13px] text-ink outline-none placeholder:text-dimmer focus:border-accent/40 focus:bg-bg"
+        className="selectable h-8 w-full rounded-lg border border-line bg-card pl-8 pr-3 text-[13px] text-ink outline-none transition placeholder:text-dimmer focus:border-accent/50 focus:bg-bg"
       />
     </label>
   );
@@ -274,7 +284,7 @@ export function Input({
       autoCapitalize="off"
       autoCorrect="off"
       inputMode={inputMode}
-      className={`selectable h-8 w-full rounded-lg border border-line-2 bg-bg px-3 text-[13px] text-ink outline-none
+      className={`selectable h-9 w-full rounded-lg border border-line-2 bg-bg px-3 text-[13px] text-ink outline-none transition
         placeholder:text-dimmer focus:border-accent ${mono ? "font-mono text-[12px]" : ""} ${className}`}
     />
   );
@@ -289,15 +299,15 @@ export function Modal({ title, onClose, children, width = "max-w-[460px]" }: { t
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-6" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-6 backdrop-blur-[2px]" onMouseDown={onClose}>
       <div
         role="dialog"
         aria-label={title}
         onMouseDown={(e) => e.stopPropagation()}
-        className={`fade-in w-full ${width} rounded-2xl bg-bg p-5 shadow-[var(--shadow)]`}
+        className={`fade-in w-full ${width} rounded-2xl border border-line bg-bg p-6 shadow-[var(--shadow)]`}
       >
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-[16px] font-semibold">{title}</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="font-display text-[26px] leading-none tracking-tight">{title}</h2>
           <IconButton onClick={onClose} title="Close">
             <Icon.Close />
           </IconButton>
@@ -321,18 +331,19 @@ export function Notice({ text, onDismiss }: { text: string; onDismiss: () => voi
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: React.ReactNode }) {
+export function Empty({ title, art, children }: { title: string; art?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-      <p className="text-[14px] font-medium text-ink">{title}</p>
-      {children && <div className="mt-1.5 max-w-xs text-[13px] leading-relaxed text-dim">{children}</div>}
+      {art}
+      <p className="font-display text-[26px] leading-tight text-ink">{title}</p>
+      {children && <div className="mt-2 max-w-sm text-[13px] leading-relaxed text-dim">{children}</div>}
     </div>
   );
 }
 
 export function Code({ children }: { children: string }) {
   return (
-    <code className="selectable block break-all rounded-lg bg-card px-3 py-2 font-mono text-[12px] leading-relaxed text-ink">
+    <code className="selectable block break-all rounded-lg border border-line bg-card px-3 py-2 font-mono text-[12px] leading-relaxed text-ink">
       {children}
     </code>
   );
