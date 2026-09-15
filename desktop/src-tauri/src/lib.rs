@@ -186,19 +186,6 @@ pub fn run() {
                 conceal(window.app_handle());
             }
         })
-        .build(tauri::generate_context!())
-        .expect("makima desktop failed to start")
-        .run(|app, event| {
-            // Opening the app while it is already running — from the Dock,
-            // Finder, Launchpad or Spotlight — reaches the running copy as a
-            // "reopen", not a second launch, so the single-instance hook never
-            // hears of it. Unhandled, macOS activates an app with nothing on
-            // screen, and clicking the icon appears to do nothing at all.
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = event {
-                reveal(app);
-            }
-            #[cfg(not(target_os = "macos"))]
-            let _ = (app, event);
-        });
+        .run(tauri::generate_context!())
+        .expect("makima desktop failed to start");
 }

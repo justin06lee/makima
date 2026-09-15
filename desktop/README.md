@@ -39,24 +39,16 @@ a network, which is how to see the "off" screen without an `/etc/makima`.
 
 ## What it shows
 
-**The menu bar** icon opens the window when clicked, and the window stays open
-like any other app's until it is closed. It does not vanish when you click
-elsewhere. Opening the app again from the Dock, Finder or Spotlight while it
-is running does the same. Right-click the icon for the quick menu: connected
-or not, this device's address, every other device with a dot for whether it
-is reachable (click to copy the address), the exit node as a radio group, and
-Connect/Disconnect. It is a native menu, rebuilt only when what it shows
-changes. On Linux, where trays report no clicks, any click shows the menu.
+**The menu bar** is most of the app: connected or not, this device's address,
+every other device with a dot for whether it is reachable (click to copy the
+address), the exit node as a radio group, and Connect/Disconnect. It is a
+native menu, rebuilt only when what it shows changes.
 
 **The window** has three pages. *Devices* is a list on the left and a detail
 pane on the right — addresses to copy, services with Open buttons, SSH, and a
 drop zone that sends a file to that device's inbox. *Exit nodes* picks one.
 *Settings* has the login item, the command-line install, diagnostics, and the
-network's particulars. Makima's eye in the title bar is the status light:
-open, and following the pointer, while this device is on the network; shut
-when it is not. The first run shows it large, above the name spelled in
-bones, as on the website. The colours are hers in both appearances: her red
-for the switch and the buttons, gold for what belongs to this device.
+network's particulars.
 
 **The first run** has no daemon and no configuration, so it asks the one
 question that matters: start a network, or join one by typing the fifteen
@@ -166,7 +158,6 @@ done
 rsvg-convert src-tauri/icons/tray.svg -o src-tauri/icons/tray.png
 ```
 
-Inside the window the eye is `src/Eye.tsx`, the full drawing, the same one as
-the website's `components/eye.tsx`; change one and change the other. The tray
-SVG has no gradients, shadows, or reflections. Generated desktop assets are checked
+Keep `Icon.Mark` in `src/icons.tsx` aligned with the tray SVG. The SVGs have
+no gradients, shadows, or reflections. Generated desktop assets are checked
 in, so normal builds do not need `rsvg-convert`.
