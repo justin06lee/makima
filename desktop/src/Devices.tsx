@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, fqdn, inTauri, ms, openFolder, pathLabel, type Environment, type Peer, type Ping, type Status } from "./api";
+import { api, fqdn, inTauri, ms, openExternal, openFolder, pathLabel, type Environment, type Peer, type Ping, type Status } from "./api";
 import type { Act } from "./App";
 import { Button, Card, CopyButton, Dot, Input, Row, Search, Section, Spinner, Toggle } from "./ui";
 import { Icon } from "./icons";
