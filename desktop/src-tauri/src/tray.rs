@@ -1,11 +1,11 @@
 //! The menu bar.
 //!
-//! The one part of the app that is always on screen, so it carries the whole
-//! answer to "what can I reach right now": this device's address, every other
-//! device and whether it is up, which exit node is in use, and a way to turn
-//! the tunnel on and off. All of it is a native menu — the platform's own,
-//! not a window pretending to be one — because that is what a menu bar item
-//! is for and what every other one on the bar does.
+//! The one part of the app that is always on screen. Clicking it opens the
+//! window; right-clicking it opens a native menu with the short answer to
+//! "what can I reach right now": this device's address, every other device
+//! and whether it is up, which exit node is in use, and a way to turn the
+//! tunnel on and off. The menu is the platform's own, not a window pretending
+//! to be one, because the window already exists.
 //!
 //! The menu is rebuilt whenever what it shows changes, and only then. A menu
 //! replaced under an open cursor is unpleasant, and replacing it every few
@@ -341,7 +341,7 @@ fn dot(online: bool) -> Image<'static> {
 
 /// Build the tray for the first time.
 pub fn install(app: &AppHandle) -> tauri::Result<TrayIcon> {
-    use tauri::tray::TrayIconBuilder;
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     let menu = Menu::with_items(
         app,
@@ -358,8 +358,23 @@ pub fn install(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .icon_as_template(true)
         .tooltip("makima")
         .menu(&menu)
-        // The menu is the whole interface here, so it is what a click gets.
-        .show_menu_on_left_click(true)
+        // A click opens the window, and the window stays until it is closed.
+        // A menu vanishes the moment the pointer goes anywhere else, which is
+        // no way to read a list of devices or wait on a slow action. The menu
+        // is a right-click away for the quick things. Linux trays report no
+        // clicks and always show the menu, which is why it still has "Open
+        // makima" in it.
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                crate::reveal(tray.app_handle());
+            }
+        })
         .on_menu_event(|app, event| on_menu(app, event.id.as_ref()))
         .build(app)
 }

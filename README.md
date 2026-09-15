@@ -544,9 +544,12 @@ to glance at one. The app is the glance, and for most people the whole
 program: a menu bar item and a window in the shape every mesh VPN app has
 settled on, because it is the right shape.
 
-**The menu bar.** A switch, this device's address, every other device with a
-green or grey dot beside it — click one to copy its address — and the exit
-node, as a radio group. The window is one click further.
+**The menu bar.** Click the icon and the window opens, and it stays open like
+any other app's window until you close it. Opening the app from the Dock or
+Finder while it runs does the same. Right-click the icon for the quick menu:
+a switch, this device's address, every other device with a green or grey dot
+beside it (click one to copy its address), and the exit node, as a radio
+group. On Linux any click shows the menu, which has Open makima in it.
 
 **The window.** Devices down the left, with a search box. Pick one and the
 right-hand pane shows its name and address to copy, the services it publishes
