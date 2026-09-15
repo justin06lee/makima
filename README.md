@@ -544,21 +544,16 @@ to glance at one. The app is the glance, and for most people the whole
 program: a menu bar item and a window in the shape every mesh VPN app has
 settled on, because it is the right shape.
 
-**The menu bar.** Click the icon and the window opens, and it stays open like
-any other app's window until you close it. Opening the app from the Dock or
-Finder while it runs does the same. Right-click the icon for the quick menu:
-a switch, this device's address, every other device with a green or grey dot
-beside it (click one to copy its address), and the exit node, as a radio
-group. On Linux any click shows the menu, which has Open makima in it.
+**The menu bar.** A switch, this device's address, every other device with a
+green or grey dot beside it — click one to copy its address — and the exit
+node, as a radio group. The window is one click further.
 
 **The window.** Devices down the left, with a search box. Pick one and the
 right-hand pane shows its name and address to copy, the services it publishes
 with an Open button beside anything a browser can reach, an SSH button that
 opens a shell in your terminal, and a place to drop a file — which lands in
 that device's inbox. This device's own pane lists what it publishes, with a
-Remove beside each, and where incoming files go. Makima's eye sits in the
-title bar as the status light: open, and following the pointer, while this
-device is on the network; shut when it is not.
+Remove beside each, and where incoming files go.
 
 **The first run** asks one question: is this the first device, or is there a
 network already? *Start a network* is `makima up`. *Join a network* takes a
@@ -579,8 +574,7 @@ macOS and Linux, built with Tauri — about 4 MB of its own, plus the four
 binaries it carries and the same four for each other platform (about 55 MB,
 for moving other machines off Tailscale — `make kits` builds them), using the
 web view already running on the machine rather than shipping another browser. It follows the system's light or dark
-appearance, in Makima's colours either way: her red for the switch and the
-buttons, gold for this device. It opens at login once a network has been started or joined from
+appearance. It opens at login once a network has been started or joined from
 it — the tunnel is up anyway, and this is the menu bar coming back with it —
 and Settings turns that off.
 

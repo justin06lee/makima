@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, inTauri, type Check, type Environment, type Status, type Tailscale } from "./api";
 import type { Act } from "./App";
-import { Button, Card, Code, Dot, Row, Section, Title, Toggle } from "./ui";
+import { Button, Card, Code, Dot, Row, Section, Toggle } from "./ui";
 import { TerminalSetting } from "./Terminal";
 
 export function Settings({
@@ -21,7 +21,7 @@ export function Settings({
 }) {
   return (
     <div className="fade-in mx-auto w-full max-w-[560px] space-y-6 px-6 pb-8 pt-5">
-      <Title>Settings</Title>
+      <h1 className="text-[22px] font-semibold tracking-tight">Settings</h1>
 
       <Section title="General">
         <Card>
