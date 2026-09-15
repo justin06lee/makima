@@ -39,10 +39,14 @@ a network, which is how to see the "off" screen without an `/etc/makima`.
 
 ## What it shows
 
-**The menu bar** is most of the app: connected or not, this device's address,
-every other device with a dot for whether it is reachable (click to copy the
-address), the exit node as a radio group, and Connect/Disconnect. It is a
-native menu, rebuilt only when what it shows changes.
+**The menu bar** icon opens the window when clicked, and the window stays open
+like any other app's until it is closed. It does not vanish when you click
+elsewhere. Opening the app again from the Dock, Finder or Spotlight while it
+is running does the same. Right-click the icon for the quick menu: connected
+or not, this device's address, every other device with a dot for whether it
+is reachable (click to copy the address), the exit node as a radio group, and
+Connect/Disconnect. It is a native menu, rebuilt only when what it shows
+changes. On Linux, where trays report no clicks, any click shows the menu.
 
 **The window** has three pages. *Devices* is a list on the left and a detail
 pane on the right — addresses to copy, services with Open buttons, SSH, and a
