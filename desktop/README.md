@@ -52,11 +52,20 @@ network's particulars.
 
 **The first run** has no daemon and no configuration, so it asks the one
 question that matters: start a network, or join one by typing the fifteen
-words the first device shows (or pasting its invite). That
-is the one time it asks for a password. `makima up` registers the daemon with
-launchd or systemd, so from then on the device is connected whenever it is on,
-and the app becomes a login item so the menu bar is there too; Disconnect
-takes the registration away, and Settings turns the login item off.
+words the first device shows (or pasting its invite). `makima up` registers the
+daemon with launchd or systemd, so from then on the device is connected
+whenever it is on, and the app becomes a login item so the menu bar is there
+too; Disconnect takes the registration away, and Settings turns the login item
+off.
+
+**About the password.** Saying yes once writes a sudoers rule so Connect,
+Disconnect and the read-only commands stop asking — the buttons pressed daily.
+It deliberately does not cover anything that changes who this device trusts:
+joining a network, adding a device, choosing an exit node and moving off
+Tailscale ask every time. A standing grant for those would let anything else
+running as you put this machine on a network of its choosing without a prompt,
+since an invite carries the control plane it points at. Delete
+`/etc/sudoers.d/makima_<you>` to make everything ask again.
 
 **Move from Tailscale** appears when Tailscale is running here — on the first
 run beside the two cards, over the device list, and in Settings. It is a
