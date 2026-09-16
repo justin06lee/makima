@@ -9,13 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  # Both platforms, because half of what this repository does is per-platform.
+  # There are separate implementations of address assignment, routing, the host
+  # firewall, the resolver and the listening-port scan for macOS and for Linux,
+  # and a suite that only ever ran on Linux could not see any of the macOS half.
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           check-latest: true
 
       - name: fmt
@@ -37,16 +45,61 @@ jobs:
       - name: race
         run: go test -race ./...
 
+  # A VPN is a poor place to be carrying a known hole in a dependency, and this
+  # is the check that says so out loud. It reports only what the code actually
+  # reaches, so it does not go off about a function nothing calls.
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   cross:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           check-latest: true
 
       # The promise is one binary per platform with nothing to install
       # alongside it. This is what keeps that true.
       - name: cross-compile
         run: make cross
+
+  # The app is half the security surface — it is what installs the sudoers rule
+  # — and none of it was built here before. Its Rust tests are what hold that
+  # rule narrow.
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: install
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: types
+        working-directory: desktop
+        run: bun run tsc --noEmit
+
+      - name: rust fmt
+        working-directory: desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: rust tests
+        working-directory: desktop/src-tauri
+        run: cargo test

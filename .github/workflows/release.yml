@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           check-latest: true
 
       # A release that fails its own tests is worse than no release.
@@ -55,9 +55,27 @@ jobs:
           docker push "$image:${GITHUB_REF_NAME}"
           docker push "$image:latest"
 
+      # The PKGBUILD builds from the tag's own source archive, so its checksum
+      # can only be known once the tag exists. Filled in here rather than left
+      # as SKIP, which would mean the package builds whatever that URL serves.
+      - name: checksum the PKGBUILD source
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          sum=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          [ -n "$sum" ] || { echo "could not checksum the source archive"; exit 1; }
+          sed -i "s|^pkgver=.*|pkgver=${GITHUB_REF_NAME#v}|" dist/packaging/PKGBUILD
+          sed -i "s|^sha256sums=.*|sha256sums=('${sum}')|" dist/packaging/PKGBUILD
+          gh release upload "${GITHUB_REF_NAME}" dist/packaging/PKGBUILD --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       # The formula is versioned with the code it installs, so the checksums
       # are filled in from the archives that were just built rather than by
       # hand afterwards — which is the step everybody forgets.
+      #
+      # Skipped, with a note, when TAP_TOKEN is not set: a release that fails
+      # because a secret is missing is worse than a release without a tap, and
+      # the note is what keeps "skipped" from meaning "silently never ran".
       - name: update the homebrew formula
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
@@ -80,6 +98,11 @@ jobs:
             ' "$formula" > "$formula.new" && mv "$formula.new" "$formula"
           done
 
+          # The tap may not exist yet. Creating it here means the first
+          # release makes it rather than failing on it.
+          gh repo view justin06lee/homebrew-makima >/dev/null 2>&1 ||
+            gh repo create justin06lee/homebrew-makima --public \
+              --description "Homebrew tap for makima"
           gh repo clone justin06lee/homebrew-makima tap
           mkdir -p tap/Formula
           cp "$formula" tap/Formula/makima.rb
@@ -88,4 +111,11 @@ jobs:
           git config user.email "noreply@github.com"
           git add Formula/makima.rb
           git commit -m "makima ${GITHUB_REF_NAME}"
-          git push
+          # A fresh tap has no commits and so no branch to push to.
+          git push -u origin HEAD:master
+
+      - name: say when the tap was not updated
+        if: ${{ secrets.TAP_TOKEN == '' }}
+        run: |
+          echo "::warning::TAP_TOKEN is not set, so the homebrew formula was not published."
+          echo "::warning::'brew install justin06lee/makima/makima' will not work for this release."

@@ -25,8 +25,10 @@ TimeoutStopSec=15
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 
-# The daemon reads and writes exactly one directory.
-ReadWritePaths=/etc/makima /etc/resolver
+# The daemon reads and writes exactly one directory. /etc/resolver is a macOS
+# mechanism and has no meaning here: on Linux, split DNS goes through
+# systemd-resolved over D-Bus, so there is no resolver file to write.
+ReadWritePaths=/etc/makima
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes

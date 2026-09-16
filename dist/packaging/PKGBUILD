@@ -10,10 +10,13 @@ pkgdesc="Every machine you own, on one private network"
 arch=('x86_64' 'aarch64' 'armv7h')
 url="https://github.com/justin06lee/makima"
 license=('MIT')
-makedepends=('go>=1.25')
+makedepends=('go>=1.26')
 backup=('etc/makima/node.json')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+# Filled in by the release workflow from the tag's own source archive. SKIP
+# would mean the package builds whatever that URL happens to serve, which for
+# something that ends up running as root is not a checksum policy.
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
 
 build() {
   cd "$pkgname-$pkgver"
