@@ -114,8 +114,12 @@ jobs:
           # A fresh tap has no commits and so no branch to push to.
           git push -u origin HEAD:master
 
+      # The secrets context is not readable from a step-level `if`, so the
+      # token is put in env first and the condition reads that.
       - name: say when the tap was not updated
-        if: ${{ secrets.TAP_TOKEN == '' }}
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        if: env.GH_TOKEN == ''
         run: |
           echo "::warning::TAP_TOKEN is not set, so the homebrew formula was not published."
           echo "::warning::'brew install justin06lee/makima/makima' will not work for this release."
