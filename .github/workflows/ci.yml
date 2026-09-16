@@ -103,9 +103,13 @@ jobs:
         working-directory: desktop
         run: bun install --frozen-lockfile
 
-      - name: types
+      # tauri::generate_context! reads frontendDist at compile time and panics
+      # if it is missing, so the front end has to be built before the Rust is
+      # compiled at all — tests included. `bun run build` runs tsc first, which
+      # is the type check as well.
+      - name: build the front end
         working-directory: desktop
-        run: bun run tsc --noEmit
+        run: bun run build
 
       - name: rust fmt
         working-directory: desktop/src-tauri
