@@ -131,7 +131,9 @@ fn conceal(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         // A second launch means "show me the window", not a second tray icon.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| reveal(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            reveal(app)
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())

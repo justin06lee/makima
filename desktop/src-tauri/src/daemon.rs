@@ -129,8 +129,16 @@ async fn get(path: &str) -> Result<serde_json::Value, String> {
 /// Read the daemon's whole view of itself.
 pub async fn snapshot() -> Snapshot {
     match get("/api/status").await {
-        Ok(v) => Snapshot { running: true, error: None, status: Some(v) },
-        Err(e) => Snapshot { running: false, error: Some(e), status: None },
+        Ok(v) => Snapshot {
+            running: true,
+            error: None,
+            status: Some(v),
+        },
+        Err(e) => Snapshot {
+            running: false,
+            error: Some(e),
+            status: None,
+        },
     }
 }
 
@@ -207,7 +215,9 @@ fn holds_mesh() -> bool {
 pub fn environment() -> Environment {
     // A developer pointing the app at a pretend mesh has no /etc/makima and
     // still wants to see the connected screen, or the off screen, on demand.
-    let dev_member = std::env::var("MAKIMA_DEV_MEMBER").map(|v| !v.is_empty()).unwrap_or(false);
+    let dev_member = std::env::var("MAKIMA_DEV_MEMBER")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
     let member = dev_member || Path::new(CONFIG_DIR).join("node.json").exists();
     Environment {
         cli: crate::privileged::makima_binary().map(|p| p.to_string_lossy().to_string()),

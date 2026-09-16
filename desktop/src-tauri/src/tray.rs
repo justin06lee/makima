@@ -70,7 +70,10 @@ fn view(snap: &Snapshot) -> View {
                     name: s(p.get("name")),
                     address: s(p.get("address")),
                     online: p.get("online").and_then(|v| v.as_bool()).unwrap_or(false),
-                    exit: p.get("exit_node").and_then(|v| v.as_bool()).unwrap_or(false),
+                    exit: p
+                        .get("exit_node")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                 })
                 .collect()
         })
@@ -86,9 +89,15 @@ fn view(snap: &Snapshot) -> View {
 
 /// A short fingerprint of what the menu would show.
 fn signature(v: &View, member: bool) -> String {
-    let mut s = format!("{}|{}|{}|{}|{}", v.running, member, v.name, v.address, v.exit_node);
+    let mut s = format!(
+        "{}|{}|{}|{}|{}",
+        v.running, member, v.name, v.address, v.exit_node
+    );
     for d in &v.devices {
-        s.push_str(&format!("|{}:{}:{}:{}", d.name, d.address, d.online, d.exit));
+        s.push_str(&format!(
+            "|{}:{}:{}:{}",
+            d.name, d.address, d.online, d.exit
+        ));
     }
     s
 }
@@ -101,7 +110,9 @@ pub async fn refresh(app: &AppHandle) {
     let state = app.state::<State>();
     *state.snapshot.lock().unwrap() = snap;
 
-    let Some(tray) = app.tray_by_id("makima") else { return };
+    let Some(tray) = app.tray_by_id("makima") else {
+        return;
+    };
 
     let sig = signature(&v, env.member);
     {
@@ -170,7 +181,13 @@ fn build(app: &AppHandle, v: &View, member: bool) -> tauri::Result<Menu<tauri::W
     // Devices: one row each, a dot for whether it is reachable, click to
     // copy the address. Exactly what somebody about to type ssh wants.
     let devices = if v.devices.is_empty() {
-        let none = MenuItem::with_id(app, "no-devices", "No other devices yet", false, None::<&str>)?;
+        let none = MenuItem::with_id(
+            app,
+            "no-devices",
+            "No other devices yet",
+            false,
+            None::<&str>,
+        )?;
         Submenu::with_items(app, "Devices", true, &[&none])?
     } else {
         let sub = Submenu::with_id(app, "devices", "Devices", true)?;
@@ -190,7 +207,14 @@ fn build(app: &AppHandle, v: &View, member: bool) -> tauri::Result<Menu<tauri::W
 
     // Exit nodes: a radio group drawn with check items, "None" first.
     let exits = Submenu::with_id(app, "exit", "Exit node", true)?;
-    let none = CheckMenuItem::with_id(app, "exit:", "None", true, v.exit_node.is_empty(), None::<&str>)?;
+    let none = CheckMenuItem::with_id(
+        app,
+        "exit:",
+        "None",
+        true,
+        v.exit_node.is_empty(),
+        None::<&str>,
+    )?;
     exits.append(&none)?;
     let offering: Vec<&Device> = v.devices.iter().filter(|d| d.exit).collect();
     if !offering.is_empty() {
@@ -207,7 +231,13 @@ fn build(app: &AppHandle, v: &View, member: bool) -> tauri::Result<Menu<tauri::W
             exits.append(&item)?;
         }
     } else {
-        let hint = MenuItem::with_id(app, "no-exits", "No device offers to be one", false, None::<&str>)?;
+        let hint = MenuItem::with_id(
+            app,
+            "no-exits",
+            "No device offers to be one",
+            false,
+            None::<&str>,
+        )?;
         exits.append(&PredefinedMenuItem::separator(app)?)?;
         exits.append(&hint)?;
     }
@@ -251,7 +281,11 @@ pub fn on_menu(app: &AppHandle, id: &str) {
         "toggle" => {
             let state = app.state::<State>();
             let running = state.snapshot.lock().unwrap().running;
-            let action = if running { privileged::Action::Down } else { privileged::Action::Up };
+            let action = if running {
+                privileged::Action::Down
+            } else {
+                privileged::Action::Up
+            };
             act(app.clone(), action);
         }
         _ => {
@@ -262,7 +296,12 @@ pub fn on_menu(app: &AppHandle, id: &str) {
                     copy(app, &d.address);
                 }
             } else if let Some(name) = id.strip_prefix("exit:") {
-                act(app.clone(), privileged::Action::ExitNode { name: name.to_string() });
+                act(
+                    app.clone(),
+                    privileged::Action::ExitNode {
+                        name: name.to_string(),
+                    },
+                );
             }
         }
     }
@@ -319,7 +358,11 @@ pub fn icon(on: bool) -> Image<'static> {
 /// that is not. Drawn rather than shipped, because it is nine lines.
 fn dot(online: bool) -> Image<'static> {
     const SIZE: u32 = 14;
-    let (r, g, b) = if online { (52u8, 199u8, 89u8) } else { (174u8, 174u8, 178u8) };
+    let (r, g, b) = if online {
+        (52u8, 199u8, 89u8)
+    } else {
+        (174u8, 174u8, 178u8)
+    };
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
     let centre = SIZE as f32 / 2.0;
     let radius = 4.0f32;

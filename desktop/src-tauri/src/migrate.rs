@@ -56,7 +56,11 @@ pub async fn start(app: AppHandle, run: bool, choice: Option<Value>) -> Result<(
         }
     }
 
-    let args: Vec<&str> = if run { vec!["migrate", "run", "-app"] } else { vec!["migrate", "scan", "-json"] };
+    let args: Vec<&str> = if run {
+        vec!["migrate", "run", "-app"]
+    } else {
+        vec!["migrate", "scan", "-json"]
+    };
     let mut child = Command::new(&bin)
         .args(&args)
         .stdin(Stdio::piped())
@@ -75,11 +79,19 @@ pub async fn start(app: AppHandle, run: bool, choice: Option<Value>) -> Result<(
         // down the pipe, never onto a command line.
         let mut line = serde_json::to_vec(&choice).map_err(|e| e.to_string())?;
         line.push(b'\n');
-        stdin.lock().await.write_all(&line).await.map_err(|e| e.to_string())?;
+        stdin
+            .lock()
+            .await
+            .write_all(&line)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     let child = Arc::new(Mutex::new(child));
-    *state.child.lock().unwrap() = Some(Running { child: child.clone(), stoppable: !run });
+    *state.child.lock().unwrap() = Some(Running {
+        child: child.clone(),
+        stoppable: !run,
+    });
 
     // stderr is kept for the one case it matters: the process dying without
     // saying anything on stdout.
@@ -104,7 +116,9 @@ pub async fn start(app: AppHandle, run: bool, choice: Option<Value>) -> Result<(
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             if event.get("type").and_then(Value::as_str) == Some("elevate") {
                 let app = handle.clone();
                 let stdin = stdin.clone();
@@ -115,7 +129,10 @@ pub async fn start(app: AppHandle, run: bool, choice: Option<Value>) -> Result<(
         }
         let code = child.lock().await.wait().await.ok().and_then(|s| s.code());
         let stderr = tail.lock().unwrap().trim().to_string();
-        let _ = handle.emit("migrate", json!({ "type": "exit", "code": code, "detail": stderr }));
+        let _ = handle.emit(
+            "migrate",
+            json!({ "type": "exit", "code": code, "detail": stderr }),
+        );
         {
             let state = handle.state::<State>();
             *state.child.lock().unwrap() = None;
@@ -128,15 +145,23 @@ pub async fn start(app: AppHandle, run: bool, choice: Option<Value>) -> Result<(
 /// Carry out one root step the CLI asked for, and tell it how that went.
 async fn answer(app: AppHandle, stdin: Arc<Mutex<ChildStdin>>, event: Value) {
     let id = event.get("id").and_then(Value::as_i64).unwrap_or(0);
-    let reply = match serde_json::from_value::<Action>(event.get("action").cloned().unwrap_or(Value::Null)) {
-        Ok(action @ (Action::MigrateHost { .. } | Action::MigrateJoin { .. } | Action::MigrateRetire)) => {
+    let reply = match serde_json::from_value::<Action>(
+        event.get("action").cloned().unwrap_or(Value::Null),
+    ) {
+        Ok(
+            action @ (Action::MigrateHost { .. }
+            | Action::MigrateJoin { .. }
+            | Action::MigrateRetire),
+        ) => {
             let _ = app.emit("migrate", json!({ "type": "prompt" }));
             match privileged::run(action).await {
                 Ok(o) => json!({ "id": id, "ok": o.ok, "output": o.output }),
                 Err(e) => json!({ "id": id, "ok": false, "output": e }),
             }
         }
-        _ => json!({ "id": id, "ok": false, "output": "the app only runs migration steps for a migration" }),
+        _ => {
+            json!({ "id": id, "ok": false, "output": "the app only runs migration steps for a migration" })
+        }
     };
     let mut line = serde_json::to_vec(&reply).unwrap_or_default();
     line.push(b'\n');
