@@ -82,11 +82,22 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
       - uses: oven-sh/setup-bun@v2
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+
+      # Tauri's build script resolves externalBin and resources before it
+      # compiles anything, so the Go binaries have to exist even to run the
+      # Rust tests. `make sidecars` builds this host's, and the kits the
+      # bundle carries for the other platforms.
+      - name: sidecars
+        run: make sidecars
 
       - name: install
         working-directory: desktop
