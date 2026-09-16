@@ -22,11 +22,21 @@ const pollTimeout = 60 * time.Second
 type Server struct {
 	store *Store
 	log   *log.Logger
+
+	// polls and registers bound the work an unauthenticated caller can make
+	// this server do. See limit.go.
+	polls     *polls
+	registers *buckets
 }
 
 // NewServer wires handlers onto a store.
 func NewServer(store *Store, logger *log.Logger) *Server {
-	return &Server{store: store, log: logger}
+	return &Server{
+		store:     store,
+		log:       logger,
+		polls:     newPolls(maxPolls),
+		registers: newBuckets(registerBurst, registerEvery),
+	}
 }
 
 // Handler builds the routing table.
@@ -83,6 +93,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if !s.registers.allow(r.RemoteAddr, time.Now()) {
+		tooMany(w, registerEvery)
+		return
+	}
+
 	env, req, ok := decode[RegisterRequest](s, w, r)
 	if !ok {
 		return
@@ -105,6 +120,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
+	// Claimed before the request is decoded and held for as long as it is
+	// parked, because the parking is the cost.
+	if !s.polls.take() {
+		tooMany(w, pollTimeout)
+		return
+	}
+	defer s.polls.done()
+
 	env, req, ok := decode[MapRequest](s, w, r)
 	if !ok {
 		return

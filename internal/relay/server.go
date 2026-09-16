@@ -34,6 +34,22 @@ const writeTimeout = 10 * time.Second
 // says nothing cannot occupy a slot indefinitely.
 const handshakeTimeout = 10 * time.Second
 
+// MaxClients is how many nodes one relay carries at once.
+//
+// A relay proves whoever connects holds a node key, but any keypair is valid
+// and generating them is free — it deliberately does not know which keys belong
+// to a network. So the bound is on quantity: past this many clients it refuses
+// new ones rather than running out of descriptors and dropping the nodes
+// already relying on it.
+const MaxClients = 1024
+
+// handshakeBurst and handshakeEvery bound how fast one address may attempt a
+// handshake, so a single host cannot spend the whole connection budget.
+const (
+	handshakeBurst = 20
+	handshakeEvery = time.Second
+)
+
 // Server forwards packets between connected nodes.
 type Server struct {
 	privateKey key.Private
@@ -41,6 +57,9 @@ type Server struct {
 
 	mu      sync.RWMutex
 	clients map[key.Public]*serverClient
+
+	// dialers bounds how fast one address may attempt a handshake.
+	dialers *dialLimit
 
 	// Counters for the status endpoint. Atomic rather than mutex-guarded
 	// because they are touched on every forwarded packet, and the routing
@@ -77,6 +96,7 @@ func NewServer(privateKey key.Private, logger *log.Logger) *Server {
 		privateKey: privateKey,
 		log:        logger,
 		clients:    make(map[key.Public]*serverClient),
+		dialers:    newDialLimit(handshakeBurst, handshakeEvery),
 	}
 }
 
@@ -115,8 +135,33 @@ func (s *Server) Serve(ln net.Listener) error {
 			}
 			return err
 		}
+		// Checked before the goroutine: a connection refused here costs an
+		// accept and a close, and never a goroutine or a read buffer.
+		if !s.admit(c) {
+			c.Close()
+			continue
+		}
 		go s.handle(c)
 	}
+}
+
+// admit reports whether a freshly accepted connection may proceed to a
+// handshake, counting it against the relay's caps if so.
+func (s *Server) admit(c net.Conn) bool {
+	if !s.dialers.allow(hostOf(c.RemoteAddr()), time.Now()) {
+		s.stats.Rejected.Add(1)
+		return false
+	}
+
+	s.mu.RLock()
+	full := len(s.clients) >= MaxClients
+	s.mu.RUnlock()
+	if full {
+		s.stats.Rejected.Add(1)
+		s.log.Printf("relay: at %d clients, refusing %s", MaxClients, hostOf(c.RemoteAddr()))
+		return false
+	}
+	return true
 }
 
 // Close disconnects every client. The listener is the caller's to close.
