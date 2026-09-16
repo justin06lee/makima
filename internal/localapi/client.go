@@ -134,7 +134,7 @@ func (c *Client) call(method, path string, body, out any) error {
 	}
 
 	// The host is ignored for a Unix socket but net/http insists on one.
-	req, err := http.NewRequest(method, "http://makimad"+path, rdr)
+	req, err := http.NewRequest(method, "http://"+unixHost+path, rdr)
 	if err != nil {
 		return err
 	}

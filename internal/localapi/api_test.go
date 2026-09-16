@@ -104,6 +104,18 @@ func post(t *testing.T, h http.Handler, path string, body any) *httptest.Respons
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(b)))
+	req.Host = unixHost
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+// get is the read-side counterpart, spelling the Host the socket client sends.
+func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Host = unixHost
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
@@ -113,9 +125,7 @@ func TestStatusIsServed(t *testing.T) {
 	b := &fakeBackend{status: Status{Version: "test"}}
 	h := NewServer(b, true).Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	w := get(t, h, "/api/status")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)
@@ -191,9 +201,7 @@ func TestReadOnlyListenerRefusesChanges(t *testing.T) {
 	b := &fakeBackend{}
 	h := NewServer(b, false).Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	w := get(t, h, "/api/status")
 	if w.Code != http.StatusOK {
 		t.Error("a read-only listener refused a read")
 	}
@@ -231,9 +239,7 @@ func TestUnserveAndExitNode(t *testing.T) {
 func TestUIIsServedAtRoot(t *testing.T) {
 	h := NewServer(&fakeBackend{}, true).Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	w := get(t, h, "/")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)
@@ -369,9 +375,7 @@ func TestPingReportsThePath(t *testing.T) {
 	}}
 	h := NewServer(b, true).Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/ping?peer=desktop", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	w := get(t, h, "/api/ping?peer=desktop")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body)
@@ -399,9 +403,7 @@ func TestPingWorksOnAReadOnlyListener(t *testing.T) {
 	b := &fakeBackend{ping: Ping{Name: "desktop"}}
 	h := NewServer(b, false).Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/ping?peer=desktop", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	w := get(t, h, "/api/ping?peer=desktop")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("a read-only listener refused a ping: %d %s", w.Code, w.Body)
@@ -411,9 +413,7 @@ func TestPingWorksOnAReadOnlyListener(t *testing.T) {
 func TestPingNeedsAPeer(t *testing.T) {
 	h := NewServer(&fakeBackend{}, true).Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	w := get(t, h, "/api/ping")
 
 	if w.Code == http.StatusOK {
 		t.Error("a ping with no peer was accepted")
@@ -426,9 +426,7 @@ func TestPingReportsAnUnknownPeer(t *testing.T) {
 	b := &fakeBackend{fail: errors.New(`no peer named "laptop"`)}
 	h := NewServer(b, true).Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/ping?peer=laptop", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	w := get(t, h, "/api/ping?peer=laptop")
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("got %d, want 404", w.Code)
@@ -520,5 +518,148 @@ func TestSetSSHReportsWhyItWouldNotStart(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "authorized keys") {
 		t.Errorf("the reason did not reach the client: %s", w.Body)
+	}
+}
+
+// A page on another origin must not be able to change this node, even when the
+// listener is a writable one. The browser attaches Origin to every cross-origin
+// write, which is the whole signal.
+func TestCrossOriginWritesAreRefused(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/serve", strings.NewReader(`{"spec":"8080"}`))
+	req.Host = "127.0.0.1:8088"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("a cross-origin write returned %d, want 403", w.Code)
+	}
+	if len(b.added) != 0 {
+		t.Error("a cross-origin write reached the backend")
+	}
+}
+
+// The UI's own fetch carries its own origin, and must still work.
+func TestSameOriginWritesAreAllowed(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/serve", strings.NewReader(`{"spec":"8080"}`))
+	req.Host = "127.0.0.1:8088"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:8088")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("a same-origin write returned %d: %s", w.Code, w.Body)
+	}
+	if len(b.added) != 1 {
+		t.Error("a same-origin write did not reach the backend")
+	}
+}
+
+// An HTML form can only send three content types, none of them JSON. Requiring
+// JSON is what keeps a form post on a page somebody was reading from landing
+// here with their cookies and their loopback address.
+func TestFormContentTypesAreRefused(t *testing.T) {
+	for _, ct := range []string{
+		"text/plain",
+		"application/x-www-form-urlencoded",
+		"multipart/form-data; boundary=x",
+		"",
+	} {
+		b := &fakeBackend{}
+		h := NewServer(b, true).Handler()
+
+		req := httptest.NewRequest(http.MethodPost, "/api/serve", strings.NewReader(`{"spec":"8080"}`))
+		req.Host = "127.0.0.1:8088"
+		if ct != "" {
+			req.Header.Set("Content-Type", ct)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnsupportedMediaType {
+			t.Errorf("content-type %q returned %d, want 415", ct, w.Code)
+		}
+		if len(b.added) != 0 {
+			t.Errorf("content-type %q reached the backend", ct)
+		}
+	}
+}
+
+// A charset after the type is still JSON.
+func TestJSONWithACharsetIsAccepted(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/serve", strings.NewReader(`{"spec":"8080"}`))
+	req.Host = unixHost
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("returned %d: %s", w.Code, w.Body)
+	}
+}
+
+// DNS rebinding: a name the attacker owns, pointed at this machine. The Host
+// header carries the name, and this listener does not answer to names.
+func TestRequestsForAnotherNameAreRefused(t *testing.T) {
+	for _, host := range []string{"evil.example", "makima.example.com:8088", "rebind.test"} {
+		b := &fakeBackend{status: Status{Version: "test"}}
+		h := NewServer(b, true).Handler()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("host %q returned %d, want 403", host, w.Code)
+		}
+	}
+}
+
+// The addresses it does answer to: its own, and the socket client's stand-in.
+func TestOwnAddressesAreAccepted(t *testing.T) {
+	for _, host := range []string{unixHost, "127.0.0.1:8088", "localhost:8088", "localhost", "[::1]:8088", "192.168.1.5:8088"} {
+		b := &fakeBackend{status: Status{Version: "test"}}
+		h := NewServer(b, true).Handler()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("host %q returned %d, want 200", host, w.Code)
+		}
+	}
+}
+
+// The guard is in front of the routing table, so a route that does not exist
+// is still refused by method on a read-only listener. This is what makes the
+// read-only listener structural rather than a line each handler remembers.
+func TestReadOnlyRefusesEveryMutatingMethod(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		b := &fakeBackend{}
+		h := NewServer(b, false).Handler()
+
+		req := httptest.NewRequest(method, "/api/a-route-added-tomorrow", nil)
+		req.Host = unixHost
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s returned %d on a read-only listener, want 403", method, w.Code)
+		}
 	}
 }

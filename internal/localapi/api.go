@@ -19,9 +19,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/justin06lee/makima/internal/netcfg"
@@ -31,17 +35,13 @@ import (
 
 // GUISocketPath is a second socket, beside the first, for a desktop app.
 //
-// It exists because the two callers want opposite things from the same API.
-// The CLI runs as root and may change anything; a menu-bar app runs as a
-// person and must not be able to reconfigure their VPN because a web view
-// rendered something unexpected. Rather than weaken the socket that already
-// works, the daemon opens another one that is read-only by construction, owned
-// by the human who started makima, and reachable by nobody else.
+// The two callers want opposite things. The CLI runs as root and may change
+// anything; a menu-bar app runs as a person and must not be able to reconfigure
+// their VPN because a web view rendered something unexpected. So the daemon
+// opens a second socket that is read-only, owned by whoever started makima.
 //
-// Actions the app offers — connect, disconnect, change an exit node — are not
-// smuggled through here. They run the CLI with a graphical authentication
-// prompt, which is the same permission boundary a person would cross by
-// typing sudo, made visible instead of implicit.
+// The app's own actions do not come through here: they run the CLI behind a
+// graphical authentication prompt.
 func GUISocketPath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "makimad-gui.sock")
 }
@@ -54,6 +54,11 @@ func GUISocketPath(configPath string) string {
 func SocketPath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "makimad.sock")
 }
+
+// unixHost is the Host the socket client sends. net/http insists on one and a
+// Unix socket has none, so this stands in — and being an invalid DNS name, it
+// is one no browser can be tricked into sending.
+const unixHost = "makimad"
 
 // Status is everything the daemon knows about itself.
 type Status struct {
@@ -293,12 +298,10 @@ type Backend interface {
 type Server struct {
 	backend Backend
 
-	// allowWrite gates the endpoints that change something.
-	//
-	// The Unix socket gets them; a TCP listener may not, because a browser tab
-	// on a machine somebody else is using should not be able to republish this
-	// node's ports. The distinction is made per-listener rather than per-route
-	// so it cannot be got wrong by adding a route later.
+	// allowWrite gates every method that could change something. The Unix
+	// socket gets them; a TCP listener does not unless it was asked for with
+	// -ui-write. Enforced in guard, so a route added later is covered without
+	// anybody remembering to cover it.
 	allowWrite bool
 }
 
@@ -337,9 +340,6 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/serve", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		var req ServeRequest
 		if err := decode(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -358,9 +358,6 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/unserve", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		var req ServeRequest
 		if err := decode(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -377,9 +374,6 @@ func (s *Server) Handler() http.Handler {
 	// machine to the data plane — so it is behind the same gate as the rest,
 	// which in practice means the Unix socket only.
 	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		var req PairRequest
 		if err := decode(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -408,17 +402,11 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/pair/close", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		s.backend.ClosePairing()
 		writeJSON(w, http.StatusOK, okBody())
 	})
 
 	mux.HandleFunc("POST /api/inbox", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		var req InboxRequest
 		if err := decode(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -432,9 +420,6 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/ssh", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		var req SSHRequest
 		if err := decode(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -448,9 +433,6 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/exit-node", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		var req ExitNodeRequest
 		if err := decode(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -464,9 +446,6 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/advertise-exit", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		var req AdvertiseExitRequest
 		if err := decode(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -480,9 +459,6 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/firewall/allow", func(w http.ResponseWriter, r *http.Request) {
-		if !s.write(w) {
-			return
-		}
 		rep, err := s.backend.AllowFirewall()
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -492,17 +468,85 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.Handle("/", uiHandler())
-	return mux
+	return s.guard(mux)
 }
 
-// write reports whether a mutating request is permitted, answering it if not.
-func (s *Server) write(w http.ResponseWriter) bool {
-	if s.allowWrite {
+// guard is the access control for every request, in front of the routing table
+// rather than route by route — so a route added later is covered without
+// anybody remembering to cover it.
+//
+//	read-only     a listener that may not change anything refuses every method
+//	              that could, whatever the route does.
+//	Host          a browser told evil.example resolves to 127.0.0.1 sends that
+//	              name in Host. This listener answers only to IP literals and
+//	              localhost, so rebinding has nowhere to go.
+//	Origin        browsers attach it to every cross-origin write. Absent means
+//	              same-origin, or not a browser at all.
+//	Content-Type  an HTML form cannot send JSON, and a cross-origin fetch that
+//	              does needs a preflight this server never answers.
+func (s *Server) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mutating := r.Method != http.MethodGet && r.Method != http.MethodHead
+
+		if mutating && !s.allowWrite {
+			writeErr(w, http.StatusForbidden,
+				errors.New("this listener is read-only; use the socket, or start the daemon with -ui-write"))
+			return
+		}
+		if !hostIsOwn(r.Host) {
+			writeErr(w, http.StatusForbidden,
+				errors.New("this daemon does not answer to that name; reach it on its address"))
+			return
+		}
+		if mutating {
+			if o := r.Header.Get("Origin"); o != "" && !originIsOwn(o, r.Host) {
+				writeErr(w, http.StatusForbidden,
+					errors.New("cross-origin requests cannot change this node"))
+				return
+			}
+			if ct := r.Header.Get("Content-Type"); !isJSON(ct) {
+				writeErr(w, http.StatusUnsupportedMediaType,
+					errors.New("this endpoint takes application/json"))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// hostIsOwn reports whether a Host header names this listener rather than a
+// domain pointed at it.
+//
+// The Unix socket's client says "makimad", which no DNS name can be.
+func hostIsOwn(host string) bool {
+	if host == "" || host == unixHost {
 		return true
 	}
-	writeErr(w, http.StatusForbidden,
-		errors.New("this listener is read-only; use the socket, or start the daemon with -ui-write"))
-	return false
+	name := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		name = h
+	}
+	name = strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
+	if strings.EqualFold(name, "localhost") {
+		return true
+	}
+	_, err := netip.ParseAddr(name)
+	return err == nil
+}
+
+// originIsOwn reports whether an Origin header is this same listener.
+func originIsOwn(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, host)
+}
+
+// isJSON reports whether a Content-Type is JSON, ignoring any charset after it.
+func isJSON(ct string) bool {
+	mt, _, err := mime.ParseMediaType(ct)
+	return err == nil && mt == "application/json"
 }
 
 // ServeRequest publishes or withdraws a port.
