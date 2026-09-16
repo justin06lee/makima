@@ -85,19 +85,13 @@ type Node struct {
 	// into its WireGuard handshake as a hedge against Curve25519 being broken
 	// later. Zero means none, which is the normal case.
 	//
-	// It is local knowledge and never travels over the control channel: it
-	// lives in this struct because the peer list is what renders a WireGuard
-	// config, but a managed node clears whatever the server sent before
-	// applying a netmap. A control plane that could set preshared keys could
-	// silently sever any two nodes by giving them different ones, and it has
-	// no legitimate reason to hold a secret it is specifically designed not to
-	// need. Preshared keys reach a node the only way a symmetric secret can:
-	// out of band, inside a pairing address or a static config.
+	// Never travels over the control channel. A control plane that could set
+	// preshared keys could silently sever any two nodes by giving them
+	// different ones, so a managed node clears whatever the server sent.
 	//
-	// The tag is a real one because this struct is also what a node writes to
-	// its own configuration file, where the key must survive a restart.
-	// Keeping it off the control channel is therefore enforced at the wire,
-	// not by the absence of a field: see control.Client.PollMap.
+	// The tag is real because this struct is also what a node writes to its own
+	// config file. Keeping it off the wire is therefore enforced in
+	// control.Client.PollMap, not by the absence of a field.
 	PresharedKey key.Shared `json:"psk,omitzero"`
 }
 
@@ -146,7 +140,13 @@ type NetMap struct {
 	// PrivateKey is local-only and never crosses the wire. It lives here
 	// because rendering a WireGuard config needs it alongside the peers, and
 	// splitting it out only invites the two drifting apart.
-	PrivateKey key.Private `json:"private_key"`
+	//
+	// `json:"-"` is what makes "never crosses the wire" true rather than
+	// intended. A netmap is the natural thing for a status endpoint or a debug
+	// dump to reach for, and key.Private marshals itself perfectly well, so
+	// the field would go with it. Refusing to encode it means the mistake
+	// cannot be made from here.
+	PrivateKey key.Private `json:"-"`
 
 	Self  Node   `json:"self"`
 	Peers []Node `json:"peers"`
