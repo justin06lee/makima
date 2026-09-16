@@ -169,6 +169,34 @@ type Target struct {
 	User string // "" is ssh's default, which honours ~/.ssh/config
 }
 
+// ErrBadAddress reports a destination ssh would read as something other than a
+// machine to connect to.
+var ErrBadAddress = errors.New("migrate: that is not an address ssh can be given")
+
+// checkAddr refuses a destination that ssh would not read as one.
+//
+// These addresses are not typed here. They come out of another machine's
+// `tailscale status --json`, which lists names and addresses that peers chose
+// for themselves — so they are the one input on this path that somebody else
+// controls. ssh reads any argument starting with a dash as an option wherever
+// it appears, and `-oProxyCommand=...` is an option that runs a command on
+// *this* machine. A peer that named itself that would otherwise be naming a
+// command for the move to run.
+//
+// Whitespace goes too: an address with a space in it is either malformed or an
+// attempt to smuggle a second argument.
+func checkAddr(addr string) error {
+	switch {
+	case addr == "":
+		return fmt.Errorf("%w: it is empty", ErrBadAddress)
+	case strings.HasPrefix(addr, "-"):
+		return fmt.Errorf("%w: %q starts with a dash, which ssh reads as an option", ErrBadAddress, addr)
+	case strings.ContainsAny(addr, " \t\r\n"):
+		return fmt.Errorf("%w: %q has whitespace in it", ErrBadAddress, addr)
+	}
+	return nil
+}
+
 func (t Target) String() string {
 	s := t.Addr
 	if t.User != "" {
@@ -186,6 +214,10 @@ func (t Target) String() string {
 // check. The session keeps waiting — approving it lets the same session
 // through — so the caller's context decides how long that wait may be.
 func (s *SSH) Run(ctx context.Context, t Target, script string, stdin []byte, onAuth func(string)) (string, error) {
+	if err := checkAddr(t.Addr); err != nil {
+		return "", err
+	}
+
 	// Published keys are OpenSSH's, or Tailscale SSH's — which serves the
 	// same ones — so they are required on port 22 only. makima's own SSH
 	// server, on its own port, has a key of its own.
