@@ -293,8 +293,8 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	fmt.Println()
 	printInvite(words, inv)
 	warnIfUnreachable(reachable)
-	installDieAlias()
 	linkCLIQuietly()
+	offerAlias()
 	return nil
 }
 
@@ -330,8 +330,8 @@ func joinWith(ctx context.Context, path string, inv invite.Invite, name string) 
 	if err := bringUp(ctx, path); err != nil {
 		return err
 	}
-	installDieAlias()
 	linkCLIQuietly()
+	offerAlias()
 	return nil
 }
 

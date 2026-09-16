@@ -68,6 +68,8 @@ func main() {
 		err = serveCmd(os.Args[2:])
 	case "deny":
 		err = denyCmd(os.Args[2:])
+	case "alias":
+		err = aliasCmd(os.Args[2:])
 	case "link-cli":
 		err = linkCmd(os.Args[2:])
 	case "migrate":
@@ -162,6 +164,7 @@ everything else:
   makima firewall      status | allow
   makima sshd          let other machines ssh in, without an sshd
   makima ui            open the web interface
+  makima alias         add 'die' to your shell as a shortcut for 'makima down'
   makima link-cli      put this command on PATH, when it came with the app
   makima init          start a mesh you maintain by hand
   makima peer          add and remove its peers

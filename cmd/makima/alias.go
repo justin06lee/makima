@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/user"
@@ -18,40 +20,107 @@ const (
 	aliasBody = `alias die='sudo makima down'`
 )
 
-// installDieAlias adds `die` to the shell, once.
+// aliasCmd adds `die` to the shell, when asked to.
 //
-// A shell alias rather than a binary called `die` on PATH. A two-letter-ish
-// word that generic, installed globally, would collide with whatever else a
-// machine has or later gains — and it would be in the way for every user of
-// the machine rather than the one who asked for it. An alias is scoped to the
-// person, visible in a file they own, and removable with a text editor.
+// It is asked to. `makima up` used to do this by itself, which is the kind of
+// thing a VPN has no business doing: a shell startup file is somebody's, it is
+// read by every shell they open, and editing it as root because they brought a
+// tunnel up is a surprise in a file they may not think to look in.
 //
-// Best effort throughout: a shell config that cannot be written is not a
-// reason for `makima up` to fail, because the mesh is already up by then.
-func installDieAlias() {
-	home, ok := invokingUser()
-	if !ok {
-		return
+// A shell alias rather than a binary called `die` on PATH. A word that generic,
+// installed globally, would collide with whatever else a machine has or later
+// gains, and would be in the way for every user of the machine rather than the
+// one who asked for it. An alias is scoped to the person, visible in a file
+// they own, and removable with a text editor.
+func aliasCmd(args []string) error {
+	fs := flag.NewFlagSet("alias", flag.ExitOnError)
+	remove := fs.Bool("remove", false, "take the alias back out")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
+	home, ok := invokingUser()
+	if !ok {
+		return errors.New("there is no person's shell here to add this to — run it as yourself, not as root")
+	}
 	rc, ok := shellStartupFile(home)
 	if !ok {
-		return
+		return errors.New("could not work out which startup file your shell reads")
+	}
+
+	if *remove {
+		removed, err := removeAliasBlock(rc)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			fmt.Printf("There is no makima block in %s.\n", rc)
+			return nil
+		}
+		fmt.Printf("Removed the makima block from %s. It goes in new shells.\n", rc)
+		return nil
 	}
 
 	added, err := appendAliasBlock(rc)
-	if err != nil || !added {
-		return
+	if err != nil {
+		return err
 	}
-
-	// Written as root through sudo, so the file would otherwise stop belonging
-	// to the person whose shell reads it.
+	if !added {
+		fmt.Printf("%s already has it.\n", rc)
+		return nil
+	}
 	if uid, gid, ok := invokingIDs(); ok {
+		// Written as root through sudo, so the file would otherwise stop
+		// belonging to the person whose shell reads it.
 		_ = os.Chown(rc, uid, gid)
 	}
 
-	fmt.Printf("\nAdded `die` to %s as a shortcut for 'makima down'.\n", rc)
-	fmt.Printf("It works in new shells. Delete the block marked %q to remove it.\n", "makima")
+	fmt.Printf("Added to %s:\n\n  %s\n\n", rc, aliasBody)
+	fmt.Println("It works in new shells. `makima alias -remove` takes it out again.")
+	fmt.Println("Note that `die` is also a common name for a shell function; if you have one,")
+	fmt.Println("this shadows it.")
+	return nil
+}
+
+// offerAlias mentions the shortcut without writing anything.
+func offerAlias() {
+	if _, ok := invokingUser(); !ok {
+		return
+	}
+	fmt.Println("\nTip: `makima alias` adds `die` to your shell as a shortcut for 'makima down'.")
+}
+
+// removeAliasBlock takes the fenced block back out of a startup file.
+func removeAliasBlock(rc string) (removed bool, err error) {
+	b, err := os.ReadFile(rc)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	text := string(b)
+	start := strings.Index(text, aliasBegin)
+	if start < 0 {
+		return false, nil
+	}
+	end := strings.Index(text[start:], aliasEnd)
+	if end < 0 {
+		return false, fmt.Errorf("%s has an unterminated makima block; remove it by hand", rc)
+	}
+	end += start + len(aliasEnd)
+	if end < len(text) && text[end] == '\n' {
+		end++
+	}
+	// The blank line the block was written after goes with it.
+	out := strings.TrimSuffix(text[:start], "\n") + text[end:]
+
+	info, err := os.Stat(rc)
+	mode := os.FileMode(0o644)
+	if err == nil {
+		mode = info.Mode().Perm()
+	}
+	return true, os.WriteFile(rc, []byte(out), mode)
 }
 
 // appendAliasBlock adds the fenced block to a startup file, unless it is

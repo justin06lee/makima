@@ -146,3 +146,64 @@ func read(t *testing.T, p string) string {
 	}
 	return string(b)
 }
+
+// The block goes in once and comes back out cleanly, leaving the rest of the
+// file as it was — this is somebody's shell config, not makima's.
+func TestAliasBlockRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	rc := filepath.Join(dir, ".zshrc")
+	before := "export PATH=/opt/bin:$PATH\nalias ll='ls -la'\n"
+	if err := os.WriteFile(rc, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	added, err := appendAliasBlock(rc)
+	if err != nil || !added {
+		t.Fatalf("appendAliasBlock: added=%v err=%v", added, err)
+	}
+	if again, _ := appendAliasBlock(rc); again {
+		t.Error("the block was added a second time")
+	}
+
+	removed, err := removeAliasBlock(rc)
+	if err != nil || !removed {
+		t.Fatalf("removeAliasBlock: removed=%v err=%v", removed, err)
+	}
+	got, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != before {
+		t.Errorf("the file did not come back to what it was:\n got %q\nwant %q", got, before)
+	}
+}
+
+func TestRemoveAliasBlockOnAFileWithoutOne(t *testing.T) {
+	dir := t.TempDir()
+	rc := filepath.Join(dir, ".bashrc")
+	if err := os.WriteFile(rc, []byte("alias ll='ls -la'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := removeAliasBlock(rc); removed || err != nil {
+		t.Errorf("removed=%v err=%v, want false nil", removed, err)
+	}
+	if removed, err := removeAliasBlock(filepath.Join(dir, "nothing-here")); removed || err != nil {
+		t.Errorf("on a missing file: removed=%v err=%v, want false nil", removed, err)
+	}
+}
+
+// Nothing writes to a shell startup file unless `makima alias` is the command.
+func TestBringingTheTunnelUpDoesNotEditAShellFile(t *testing.T) {
+	if strings.Contains(upSource(t), "appendAliasBlock") {
+		t.Error("up.go reaches the shell-config writer; the alias must stay opt-in")
+	}
+}
+
+func upSource(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("up.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
