@@ -48,65 +48,91 @@ who belongs.
 | **M7** | one-command setup — `up`, invites, services that publish themselves | **done** |
 
 What this has *not* had is a week of running on real machines behind real NATs.
-Every layer is covered by tests, including the relay and the path-selecting
-socket end to end, but tests are not the same as a laptop moving between a
-café and a home network. See [Known limits](#known-limits).
+The protocol packages are well covered — policy, disco, serve and the DNS
+server sit near 90%, the relay and the path-selecting socket are tested end to
+end — but the command-line layer that wires them together is barely covered at
+all, and tests are not the same as a laptop moving between a café and a home
+network either way. See [Known limits](#known-limits).
 
 ## Install
 
-**The app.** Download it, open it, click. It carries the four binaries inside
-its bundle, so nothing else has to be installed. The first time it brings a
-tunnel up it asks for your password once, registers the tunnel with the system
-so it is back after every restart, and puts the `makima` command on PATH so
-the terminal works too.
+**There is no published release yet, so today this is built from source.**
+Everything below works from a clone; the packaged routes are written and wired
+into [the release workflow](.github/workflows/release.yml), and go live with
+the first `v*` tag. They are listed further down so it is clear what is coming
+and what is not yet there — not as instructions that quietly fail.
 
 ```sh
-make app        # build it and put it in /Applications — or install the .deb, .rpm or AppImage
+git clone https://github.com/justin06lee/makima && cd makima
+make install    # the four binaries in /usr/local/bin, and the app if Rust and bun are here
 ```
 
-**The command line.**
+Requires Go 1.26 or newer. The app needs Rust and bun as well, and the build
+skips it with a note when they are absent.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/install.sh | sh
+make            # build only; changes nothing on this machine
+make install    # replace makima on this machine, and open the app
+make update     # the same thing
+make check      # fmt, vet, test, and the race detector
+make release    # cross-built archives and checksums, in dist/release
 ```
 
-One archive, verified against the release's published `SHA256SUMS`, and four
-binaries in `/usr/local/bin`. It starts nothing, enables nothing at boot, and
-touches no network configuration — `makima up` does all of that, when asked.
+Then, on a machine with nothing installed on it at all:
+
+```sh
+go run github.com/justin06lee/makima/cmd/makima@latest try -serve 8080
+```
 
 <details>
-<summary>Other ways</summary>
+<summary>What the install replaces</summary>
+
+`make install`, `make update`, `make app` and `make app-install` each start
+from a clean slate: they run [`dist/uninstall.sh`](dist/uninstall.sh), which
+stops the app and all three daemons and removes everything any version left
+behind. That includes the network this machine was on or held, the launchd and
+systemd registrations, logs, the resolver file, the app's sudoers rule and
+data, and its privacy grants. The new build opens on the app's first screen.
+The old network's keys are copied to `/tmp/makima-uninstalled-*` first, in case
+you wiped the machine holding a network by mistake — `/tmp` is cleared on
+reboot, so that is a safety net for the next hour, not a backup.
+
+`make` on its own only builds. It deliberately does not do any of the above:
+somebody checking that the tree compiles should not lose a network for it.
+
+Run `sh dist/uninstall.sh` on its own to take makima off a machine for good.
+
+</details>
+
+<details>
+<summary>The packaged routes, once there is a release</summary>
+
+None of these work yet — there is no tag, so there is nothing for them to
+fetch. They are here so the shape of the plan is visible.
 
 ```sh
+# the installer: one archive, checked against the release's SHA256SUMS
+curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/install.sh | sh
+
 brew install justin06lee/makima/makima     # macOS and Linux
 yay -S makima                              # Arch
 nix run github:justin06lee/makima          # Nix
-go install github.com/justin06lee/makima/cmd/makima@latest
 docker run -p 3478:3478 ghcr.io/justin06lee/makima   # a relay
 ```
 
-From source, which is what a contributor wants:
+Two things are worth knowing before any of them is real:
 
-```sh
-make          # build, wipe every earlier makima off this machine, install the new one, open the app
-make update   # the same thing
-make check    # fmt, vet, test, and the race detector
-make release  # cross-built archives and checksums, in dist/release
-```
+**The app is not signed or notarized.** A `.dmg` downloaded from a release
+would be quarantined by Gatekeeper and refuse to open, and this app installs a
+sudoers rule — which is exactly the kind of thing signing exists to vouch for.
+Until there is a Developer ID certificate in the release workflow, building it
+yourself is the only honest way to run it.
 
-Requires Go 1.25 or newer. The app needs Rust and bun as well, and `make`
-skips it with a note when they are absent.
-
-Every install target (`make`, `make install`, `make update`, `make app`,
-`make app-install`) starts from a clean slate: it runs
-[`dist/uninstall.sh`](dist/uninstall.sh), which stops the app and all three
-daemons and removes everything any version left behind. That includes the
-network this machine was on or held, the launchd and systemd registrations,
-logs, the resolver file, the app's sudoers rule and data, and its privacy
-grants. The new build opens on the app's first screen. The old network's keys
-are copied to `/tmp/makima-uninstalled-*` first, in case you wiped the machine
-holding a network by mistake. Run `sh dist/uninstall.sh` on its own to take
-makima off a machine for good.
+**The checksum is not a signature.** `install.sh` refuses to install anything
+it cannot check, which catches a corrupt download and a mismatched build. It
+does not catch a compromised release: the archive and the sums come from the
+same place over the same connection. Signing the checksums is the fix and is
+not done.
 
 </details>
 
@@ -995,6 +1021,15 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 - **No replay protection on the control channel.** Messages are sealed and
   authenticated, but nonces are not tracked, so a captured registration could
   be replayed to revert a node's key and endpoints to older values.
+- **The app remembers your password for Connect and Disconnect only.** Saying
+  yes once writes a sudoers rule for the handful of commands that change
+  nothing about who this machine trusts. Adding a device, joining a network,
+  choosing an exit node and moving off Tailscale ask every time, because a
+  standing grant for those would let anything else running as you put this
+  machine on a network of its choosing without a prompt. Deleting
+  `/etc/sudoers.d/makima_<you>` makes everything ask again.
+- **The app is not signed or notarized**, so it has to be built rather than
+  downloaded. See [Install](#install).
 
 ## Layout
 
