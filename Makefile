@@ -8,11 +8,26 @@
 BINDIR  := /usr/local/bin
 BINS    := makima makimad makima-server makima-relay
 BUILD   := build
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# --match 'v*' on purpose: a tag that is not a version is not a version. Without
+# it, `git describe` picks up whatever annotated tag is nearest — including the
+# per-branch ones this repository used to carry — and stamps a branch name into
+# every binary as its version number.
+VERSION := $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo dev)
+
+# The app bundle's version. Tauri and macOS both want plain semver, so this is
+# the last release rather than the full describe — the running version the app
+# actually shows comes from the daemon, which carries VERSION above.
+#
+# It exists so that the number is in one place. Two files used to hold it by
+# hand, and a hand-held version number is one that is right until the first
+# release nobody remembered to edit it for.
+APP_VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//' || echo 0.0.0)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 # Platforms a release is built for. One line, so adding a platform is a
-# one-word change and every part of the release machinery follows.
+# one-word change and every part of the release machinery follows — `cross`
+# included, which is what proves the one-binary-per-platform promise still
+# holds.
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 linux/arm windows/amd64
 
 RELEASE := dist/release
@@ -24,15 +39,30 @@ RELEASE := dist/release
 TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-.PHONY: all build install update clean-slate clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
+.PHONY: all build install install-bins reinstall update app-version clean-slate clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
+
+# `make` builds. It does not touch the machine.
+#
+# It used to run the golden path — build, wipe every trace of makima off this
+# machine, install, relaunch — because that is what somebody working on makima
+# wants most of the time. It is not what somebody who typed `make` to see
+# whether the tree compiles wants, and the two are indistinguishable until it
+# has already happened: clean-slate stops the daemon, forgets the network this
+# machine is on *or holds*, and takes its launchd and systemd registrations
+# with it. A build command that can lose a network is a build command people
+# are right to be afraid of.
+#
+# `make install` is now the golden path, and it says what it does.
+all: build
+	@echo "  built into $(BUILD)/. 'make install' replaces makima on this machine."
 
 # Everything is built before anything is taken down, so a build that fails
 # leaves the machine exactly as it was rather than with nothing on it.
-all: build $(if $(HAVE_APP),app-build) install $(if $(HAVE_APP),app-place app-open,app-skip)
+reinstall: build $(if $(HAVE_APP),app-build) install-bins $(if $(HAVE_APP),app-place app-open,app-skip)
 
 # update is the golden path: every install is already a full stop, delete and
 # replace, so there is nothing left for a separate update to do differently.
-update: all
+update: reinstall
 
 build:
 	@mkdir -p $(BUILD)
@@ -41,7 +71,11 @@ build:
 		go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD)/$$b ./cmd/$$b || exit 1; \
 	done
 
-install: build clean-slate
+install: reinstall
+
+# install-bins is the copy step on its own, so `reinstall` can order the wipe
+# and the copy itself rather than through a prerequisite.
+install-bins: clean-slate
 	@for b in $(BINS); do \
 		echo "  install $(BINDIR)/$$b"; \
 		sudo install -m 0755 $(BUILD)/$$b $(BINDIR)/$$b || exit 1; \
@@ -75,7 +109,7 @@ test:
 
 # Proof that the one-binary-per-platform promise actually holds.
 cross:
-	@for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do \
+	@for t in $(PLATFORMS); do \
 		os=$${t%/*}; arch=$${t#*/}; \
 		printf "  %-16s" "$$t"; \
 		GOOS=$$os GOARCH=$$arch go build -o /dev/null ./... && echo ok || exit 1; \
@@ -131,6 +165,14 @@ SIDECARS := desktop/src-tauri/binaries
 BUNDLE   := desktop/src-tauri/target/release/bundle
 APP      := /Applications/makima.app
 
+# The bundle's version, written from the last release tag into the two files
+# that carry it.
+app-version:
+	@for f in desktop/package.json desktop/src-tauri/tauri.conf.json; do \
+		sed -i.bak 's/^\(  "version": \)"[^"]*"/\1"$(APP_VERSION)"/' $$f && rm -f $$f.bak; \
+	done
+	@echo "  version $(APP_VERSION) (app bundle), $(VERSION) (binaries)"
+
 sidecars: kits
 	@test -n "$(TRIPLE)" || { echo "rustc not found; the app needs a Rust toolchain"; exit 1; }
 	@mkdir -p $(SIDECARS)
@@ -171,11 +213,11 @@ app: app-build clean-slate app-place app-open
 # somebody else, and its packaging step leaves a mounted volume behind when it
 # is interrupted, after which every later build fails at that step. `make
 # dmg` produces one on purpose.
-app-build: sidecars
+app-build: app-version sidecars
 	@cd desktop && bun install --frozen-lockfile && \
 		if [ "$$(uname -s)" = Darwin ]; then bun run tauri build --bundles app; else bun run tauri build; fi
 
-dmg: sidecars
+dmg: app-version sidecars
 	@cd desktop && bun install --frozen-lockfile && bun run tauri build --bundles dmg
 
 app-install: clean-slate app-place app-open
@@ -210,7 +252,7 @@ app-skip:
 
 # The app against a pretend mesh, so the interface can be worked on without
 # root and without a tunnel. Two processes; this runs the second.
-app-dev: sidecars
+app-dev: app-version sidecars
 	@echo "  run 'go run ./desktop/devserver' in another terminal first"
 	@cd desktop && MAKIMA_GUI_SOCKET=/tmp/makima-dev.sock bun run tauri dev
 
