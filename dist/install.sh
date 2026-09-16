@@ -69,26 +69,43 @@ curl -fsSL "$base/$name.tar.gz" -o "$tmp/$name.tar.gz" ||
 
 # Checked, not assumed. A binary that is about to be run as root and handed a
 # network interface is exactly the wrong thing to take on trust from a CDN.
-if curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" 2>/dev/null; then
+#
+# Every way this can fail is a refusal, not a warning. A verification step that
+# prints "skipping" and carries on is not a verification step: the three ways
+# it used to give up — no checksums published, no tool to run them with, no
+# line for this platform — are each exactly what an attacker who could serve a
+# modified archive would arrange. MAKIMA_SKIP_CHECKSUM is there for somebody
+# building their own archives, and says what it is.
+#
+# What this does *not* prove is who built the archive: the tarball and the sums
+# come from the same place over the same connection, so this catches a corrupt
+# download and a mismatched build, not a compromised release. Signing is the
+# answer to that and is not done yet — see the release notes.
+if [ -n "${MAKIMA_SKIP_CHECKSUM:-}" ]; then
+	say "MAKIMA_SKIP_CHECKSUM is set; not verifying this download"
+else
+	curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" ||
+		die "no SHA256SUMS published for $VERSION, so this download cannot be verified.
+  Set MAKIMA_SKIP_CHECKSUM=1 to install anyway."
+
 	if command -v sha256sum >/dev/null 2>&1; then
-		want=$(grep " $name.tar.gz\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
 		got=$(sha256sum "$tmp/$name.tar.gz" | cut -d' ' -f1)
 	elif command -v shasum >/dev/null 2>&1; then
-		want=$(grep " $name.tar.gz\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
 		got=$(shasum -a 256 "$tmp/$name.tar.gz" | cut -d' ' -f1)
 	else
-		want=""; got=""
-		say "no sha256 tool here; skipping the checksum"
+		die "no sha256sum or shasum on this machine, so this download cannot be verified.
+  Install one, or set MAKIMA_SKIP_CHECKSUM=1 to install anyway."
 	fi
 
-	if [ -n "$want" ]; then
-		[ "$want" = "$got" ] || die "checksum mismatch — refusing to install
+	want=$(grep " $name.tar.gz\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
+	[ -n "$want" ] ||
+		die "SHA256SUMS has no line for $name.tar.gz, so this download cannot be verified.
+  Set MAKIMA_SKIP_CHECKSUM=1 to install anyway."
+
+	[ "$want" = "$got" ] || die "checksum mismatch — refusing to install
   expected $want
   got      $got"
-		say "checksum ok"
-	fi
-else
-	say "no published checksums for $VERSION; skipping verification"
+	say "checksum ok"
 fi
 
 tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
