@@ -17,11 +17,8 @@ import (
 // like the network is broken.
 //
 // What is installed is narrow: accept input arriving on the tunnel interface,
-// and nothing else. It opens no port to the LAN and no port to the internet.
-// Traffic can only arrive on that interface after WireGuard has authenticated
-// it, so "trust the tunnel" is not a weakening of the firewall — it is a
-// statement that cryptographic authentication is a stronger admission check
-// than a port number.
+// and nothing else — no port to the LAN, none to the internet. Traffic only
+// reaches that interface after WireGuard has authenticated it.
 type Firewall struct {
 	iface string
 

@@ -40,8 +40,8 @@ import (
 // A server behind a name rather than an address cannot be written in five
 // words; for that case the words are ten and the name is typed in front.
 //
-// The words are the BIP39 English list: two thousand and forty-eight of them,
-// each unique in its first four letters, chosen for exactly this job.
+// The list is BIP39 English: 2048 words, each unique in its first four
+// letters.
 
 //go:embed english.txt
 var wordlistText string

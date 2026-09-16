@@ -206,18 +206,14 @@ func (p *Private) UnmarshalText(b []byte) error {
 // Shared is a WireGuard preshared key: 32 bytes of symmetric secret mixed into
 // the handshake alongside the Curve25519 exchange.
 //
-// It is not a replacement for the keypairs and does not authenticate anyone —
-// two peers with the same Shared and no matching node keys still cannot talk.
-// What it buys is a hedge against Curve25519 itself: an adversary recording
-// traffic today and breaking X25519 later — with a quantum computer or
-// otherwise — still faces a symmetric secret they never saw on the wire.
-// WireGuard's own protocol note calls this the post-quantum escape hatch, and
-// it costs one extra field.
+// It authenticates nobody: two peers with the same Shared and no matching node
+// keys still cannot talk. What it buys is a hedge against Curve25519 itself —
+// an adversary recording traffic today and breaking X25519 later still faces a
+// symmetric secret they never saw on the wire.
 //
-// Distinct from Private because the two are never interchangeable: a Shared
-// has no public half, is symmetric, and must reach the far end by some channel
-// that already exists. In makima it travels inside a pairing address, which is
-// handed over out of band precisely so this is possible.
+// A separate type from Private because the two are never interchangeable: a
+// Shared has no public half and must reach the far end out of band, which in
+// makima means inside a pairing address.
 type Shared [Size]byte
 
 // NewShared generates a preshared key from the system CSPRNG.

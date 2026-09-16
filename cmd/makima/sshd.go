@@ -22,9 +22,8 @@ import (
 // there is no password authentication and no way to add one, and every session
 // runs as one local account chosen here rather than by whoever connects.
 //
-// Off unless asked for, unlike everything else makima switches on by default.
-// Publishing a port or accepting a file into one directory are bounded; a
-// shell is not, and nobody should discover months later that they had one.
+// Off unless asked for, unlike everything else makima switches on by default:
+// publishing a port is bounded, a shell is not.
 
 func sshdCmd(args []string) error {
 	fs := flag.NewFlagSet("sshd", flag.ExitOnError)

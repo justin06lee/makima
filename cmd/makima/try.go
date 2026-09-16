@@ -37,11 +37,9 @@ import (
 // Nothing is created, nothing is installed, nothing is written, and nothing
 // survives Ctrl-C.
 //
-// The trade is real and is said out loud rather than discovered: because the
-// host kernel never learns the network exists, an arbitrary program cannot use
-// it. You cannot point a browser at a mesh address. What you can do is
-// everything this process will proxy — a port in either direction — which
-// turns out to be most of what a first try is for.
+// The trade: because the host kernel never learns the network exists, an
+// arbitrary program cannot use it — you cannot point a browser at a mesh
+// address. Only the ports this process is asked to proxy work.
 
 func tryCmd(args []string) error {
 	fs := flag.NewFlagSet("try", flag.ExitOnError)

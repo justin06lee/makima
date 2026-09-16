@@ -77,8 +77,7 @@ func invokingUser() (home string, owner *drop.Owner, ok bool) {
 //   - The owner of /dev/console — whoever is logged in at the screen on a
 //     Mac. The last resort, for a daemon a launchd job started.
 //
-// Root itself never counts: a root-owned socket in a root-owned directory is
-// what the daemon has anyway, and the point here is to find a person.
+// Root itself never counts: the point is to find a person.
 func invoker() *user.User {
 	if name := os.Getenv("SUDO_USER"); name != "" && name != "root" {
 		if u, err := user.Lookup(name); err == nil {

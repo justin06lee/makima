@@ -9,11 +9,9 @@ import (
 // LocalEndpoints lists the addresses this host believes it can be reached at,
 // paired with the WireGuard listen port.
 //
-// This is the poor cousin of real discovery: it sees only what the host can
-// see about itself, so it finds LAN addresses and genuinely public ones, and
-// is blind to anything behind NAT. That is enough to make two machines on the
-// same network connect directly, and nothing more — a node behind a router
-// still needs the relay and the hole punching that come later.
+// It sees only what the host can see about itself: LAN addresses and genuinely
+// public ones, blind to anything behind NAT. Enough for two machines on the
+// same network; a node behind a router still needs the relay.
 //
 // Filtering is by address rather than interface name deliberately. Matching on
 // names means keeping a list of every VPN's naming convention (utun, wg, tun,

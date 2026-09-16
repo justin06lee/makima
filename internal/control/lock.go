@@ -25,11 +25,6 @@ import (
 // against the trusted keys before admitting them to the data plane. A server
 // that invents a peer now has to forge a signature it has no key for, and the
 // invented peer is rejected by every node in the mesh.
-//
-// This is why the node and machine keys were separated from the very first
-// commit rather than retrofitted: signing the WireGuard key specifically is
-// what makes the guarantee meaningful, and it only works if that key was never
-// the same thing as the node's identity to the server.
 
 // SignatureVersion prefixes signed material so a signature can never be
 // replayed into a different scheme.

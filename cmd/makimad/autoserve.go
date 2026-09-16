@@ -20,17 +20,13 @@ const autoServeInterval = 5 * time.Second
 // watchLocalPorts publishes this machine's loopback-only services on the mesh,
 // and withdraws them again when they stop.
 //
-// This is the difference between "makima works" and "makima needs no
-// instructions". A service on 127.0.0.1 is unreachable through the tunnel no
-// matter how healthy the mesh is, and the fix — publish the port — is a step
-// you can only take if you already understand why it is necessary. Which means
-// the people most likely to need it are the least likely to know it exists.
+// A service on 127.0.0.1 is unreachable through the tunnel no matter how
+// healthy the mesh is, and the fix — publish the port — is a step you can only
+// take if you already know it is necessary.
 //
 // The rule this encodes is that your own mesh is as trusted as your own
-// machine. That is the right default for the three computers one person owns,
-// and it is stated in the daemon's startup log rather than left to be
-// discovered, because it stops being right the moment somebody else's laptop
-// joins.
+// machine. Right for the computers one person owns, wrong the moment somebody
+// else's laptop joins, so the daemon says so at startup.
 func (n *node) watchLocalPorts(ctx context.Context) {
 	t := time.NewTicker(autoServeInterval)
 	defer t.Stop()
