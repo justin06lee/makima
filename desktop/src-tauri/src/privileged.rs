@@ -78,12 +78,20 @@ impl Action {
             // `set -exit-node ""` is what the CLI expects for it.
             Action::ExitNode { name } => vec![s("set"), s("-exit-node"), name.clone()],
             Action::AdvertiseExit { on } => {
-                vec![s("set"), s("-advertise-exit-node"), s(if *on { "true" } else { "false" })]
+                vec![
+                    s("set"),
+                    s("-advertise-exit-node"),
+                    s(if *on { "true" } else { "false" }),
+                ]
             }
             Action::Invite => vec![s("invite"), s("-json")],
             Action::Pair => vec![s("pair")],
             Action::LinkCli => vec![s("link-cli"), s("-q")],
-            Action::MigrateHost { advertise, name, invites } => vec![
+            Action::MigrateHost {
+                advertise,
+                name,
+                invites,
+            } => vec![
                 s("migrate"),
                 s("host"),
                 s("-json"),
@@ -95,7 +103,13 @@ impl Action {
                 invites.to_string(),
             ],
             Action::MigrateJoin { invite, name } => {
-                vec![s("migrate"), s("join"), s("-name"), name.clone(), invite.clone()]
+                vec![
+                    s("migrate"),
+                    s("join"),
+                    s("-name"),
+                    name.clone(),
+                    invite.clone(),
+                ]
             }
             Action::MigrateRetire => vec![s("migrate"), s("retire")],
         }
@@ -151,14 +165,25 @@ impl Action {
                 }
                 let words: Vec<&str> = invite.split_whitespace().collect();
                 if words.len() < 11 || words.len() > 40 || invite.len() > 512 {
-                    return Err("that is not an invite — paste the mk1_ string, or type all fifteen words".into());
+                    return Err(
+                        "that is not an invite — paste the mk1_ string, or type all fifteen words"
+                            .into(),
+                    );
                 }
                 if !words.iter().all(|w| {
                     w.bytes().all(|b| {
-                        b.is_ascii_alphanumeric() || b == b'.' || b == b':' || b == b'/' || b == b'-' || b == b'[' || b == b']'
+                        b.is_ascii_alphanumeric()
+                            || b == b'.'
+                            || b == b':'
+                            || b == b'/'
+                            || b == b'-'
+                            || b == b'['
+                            || b == b']'
                     })
                 }) {
-                    return Err("those words have characters in them that an invite never has".into());
+                    return Err(
+                        "those words have characters in them that an invite never has".into(),
+                    );
                 }
                 Ok(())
             }
@@ -168,11 +193,15 @@ impl Action {
                 }
                 Ok(())
             }
-            Action::MigrateHost { advertise, name, .. } => {
+            Action::MigrateHost {
+                advertise, name, ..
+            } => {
                 machine_name(name)?;
                 let ok = !advertise.is_empty()
                     && advertise.len() <= 253
-                    && advertise.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:/[]_".contains(&b));
+                    && advertise
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b".-:/[]_".contains(&b));
                 if !ok {
                     return Err("that is not an address other devices can reach".into());
                 }
@@ -180,7 +209,10 @@ impl Action {
             }
             Action::MigrateJoin { invite, name } => {
                 machine_name(name)?;
-                Action::Join { invite: invite.clone() }.validate()
+                Action::Join {
+                    invite: invite.clone(),
+                }
+                .validate()
             }
             _ => Ok(()),
         }
@@ -194,7 +226,8 @@ fn machine_name(n: &str) -> Result<(), String> {
         && n.len() <= 63
         && !n.starts_with('-')
         && !n.ends_with('-')
-        && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        && n.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     if ok {
         Ok(())
     } else {
@@ -269,9 +302,12 @@ pub(crate) fn applescript_quote(s: &str) -> String {
 /// prompt sets none of the variables sudo would, and the daemon needs to know
 /// whose socket to open and whose Downloads to put files in.
 fn owner() -> Option<String> {
-    std::env::var("USER")
-        .ok()
-        .filter(|u| !u.is_empty() && u != "root" && u.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.'))
+    std::env::var("USER").ok().filter(|u| {
+        !u.is_empty()
+            && u != "root"
+            && u.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+    })
 }
 
 /// Where root keeps its own copy of the app's binaries.
@@ -294,36 +330,38 @@ const SIDECARS: [&str; 4] = ["makima", "makimad", "makima-server", "makima-relay
 /// One per account, named without dots because sudo skips any file in
 /// sudoers.d with a dot in its name.
 fn sudoers_path(who: &str) -> String {
-    format!("/etc/sudoers.d/makima_{}", who.replace(|c: char| !c.is_ascii_alphanumeric(), "_"))
+    format!(
+        "/etc/sudoers.d/makima_{}",
+        who.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    )
 }
 
 /// The commands the rule allows, and nothing else.
 ///
-/// Each is one of the app's own buttons, spelled the way `Action::argv` spells
-/// it — the steps of a move from Tailscale included — or one of the commands
-/// that only read, and need root only because what they read is root's. So the
-/// rule grants what the person already said yes to, not the whole CLI. The CLI
-/// runs this same copy from a terminal and gets the same answer (see
-/// cmd/makima/elevate.go). A verb with no arguments is listed bare, which sudo
-/// reads as "exactly these arguments". Anything not here falls back to the
-/// password prompt.
+/// Two tests decide whether a command belongs here: it takes no argument the
+/// caller chooses, and it cannot change who this machine trusts or where its
+/// traffic goes. Everything else falls back to the password prompt.
+///
+/// The second test is what keeps a wildcard out. `makima join *` would have
+/// meant any process running as this person could put the machine on a mesh of
+/// its choosing — an invite carries the control plane's URL, `join` asks
+/// nothing before it runs, and sudo's `*` matches an invite in full. One click
+/// on Connect would have bought silent, unattended network takeover for
+/// everything else on the machine. The same holds for `migrate join`, for
+/// `invite`, and for `pair`, which mint or accept the credential that admits a
+/// machine.
+///
+/// Connect and Disconnect are the buttons anybody presses daily, and they stay
+/// here. Adding a device and moving off Tailscale ask once, which is the right
+/// price for the only actions that change the membership of a network.
 fn sudo_commands() -> Vec<String> {
     let bin = format!("{TRUSTED_DIR}/makima");
     [
         "up",
         "down",
-        "join *",
-        "allow *",
-        "deny *",
-        "set -exit-node *",
         "set -advertise-exit-node true",
         "set -advertise-exit-node false",
-        "invite -json",
-        "pair",
         "link-cli -q",
-        "migrate host *",
-        "migrate join *",
-        "migrate retire",
         "status",
         "show",
         "doctor",
@@ -336,18 +374,42 @@ fn sudo_commands() -> Vec<String> {
     .collect()
 }
 
-/// The sudoers rule itself, one line per element.
-fn sudoers_lines(who: &str) -> Vec<String> {
+/// Whether a login name can appear in a sudoers rule as itself.
+///
+/// The name reaches this file verbatim, so anything that is not a plain login
+/// name is a chance to write a second rule. visudo would catch most of it, but
+/// refusing here means the malformed case never has to be caught.
+fn is_plain_login_name(who: &str) -> bool {
+    !who.is_empty()
+        && who.len() <= 32
+        && who
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+/// The sudoers rule itself, one line per element, or None for a name that
+/// cannot be spelled safely.
+fn sudoers_lines_checked(who: &str) -> Option<Vec<String>> {
+    if !is_plain_login_name(who) {
+        return None;
+    }
     let alias = format!(
         "MAKIMA_{}",
-        who.to_ascii_uppercase().replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+        who.to_ascii_uppercase()
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
     );
-    vec![
+    Some(vec![
         "# Written by the makima app so its buttons stop asking for a password.".into(),
+        "# Only commands that change nothing about who this machine trusts.".into(),
         "# Delete this file to make it ask every time again.".into(),
         format!("Cmnd_Alias {alias} = {}", sudo_commands().join(", ")),
         format!("{who} ALL=(root) NOPASSWD: {alias}"),
-    ]
+    ])
+}
+
+#[cfg(test)]
+fn sudoers_lines(who: &str) -> Vec<String> {
+    sudoers_lines_checked(who).expect("test name must be a plain login name")
 }
 
 /// Whether root's copy is the same build as the one in the bundle.
@@ -362,12 +424,25 @@ fn trusted_copy_current(src_dir: &std::path::Path, who: &str) -> bool {
     }
     let stamp = |p: &std::path::Path| {
         let m = std::fs::metadata(p).ok()?;
-        let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        let t = m
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
         Some((m.len(), t.as_secs()))
     };
-    SIDECARS.iter().all(|name| match stamp(&src_dir.join(name)) {
-        None => true,
-        Some(s) => stamp(&std::path::Path::new(TRUSTED_DIR).join(name)) == Some(s),
+    // A binary that cannot be stamped on either side means "ask": the two
+    // copies cannot be shown to match, and the previous answer here was that
+    // they did, which is the wrong way round for a check that decides whether
+    // to skip a password prompt.
+    SIDECARS.iter().all(|name| {
+        match (
+            stamp(&src_dir.join(name)),
+            stamp(&std::path::Path::new(TRUSTED_DIR).join(name)),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
     })
 }
 
@@ -379,6 +454,11 @@ fn trusted_copy_current(src_dir: &std::path::Path, who: &str) -> bool {
 /// rule is checked with visudo before it goes anywhere near sudoers.d — a
 /// malformed file there breaks sudo for the whole machine.
 fn trust_script(src_dir: &std::path::Path, who: &str) -> String {
+    // A name that cannot be spelled safely gets no rule at all: root's copy is
+    // still installed, and every action keeps asking.
+    let Some(rule) = sudoers_lines_checked(who) else {
+        return String::new();
+    };
     let mut s = format!(
         "{{ t=$(/usr/bin/mktemp /tmp/makima-sudoers.XXXXXX) && /bin/mkdir -p {d} && /usr/sbin/chown root:wheel {d} && /bin/chmod 755 {d}",
         d = shell_quote(TRUSTED_DIR),
@@ -394,7 +474,7 @@ fn trust_script(src_dir: &std::path::Path, who: &str) -> String {
         }
     }
     s.push_str(" && /usr/bin/printf '%s\\n'");
-    for line in sudoers_lines(who) {
+    for line in rule {
         s.push(' ');
         s.push_str(&shell_quote(&line));
     }
@@ -410,7 +490,11 @@ fn trust_script(src_dir: &std::path::Path, who: &str) -> String {
 /// None means "ask instead": no rule yet, a stale copy, or sudo saying no —
 /// every sudo refusal starts with "sudo:", and makima's own errors never do.
 #[cfg(target_os = "macos")]
-async fn run_remembered(src_dir: &std::path::Path, who: &str, argv: &[String]) -> Option<std::process::Output> {
+async fn run_remembered(
+    src_dir: &std::path::Path,
+    who: &str,
+    argv: &[String],
+) -> Option<std::process::Output> {
     if !trusted_copy_current(src_dir, who) {
         return None;
     }
@@ -422,7 +506,11 @@ async fn run_remembered(src_dir: &std::path::Path, who: &str, argv: &[String]) -
         .output()
         .await
         .ok()?;
-    if !out.status.success() && String::from_utf8_lossy(&out.stderr).trim_start().starts_with("sudo:") {
+    if !out.status.success()
+        && String::from_utf8_lossy(&out.stderr)
+            .trim_start()
+            .starts_with("sudo:")
+    {
         return None;
     }
     Some(out)
@@ -513,7 +601,10 @@ fn finish(output: std::process::Output) -> Outcome {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
     if output.status.success() {
-        return Outcome { ok: true, output: stdout };
+        return Outcome {
+            ok: true,
+            output: stdout,
+        };
     }
 
     // A cancelled prompt is not a failure worth shouting about: the user said
@@ -525,7 +616,10 @@ fn finish(output: std::process::Output) -> Outcome {
         || stderr.contains("Not authorized");
 
     if cancelled {
-        return Outcome { ok: false, output: "cancelled".into() };
+        return Outcome {
+            ok: false,
+            output: "cancelled".into(),
+        };
     }
 
     Outcome {
@@ -554,7 +648,10 @@ pub async fn run_unprivileged(args: &[String]) -> Result<Outcome, String> {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
     if output.status.success() {
-        return Ok(Outcome { ok: true, output: stdout });
+        return Ok(Outcome {
+            ok: true,
+            output: stdout,
+        });
     }
     Ok(Outcome {
         ok: false,
@@ -581,7 +678,8 @@ fn tidy(stdout: &str, stderr: &str) -> String {
         None => line,
     };
     let line = line.strip_prefix("makima: ").unwrap_or(line);
-    let line = line.trim_end_matches(|c: char| c == '(' || c.is_ascii_digit() || c == ')' || c == ' ');
+    let line =
+        line.trim_end_matches(|c: char| c == '(' || c.is_ascii_digit() || c == ')' || c == ' ');
     if line.is_empty() {
         "it did not say why".into()
     } else {
@@ -611,69 +709,176 @@ mod tests {
 
     #[test]
     fn join_accepts_both_shapes() {
-        assert!(Action::Join { invite: "mk1_abcDEF123-_".into() }.validate().is_ok());
+        assert!(Action::Join {
+            invite: "mk1_abcDEF123-_".into()
+        }
+        .validate()
+        .is_ok());
         let words = "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve";
-        assert!(Action::Join { invite: words.into() }.validate().is_ok());
+        assert!(Action::Join {
+            invite: words.into()
+        }
+        .validate()
+        .is_ok());
         let hosted = "makima.example.dev abandon ability able about above absent absorb abstract absurd abuse";
-        assert!(Action::Join { invite: hosted.into() }.validate().is_ok());
-        assert!(Action::Join { invite: "just three words".into() }.validate().is_err());
-        assert!(Action::Join { invite: "mk1_has spaces".into() }.validate().is_err());
+        assert!(Action::Join {
+            invite: hosted.into()
+        }
+        .validate()
+        .is_ok());
+        assert!(Action::Join {
+            invite: "just three words".into()
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Join {
+            invite: "mk1_has spaces".into()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]
     fn migrate_actions_spell_what_go_expects() {
         // Pinned on the Go side too, in internal/migrate: TestActionArgs.
-        let host = Action::MigrateHost { advertise: "192.168.1.20".into(), name: "tenet".into(), invites: 2 };
-        assert_eq!(host.argv().join(" "), "migrate host -json -advertise 192.168.1.20 -name tenet -invites 2");
-        let join = Action::MigrateJoin { invite: "mk1_abcDEF123-_".into(), name: "mac".into() };
-        assert_eq!(join.argv().join(" "), "migrate join -name mac mk1_abcDEF123-_");
+        let host = Action::MigrateHost {
+            advertise: "192.168.1.20".into(),
+            name: "tenet".into(),
+            invites: 2,
+        };
+        assert_eq!(
+            host.argv().join(" "),
+            "migrate host -json -advertise 192.168.1.20 -name tenet -invites 2"
+        );
+        let join = Action::MigrateJoin {
+            invite: "mk1_abcDEF123-_".into(),
+            name: "mac".into(),
+        };
+        assert_eq!(
+            join.argv().join(" "),
+            "migrate join -name mac mk1_abcDEF123-_"
+        );
         let retire = Action::MigrateRetire;
         assert_eq!(retire.argv().join(" "), "migrate retire");
 
         // The JSON the Go side sends deserializes to exactly these.
         let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-retire"}"#).unwrap();
         assert_eq!(parsed.argv(), retire.argv());
-        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-host","advertise":"192.168.1.20","name":"tenet","invites":2}"#).unwrap();
+        let parsed: Action = serde_json::from_str(
+            r#"{"kind":"migrate-host","advertise":"192.168.1.20","name":"tenet","invites":2}"#,
+        )
+        .unwrap();
         assert_eq!(parsed.argv(), host.argv());
-        let parsed: Action = serde_json::from_str(r#"{"kind":"migrate-join","name":"mac","invite":"mk1_abcDEF123-_"}"#).unwrap();
+        let parsed: Action = serde_json::from_str(
+            r#"{"kind":"migrate-join","name":"mac","invite":"mk1_abcDEF123-_"}"#,
+        )
+        .unwrap();
         assert_eq!(parsed.argv(), join.argv());
 
         assert!(host.validate().is_ok() && join.validate().is_ok() && retire.validate().is_ok());
-        assert!(Action::MigrateHost { advertise: "a; rm -rf /".into(), name: "x".into(), invites: 1 }.validate().is_err());
-        assert!(Action::MigrateJoin { invite: "nope".into(), name: "mac".into() }.validate().is_err());
-        assert!(Action::MigrateJoin { invite: "mk1_abc".into(), name: "Bad Name".into() }.validate().is_err());
+        assert!(Action::MigrateHost {
+            advertise: "a; rm -rf /".into(),
+            name: "x".into(),
+            invites: 1
+        }
+        .validate()
+        .is_err());
+        assert!(Action::MigrateJoin {
+            invite: "nope".into(),
+            name: "mac".into()
+        }
+        .validate()
+        .is_err());
+        assert!(Action::MigrateJoin {
+            invite: "mk1_abc".into(),
+            name: "Bad Name".into()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]
     fn sudoers_rule_is_valid_and_narrow() {
         let lines = sudoers_lines("huiyun.lee");
-        assert_eq!(sudoers_path("huiyun.lee"), "/etc/sudoers.d/makima_huiyun_lee");
-        assert!(lines[2].starts_with("Cmnd_Alias MAKIMA_HUIYUN_LEE = /Library/PrivilegedHelperTools/makima/makima up, "));
-        assert_eq!(lines[3], "huiyun.lee ALL=(root) NOPASSWD: MAKIMA_HUIYUN_LEE");
-        // Every verb the app can ask for is covered by the rule.
+        assert_eq!(
+            sudoers_path("huiyun.lee"),
+            "/etc/sudoers.d/makima_huiyun_lee"
+        );
+        assert!(lines[3].starts_with(
+            "Cmnd_Alias MAKIMA_HUIYUN_LEE = /Library/PrivilegedHelperTools/makima/makima up, "
+        ));
+        assert_eq!(
+            lines[4],
+            "huiyun.lee ALL=(root) NOPASSWD: MAKIMA_HUIYUN_LEE"
+        );
         for a in [
             Action::Up,
             Action::Down,
-            Action::Invite,
-            Action::Pair,
             Action::LinkCli,
             Action::AdvertiseExit { on: true },
             Action::AdvertiseExit { on: false },
-            Action::MigrateRetire,
         ] {
             let spelled = format!("{TRUSTED_DIR}/makima {}", a.argv().join(" "));
-            assert!(sudo_commands().contains(&spelled), "{spelled} is not in the rule");
+            assert!(
+                sudo_commands().contains(&spelled),
+                "{spelled} is not in the rule"
+            );
         }
-        // The move's steps with arguments, by their wildcard.
-        for verb in ["migrate host *", "migrate join *"] {
-            assert!(sudo_commands().contains(&format!("{TRUSTED_DIR}/makima {verb}")), "{verb} is not in the rule");
-        }
-        // And the commands a terminal only reads with, exactly as typed.
         for verb in ["status", "show", "doctor", "firewall", "sshd"] {
-            assert!(sudo_commands().contains(&format!("{TRUSTED_DIR}/makima {verb}")), "{verb} is not in the rule");
+            assert!(
+                sudo_commands().contains(&format!("{TRUSTED_DIR}/makima {verb}")),
+                "{verb} is not in the rule"
+            );
         }
-        // And nothing that hands out a shell: `sshd` bare only reports, and
-        // sudo reads a bare verb as "no arguments", so `sshd -on` still asks.
-        assert!(sudo_commands().iter().all(|c| !c.starts_with(&format!("{TRUSTED_DIR}/makima sshd "))));
+        // Nothing that hands out a shell: `sshd` bare only reports, and sudo
+        // reads a bare verb as "no arguments", so `sshd -on` still asks.
+        assert!(sudo_commands()
+            .iter()
+            .all(|c| !c.starts_with(&format!("{TRUSTED_DIR}/makima sshd "))));
+    }
+
+    /// The rule must never regain a wildcard.
+    ///
+    /// sudo matches arguments with fnmatch, so a single `*` stands for any
+    /// argument at all — an attacker-chosen invite, peer or port included. A
+    /// NOPASSWD entry with one in it turns the person's single yes into a
+    /// standing grant for every process that runs as them.
+    #[test]
+    fn no_command_in_the_rule_takes_a_chosen_argument() {
+        for c in sudo_commands() {
+            assert!(!c.contains('*'), "{c} has a wildcard in a NOPASSWD rule");
+            assert!(!c.contains('?'), "{c} has a wildcard in a NOPASSWD rule");
+            assert!(!c.contains('['), "{c} has a wildcard in a NOPASSWD rule");
+        }
+    }
+
+    /// The verbs that change who the machine trusts must ask every time.
+    #[test]
+    fn membership_changing_verbs_are_not_in_the_rule() {
+        for verb in ["join", "invite", "pair", "allow", "deny", "migrate"] {
+            let prefix = format!("{TRUSTED_DIR}/makima {verb}");
+            assert!(
+                sudo_commands()
+                    .iter()
+                    .all(|c| c != &prefix && !c.starts_with(&format!("{prefix} "))),
+                "{verb} must ask for a password"
+            );
+        }
+        // Choosing an exit node moves every packet this machine sends.
+        // `-advertise-exit-node` is a different verb and takes no chosen
+        // argument, so it is matched exactly rather than by substring.
+        let choose = format!("{TRUSTED_DIR}/makima set -exit-node");
+        assert!(sudo_commands()
+            .iter()
+            .all(|c| c != &choose && !c.starts_with(&format!("{choose} "))));
+    }
+
+    /// A username is not a place to put sudoers syntax.
+    #[test]
+    fn the_rule_rejects_a_username_it_cannot_spell() {
+        assert!(sudoers_lines_checked("huiyun.lee").is_some());
+        assert!(sudoers_lines_checked("root x, ALL=(root) NOPASSWD: ALL #").is_none());
+        assert!(sudoers_lines_checked("who\nALL=(root) NOPASSWD: ALL").is_none());
+        assert!(sudoers_lines_checked("").is_none());
     }
 }
