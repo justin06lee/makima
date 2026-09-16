@@ -1,10 +1,10 @@
 module github.com/justin06lee/makima
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/creack/pty v1.1.24
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 )
 
