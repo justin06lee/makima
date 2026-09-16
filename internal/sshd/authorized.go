@@ -25,11 +25,9 @@ import (
 // keys are already published: github.com/<user>.keys is a public endpoint
 // returning exactly the keys that account can push with.
 //
-// It is a convenience with a real consequence, so it is stated plainly rather
-// than buried: naming an account here means whoever controls that account can
-// get a shell on this machine. That is the same trust as writing their key
-// into authorized_keys, except it stays true if the account is later
-// compromised or its keys are rotated by somebody else.
+// Naming an account here means whoever controls that account can get a shell on
+// this machine — the same trust as writing their key into authorized_keys,
+// except it stays true if that account is later compromised.
 
 // Source is one place to read authorized keys from.
 //
@@ -51,6 +49,14 @@ const refreshInterval = time.Hour
 // source that is down, and the last good set is still in memory.
 const fetchTimeout = 15 * time.Second
 
+// staleAfter is how long a source that cannot be read keeps its last good keys.
+//
+// Dropping them at the first failed fetch locks somebody out of a machine over
+// a network blip. Keeping them forever makes revocation advisory. A day is the
+// compromise the hourly refresh already implies: twenty-four failed reads is
+// not a blip, and past that the source contributes nothing.
+const staleAfter = 24 * time.Hour
+
 // Keys is a live set of authorized keys, refreshed in the background.
 //
 // The set is swapped atomically and never emptied by a failure. A machine
@@ -66,8 +72,19 @@ type Keys struct {
 	updated time.Time
 	lastErr error
 
+	// cached is the last good read of each source, kept so one unreadable
+	// source does not take the others down with it, and stamped so it can be
+	// let go of once it is too old to stand for what the source says now.
+	cached map[Source]cachedKeys
+
 	cancel context.CancelFunc
 	once   sync.Once
+}
+
+// cachedKeys is one source's last good read, and when it happened.
+type cachedKeys struct {
+	keys []ssh.PublicKey
+	at   time.Time
 }
 
 // NewKeys builds an empty set.
@@ -75,7 +92,7 @@ func NewKeys(logger *log.Logger) *Keys {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Keys{log: logger, keys: map[string]bool{}}
+	return &Keys{log: logger, keys: map[string]bool{}, cached: map[Source]cachedKeys{}}
 }
 
 // Set replaces the sources and reads them once, synchronously.
@@ -141,24 +158,43 @@ func (k *Keys) loop(ctx context.Context) {
 
 // refresh re-reads every source.
 //
-// A source that fails is reported but does not empty the set: partial results
-// are kept, because losing access to a machine is worse than briefly honouring
-// a key that was meant to be revoked, and the alternative has no recovery path
-// that does not involve physical access.
+// A source that fails falls back to its own last good read rather than to
+// nothing, so one unreachable source does not revoke the keys of the others.
+// That fallback expires: see staleAfter.
 func (k *Keys) refresh(ctx context.Context) error {
 	k.mu.RLock()
 	sources := append([]Source(nil), k.sources...)
+	cached := make(map[Source]cachedKeys, len(k.cached))
+	for s, c := range k.cached {
+		cached[s] = c
+	}
 	k.mu.RUnlock()
 
+	now := time.Now()
 	next := make(map[string]bool)
+	fresh := make(map[Source]cachedKeys, len(sources))
 	var failures []string
 
 	for _, s := range sources {
 		keys, err := s.read(ctx)
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", s, err))
+			c, ok := cached[s]
+			switch {
+			case !ok:
+				failures = append(failures, fmt.Sprintf("%s: %v", s, err))
+			case now.Sub(c.at) > staleAfter:
+				failures = append(failures, fmt.Sprintf("%s: %v (unreadable since %s; its keys are no longer honoured)",
+					s, err, c.at.Format(time.RFC3339)))
+			default:
+				failures = append(failures, fmt.Sprintf("%s: %v (still honouring its last good read)", s, err))
+				fresh[s] = c
+				for _, key := range c.keys {
+					next[string(key.Marshal())] = true
+				}
+			}
 			continue
 		}
+		fresh[s] = cachedKeys{keys: keys, at: now}
 		for _, key := range keys {
 			next[string(key.Marshal())] = true
 		}
@@ -171,16 +207,12 @@ func (k *Keys) refresh(ctx context.Context) error {
 
 	k.mu.Lock()
 	defer k.mu.Unlock()
-
-	if len(next) == 0 && err != nil && len(k.keys) > 0 {
-		// Everything failed and we already had keys. Keep them.
-		k.lastErr = err
-		k.log.Printf("ssh: could not refresh authorized keys (%v); keeping the %d already in force", err, len(k.keys))
-		return err
+	if err != nil {
+		k.log.Printf("ssh: authorized keys: %v; %d in force", err, len(next))
 	}
-
 	k.keys = next
-	k.updated = time.Now()
+	k.cached = fresh
+	k.updated = now
 	k.lastErr = err
 	return err
 }
