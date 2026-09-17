@@ -9,8 +9,9 @@
 // This is the narrow version of that. It binds the node's mesh address and
 // nothing else, so it is reachable by peers and by nothing else — not the LAN,
 // not localhost, not the internet. There is no password authentication and no
-// way to add one. There is exactly one local account it will ever run as, and
-// it is chosen on this machine rather than by whoever connects.
+// way to add one. A session runs as the account this machine chose unless the
+// client asks for another one — and asking is answered by that account's own
+// authorized_keys, never by the username alone.
 //
 // The host key is derived from the machine key rather than stored. A node
 // already has a permanent identity; generating a second one would mean another

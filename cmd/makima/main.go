@@ -146,7 +146,8 @@ without root, without changing anything:
 using it:
   makima status                    what you can see, and anything wrong
   makima ping NAME                 is this peer direct, or going via a relay?
-  makima ssh NAME                  a shell on another machine
+  makima possess NAME              a shell on another machine (makima ssh too)
+                                   pick the account, or name it: root@NAME
   makima cp FILE NAME:             send a file to it
   makima inbox                     where files from other machines land
   makima allow 11434               publish a local port on purpose

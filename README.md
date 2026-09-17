@@ -416,10 +416,29 @@ forwarding through it is refused, because makima already forwards ports as a
 first-class thing that shows up in status and obeys the mesh's access control.
 `makima ssh` finds the port on its own.
 
-Every session runs as **one local account, chosen on that machine** — whoever
-ran `makima up`, or `-user NAME`. Never the username the client asks for: a
-daemon that runs as root and trusts the name it is handed is a root shell for
-anybody holding an authorized key.
+A session runs as **whoever ran `makima up`** unless the client asks for
+somebody else, and asking is granted only by that account's own
+`~/.ssh/authorized_keys` — the same file the system's sshd honours, curated by
+the same person. So root over the mesh works exactly where root over ordinary
+ssh already works, and nowhere else. The username is never taken at face
+value: a daemon that runs as root and trusts the name it is handed is a root
+shell for anybody holding any authorized key.
+
+`-keys github:USER` deliberately does not carry over. It says who may use this
+machine as its owner; it does not say who may be root on it.
+
+`makima possess NAME` with no account named asks the far end which accounts
+your keys open, and shows a list to arrow through when there is more than one:
+
+```
+Possess tenet as:
+› justin06lee  the account makima runs sessions as
+  root         the whole machine
+  ↑↓ to move, enter to choose, esc to cancel
+```
+
+The cursor starts on the ordinary account and root is last, so enter alone is
+never the dangerous one. `makima possess root@tenet` skips the list.
 
 The host key is derived from the machine key rather than stored, so it survives
 reinstalling makima without a host-key warning and differs on every machine.
@@ -1010,10 +1029,12 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 - **File transfer is push-only.** `makima cp` puts a file in a peer's inbox;
   there is no pull, because letting a peer read a path of its choosing here is
   a far larger promise. `makima ssh desktop cat notes.txt` covers it.
-- **The built-in SSH server is Unix-only and single-account.** Windows has no
-  pty to allocate and no credential to drop to, so it refuses to start there.
-  Every session runs as one local account chosen on that machine — there is no
-  per-user login, no sftp subsystem, and no port forwarding through it.
+- **The built-in SSH server is Unix-only.** Windows has no pty to allocate and
+  no credential to drop to, so it refuses to start there. There is no sftp
+  subsystem and no port forwarding through it. Certificates are not understood
+  either: an authorized_keys line carrying `cert-authority`, a forced
+  `command=`, or an expiry is not honoured here, and the system's own sshd —
+  which does implement them — is still free to accept it.
 - **Preshared keys never travel over the control plane.** They are symmetric
   secrets shared by two nodes, so they have to arrive out of band — in a
   pairing address, or typed twice into `makima peer add`. A managed mesh cannot

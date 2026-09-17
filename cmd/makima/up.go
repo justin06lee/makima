@@ -9,8 +9,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,7 +22,6 @@ import (
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/relay"
-	"github.com/justin06lee/makima/internal/sshd"
 	"github.com/justin06lee/makima/internal/supervise"
 )
 
@@ -613,172 +610,6 @@ func waitForPeers(path string, wait time.Duration) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-}
-
-// sshCmd opens a shell on a peer.
-//
-// Sugar, and deliberately so: sshd already listens on every address, so a mesh
-// peer is reachable at its name the moment the tunnel is up and `ssh
-// desktop.makima` has always worked. What this removes is having to know the
-// suffix, and having to remember whether the machine was added as "desktop" or
-// "desktop.local".
-func sshCmd(args []string) error {
-	if len(args) == 0 {
-		return errors.New("which machine? (try: makima ssh desktop — 'makima status' lists them)")
-	}
-
-	target := args[0]
-	rest := args[1:]
-
-	user := ""
-	if u, host, ok := strings.Cut(target, "@"); ok {
-		user, target = u, host
-	}
-
-	host, err := resolvePeer(target)
-	if err != nil {
-		return err
-	}
-
-	// Prefer the far end's built-in server when it has one. Probed rather
-	// than advertised because it has to work in every mode — a serverless
-	// pairing carries no service list, and a peer that switched its server on
-	// a minute ago has not re-registered anywhere.
-	var extra []string
-	port := 0
-	if builtInSSH(host) {
-		port = sshd.DefaultPort
-		extra = []string{"-p", strconv.Itoa(port)}
-	}
-
-	ssh, err := exec.LookPath("ssh")
-	if err != nil {
-		return errors.New("no ssh client on this machine")
-	}
-
-	if user == "" {
-		if user = sshUser(ssh, host, port); user != "" {
-			fmt.Fprintf(os.Stderr, "Logging in as %s — the account your keys open on %s.\n", user, target)
-		}
-	}
-	if user != "" {
-		host = user + "@" + host
-	}
-
-	args = append(append(extra, host), rest...)
-	cmd := exec.Command(ssh, args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			os.Exit(ee.ExitCode())
-		}
-		return err
-	}
-	return nil
-}
-
-// builtInSSH reports whether a machine is running makima's own SSH server.
-//
-// One short dial. The alternative — asking the control plane what a peer
-// advertises — is unavailable in exactly the cases that matter most: a
-// serverless pairing carries no service list at all, and a peer that switched
-// its server on a moment ago has not told anyone yet.
-func builtInSSH(host string) bool {
-	c, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(sshd.DefaultPort)), 700*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	c.Close()
-	return true
-}
-
-// sshUser picks the account to log in as when none was named.
-//
-// Whatever ssh would use on its own — the person's own name, or the one their
-// ~/.ssh/config gives — when their keys open it; root, when that is what they
-// open instead. A move from Tailscale puts the keys in the account it logged in
-// to, which on a server is root, and the person then types `makima ssh tenet`
-// expecting it to work the way `ssh tenet` did through Tailscale. Each guess is
-// one key-only login that asks nothing. When neither gets in, ssh is left to
-// ask for a password as it always would. A host key it has not seen is taken
-// on first sight: the mesh address has already proved which machine it is.
-func sshUser(ssh, host string, port int) string {
-	try := func(user string) bool {
-		args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new"}
-		if port != 0 {
-			args = append(args, "-p", strconv.Itoa(port))
-		}
-		if user != "" {
-			args = append(args, "-l", user)
-		}
-		return exec.Command(ssh, append(args, host, "true")...).Run() == nil
-	}
-	if try("") || sshConfigNamesUser(ssh, host) {
-		return ""
-	}
-	if try("root") {
-		return "root"
-	}
-	return ""
-}
-
-// sshConfigNamesUser says the person's ssh config picks the account for this
-// host, which is theirs to decide and not something to guess past.
-func sshConfigNamesUser(ssh, host string) bool {
-	me, err := user.Current()
-	if err != nil {
-		return false
-	}
-	out, err := exec.Command(ssh, "-G", host).Output()
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if name, ok := strings.CutPrefix(line, "user "); ok {
-			return strings.TrimSpace(name) != me.Username
-		}
-	}
-	return false
-}
-
-// resolvePeer turns a name into something ssh can dial, preferring the mesh
-// address over the name so it works whether or not mesh DNS is on.
-func resolvePeer(name string) (string, error) {
-	c, err := localapi.Dial(localapi.SocketPath(conf.DefaultPath))
-	if err != nil {
-		// Not root, which is who runs ssh: the read-only socket answers this
-		// just as well, and ssh must run as the person, with their keys.
-		c, err = localapi.Dial(localapi.GUISocketPath(conf.DefaultPath))
-	}
-	if err != nil {
-		// No daemon to ask. The name may still resolve, so let ssh try rather
-		// than refusing on the strength of our own unavailability.
-		return name, nil
-	}
-	st, err := c.Status()
-	if err != nil {
-		return name, nil
-	}
-
-	bare := strings.TrimSuffix(name, "."+st.Domain)
-	for _, p := range st.Peers {
-		if p.Name == bare {
-			if !p.Online {
-				fmt.Fprintf(os.Stderr, "note: %s is not currently reachable on the mesh\n", bare)
-			}
-			return p.Address.String(), nil
-		}
-	}
-
-	var names []string
-	for _, p := range st.Peers {
-		names = append(names, p.Name)
-	}
-	if len(names) == 0 {
-		return "", fmt.Errorf("no peers on this mesh yet — add one with 'makima invite'")
-	}
-	return "", fmt.Errorf("no machine called %q on this mesh (have: %s)", bare, strings.Join(names, ", "))
 }
 
 // joinCmd puts this machine on somebody else's mesh.

@@ -134,9 +134,9 @@ type SSHInfo struct {
 	Active bool   `json:"active"`
 	Addr   string `json:"addr,omitempty"`
 
-	// User is the single local account sessions run as. Reported because it
-	// is the one thing about this server that is decided here rather than by
-	// whoever connects, and the thing worth checking.
+	// User is the account sessions run as when the client names no other.
+	// Reported because it is the one decided here rather than by whoever
+	// connects, and the thing worth checking.
 	User string `json:"user,omitempty"`
 
 	// Fingerprint is the host key, so it can be verified out of band rather

@@ -105,8 +105,8 @@ type File struct {
 	InboxOff bool   `json:"inbox_off,omitempty"`
 
 	// SSH switches on the built-in SSH server, SSHKeys names where its
-	// authorized keys come from, and SSHUser is the single local account every
-	// session runs as.
+	// authorized keys come from, and SSHUser is the account a session runs as
+	// when the client asks for no other.
 	//
 	// Off unless explicitly set. Everything else makima does is reversible by
 	// stopping the daemon; a shell server is the one feature where being on by
