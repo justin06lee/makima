@@ -49,6 +49,9 @@ func (n *node) Status() localapi.Status {
 		ExitNode:   f.ExitNode,
 		Since:      n.startedAt,
 	}
+	if o := n.ownerLocked(); o != nil {
+		st.Owner = o.Name
+	}
 
 	// The approved half comes back in our own netmap entry rather than from
 	// anything local, which is the point: what this node asked for and what
@@ -137,9 +140,10 @@ func (n *node) Status() localapi.Status {
 		n.mu.Lock()
 		st.SSH.Sources = append([]string(nil), n.file.SSHKeys...)
 		userName := n.file.SSHUser
+		own := n.ownerLocked()
 		n.mu.Unlock()
 
-		if u, err := resolveSSHUser(userName); err == nil {
+		if u, err := resolveSSHUser(userName, own); err == nil {
 			st.SSH.User = u.Name
 		}
 		if n.sshKeys != nil {
@@ -353,7 +357,24 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		})
 	}
 
-	// 8. An exit node that was selected but is not usable.
+	// 8. Nobody to be the owner. Its symptom is peculiar and easy to
+	// misread: everything works as root and nothing works as yourself,
+	// because the socket a person can read was never opened.
+	if own := n.owner(); own == nil {
+		add(localapi.Check{
+			Name:   "Owner",
+			Detail: "no account owns makima here, so nothing running as a person — the desktop app, a status tool, your own shell — can read any of this",
+			Fix:    "sudo makima owner <user>",
+		})
+	} else {
+		add(localapi.Check{
+			Name:   "Owner",
+			OK:     true,
+			Detail: fmt.Sprintf("%s: their own commands reach makima without sudo, and files from peers land in their Downloads", own.Name),
+		})
+	}
+
+	// 9. An exit node that was selected but is not usable.
 	if exitNode != "" {
 		peer, found := findPeer(peers, exitNode)
 		switch {

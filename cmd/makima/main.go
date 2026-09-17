@@ -62,6 +62,8 @@ func main() {
 		err = cpCmd(os.Args[2:])
 	case "inbox":
 		err = inboxCmd(os.Args[2:])
+	case "owner":
+		err = ownerCmd(os.Args[2:])
 	case "sshd":
 		err = sshdCmd(os.Args[2:])
 	case "allow":
@@ -114,7 +116,13 @@ func main() {
 		// Refused for want of root after all — the daemon said so, or its
 		// socket is out of reach. At a terminal, ask sudo and run the command
 		// again; from the app there is nobody to type a password.
-		if os.Geteuid() != 0 && atTerminal() && (errors.Is(err, localapi.ErrNeedsRoot) || errors.Is(err, errNotYours)) {
+		if os.Geteuid() != 0 && atTerminal() && (errors.Is(err, localapi.ErrNeedsRoot) || errors.Is(err, errNotYours) || errors.Is(err, errNoOwner)) {
+			// Said before running it again, because running it again under
+			// sudo works — and would go on working, every time, while the
+			// actual problem stayed. mustBeRoot does not return.
+			if errors.Is(err, errNoOwner) {
+				fmt.Fprintf(os.Stderr, "makima: %v\n", err)
+			}
 			_ = mustBeRoot()
 		}
 		fmt.Fprintf(os.Stderr, "makima: %v\n", err)
@@ -150,6 +158,8 @@ using it:
                                    pick the account, or name it: root@NAME
   makima cp FILE NAME:             send a file to it
   makima inbox                     where files from other machines land
+  makima owner                     who this machine's makima belongs to:
+                                   whose commands reach it without sudo
   makima allow 11434               publish a local port on purpose
   makima deny 11434                stop publishing one
 

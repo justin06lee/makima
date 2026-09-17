@@ -285,6 +285,11 @@ func (c *Client) SetSSH(on bool, keys []string, user string) error {
 	return c.call("POST", "/api/ssh", SSHRequest{On: on, Keys: keys, User: user}, nil)
 }
 
+// SetOwner names the local account this machine's makima belongs to.
+func (c *Client) SetOwner(name string) error {
+	return c.call("POST", "/api/owner", OwnerRequest{Name: name}, nil)
+}
+
 // ListenUserSocket opens a socket a named user can read.
 //
 // The daemon runs as root, so a socket it creates is root's. A desktop app

@@ -468,6 +468,37 @@ This is off unless you switch it on, unlike everything else makima does by
 default. Publishing a port or accepting a file into one directory are bounded;
 a shell is not, and nobody should discover months later that they had one.
 
+### Whose machine this is
+
+```sh
+makima owner                     # who this machine's makima belongs to
+sudo makima owner justin06lee    # say, when it could not be worked out
+```
+
+The daemon runs as root, and the socket it opens for itself is root's. Beside
+it, it opens a second, read-only one for **one account** — the machine's owner.
+That account is what makes `makima status` work without sudo, what the desktop
+app reads, and whose `Downloads/makima` files from peers land in. It is also
+the account an incoming `makima possess` lands on when the other end names
+none.
+
+Normally nobody has to know this exists: `sudo makima up` says who is behind
+it, the macOS app says so through its own prompt, and either way the answer is
+written into the config and stays true across reboots.
+
+It is worth knowing about for the one case where none of that is available —
+**a machine set up over SSH as root.** There is no sudo behind that root and
+nobody at the screen, so there is nothing to say whose machine it is. makima
+takes the machine's only account if it has exactly one, which covers most
+personal machines; with two accounts it cannot guess, and says so in its log
+and in `makima doctor`.
+
+The symptom of getting this wrong is peculiar enough to be worth naming:
+makima works perfectly as root and appears to be missing entirely to
+everything running as yourself — because the socket those things read was
+never opened for anybody. One line fixes it, and takes effect immediately
+rather than at the next restart.
+
 ### die
 
 `makima up` adds a `die` alias to your shell as a shortcut for `makima down`.
@@ -638,7 +669,7 @@ it — the tunnel is up anyway, and this is the menu bar coming back with it —
 and Settings turns that off.
 
 It reads over a **second Unix socket** the daemon opens beside its own:
-read-only by construction, and owned by whoever brought the tunnel up, so
+read-only by construction, and owned by the account this machine belongs to, so
 exactly one account can reach it and nothing sent down it can change anything.
 Everything the app *changes* runs the CLI behind the platform's own
 authentication prompt — Authorization Services on macOS, polkit on Linux — so

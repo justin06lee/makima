@@ -26,6 +26,13 @@ import (
 // main answers it by asking sudo and running the command again.
 var errNotYours = errors.New("makima is running, but this account cannot reach it — run it again with sudo")
 
+// errNoOwner is the same symptom with a different cause, and the difference is
+// worth spelling out: the daemon opened no read-only socket at all, because
+// nothing told it whose machine this is. Sudo would work, and would go on
+// working forever, which is exactly why saying so here matters — the fix is
+// one command, and without this nothing points at it.
+var errNoOwner = errors.New("makima is running, but it belongs to nobody on this machine, so only root can read it — name the account it is for with: sudo makima owner <user>")
+
 // dialDaemon connects to the local daemon, with an error worth reading when
 // there is not one.
 func dialDaemon(configPath string) (*localapi.Client, error) {
@@ -45,8 +52,12 @@ func dialDaemon(configPath string) (*localapi.Client, error) {
 			return g, nil
 		}
 		// The root socket is there but out of reach: the daemon is running,
-		// and this account is not the one that started it.
+		// and this account is not the one that started it — or the daemon
+		// never worked out who it is for, and opened no second socket at all.
 		if _, serr := os.Stat(localapi.SocketPath(configPath)); serr == nil {
+			if _, gerr := os.Stat(localapi.GUISocketPath(configPath)); os.IsNotExist(gerr) {
+				return nil, errNoOwner
+			}
 			return nil, errNotYours
 		}
 	}

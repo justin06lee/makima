@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -99,6 +100,10 @@ type node struct {
 	mu   sync.Mutex
 	file *conf.File
 
+	// ownerAcct is the local account this machine's makima belongs to,
+	// resolved once at startup by learnOwner. Guarded by mu with the rest.
+	ownerAcct *owner
+
 	// lastPoll and lastPollErr are what the doctor reports about the control
 	// plane. Guarded by mu with the rest.
 	lastPoll    time.Time
@@ -118,6 +123,12 @@ type node struct {
 	inbox      *drop.Receiver
 	ssh        *sshd.Server
 	sshKeys    *sshd.Keys
+
+	// guiMu guards the desktop socket, which is opened at startup and
+	// reopened whenever the owner changes.
+	guiMu  sync.Mutex
+	guiSrv *http.Server
+	guiLn  net.Listener
 
 	// opts is the command line as given, kept so settings that can change at
 	// runtime can be re-resolved against the flags that still override them.
@@ -210,6 +221,10 @@ func run(opts options) error {
 	defer n.inbox.Close()
 	defer n.ssh.Close()
 	defer n.sshKeys.Close()
+
+	// Before anything that acts on somebody's behalf: the inbox goes in their
+	// home, the desktop socket is theirs, and a shell session runs as them.
+	n.learnOwner()
 
 	// A managed node gets the path-selecting socket; a static one gets an
 	// ordinary UDP socket. The split matters: magicsock attributes an inbound

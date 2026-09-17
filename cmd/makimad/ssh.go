@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -32,6 +31,7 @@ func (n *node) applySSH(ctx context.Context) {
 	sources := append([]string(nil), n.file.SSHKeys...)
 	userName := n.file.SSHUser
 	machineKey := n.file.MachineKey
+	own := n.ownerLocked()
 	n.mu.Unlock()
 
 	if !on {
@@ -39,7 +39,7 @@ func (n *node) applySSH(ctx context.Context) {
 		return
 	}
 
-	account, err := resolveSSHUser(userName)
+	account, err := resolveSSHUser(userName, own)
 	if err != nil {
 		log.Printf("ssh: %v", err)
 		return
@@ -94,7 +94,7 @@ func (n *node) SetSSH(on bool, keys []string, userName string) error {
 	if on {
 		// Validated before anything is written, so a typo in a username is
 		// reported rather than stored and then quietly ignored on every start.
-		if _, err := resolveSSHUser(userName); err != nil {
+		if _, err := resolveSSHUser(userName, n.owner()); err != nil {
 			return err
 		}
 	}
@@ -135,19 +135,20 @@ func (n *node) SetSSH(on bool, keys []string, userName string) error {
 
 // resolveSSHUser turns a name into the default account sessions run as.
 //
-// Empty means the person who started makima — the SUDO_USER behind `makima
-// up`, or the daemon's own user when it is not running as root. That is
-// almost always the right answer and never needs to be typed.
+// Empty means whoever this machine belongs to, and falls back to the daemon's
+// own user when nobody does. That is almost always the right answer and never
+// needs to be typed — and it matters that it is the owner rather than the
+// account the daemon runs as, because the daemon runs as root: a machine set
+// up over SSH as root would otherwise hand every incoming session a root shell
+// by default.
 //
 // It is the *default*, not the only one: a client may ask for another local
 // account by SSH username, and gets it only if that account's own
 // authorized_keys holds their key. What is never true is that the username
 // alone decides — see sshd.Config.Accounts.
-func resolveSSHUser(name string) (*sshd.SessionUser, error) {
-	if name == "" {
-		if u := os.Getenv("SUDO_USER"); u != "" && u != "root" {
-			name = u
-		}
+func resolveSSHUser(name string, own *owner) (*sshd.SessionUser, error) {
+	if name == "" && own != nil {
+		name = own.Name
 	}
 	if name == "" {
 		u, err := user.Current()

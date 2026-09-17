@@ -105,10 +105,8 @@ func (n *node) serveLocalAPI(ctx context.Context, opts options) (func(), error) 
 	logf("local socket %s", sockPath)
 
 	// A second socket for a desktop app: read-only, and owned by the person
-	// who started makima rather than by root. Skipped silently when there is
-	// no such person — a daemon started by systemd at boot has no human
-	// attached to it, and inventing one would be a guess.
-	guiSrv, guiLn := n.serveGUISocket(opts.configPath)
+	// this machine belongs to rather than by root.
+	n.openGUISocket(opts.configPath)
 
 	var uiSrv *http.Server
 	if opts.uiAddr != "" {
@@ -141,33 +139,40 @@ func (n *node) serveLocalAPI(ctx context.Context, opts options) (func(), error) 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = sockSrv.Shutdown(shutdownCtx)
-		if guiSrv != nil {
-			_ = guiSrv.Shutdown(shutdownCtx)
-			_ = guiLn.Close()
-		}
+		n.closeGUISocket()
 		if uiSrv != nil {
 			_ = uiSrv.Shutdown(shutdownCtx)
 		}
 	}, nil
 }
 
-// serveGUISocket opens the read-only socket a desktop app reads status from.
+// openGUISocket opens the read-only socket a desktop app — and anything else
+// running as a person rather than as root — reads status from.
+//
+// Idempotent, and called again when the owner changes: whoever the machine
+// belongs to now is who the socket is for, and reopening it is what makes
+// `makima owner` take effect without a restart.
 //
 // Failures here are reported and shrugged off. A machine with no desktop app
 // on it is the common case, and a daemon that refused to bring up a tunnel
 // because it could not create a socket for a GUI would have its priorities
 // backwards.
-func (n *node) serveGUISocket(configPath string) (*http.Server, net.Listener) {
-	_, owner, ok := invokingUser()
-	if !ok || owner == nil {
-		return nil, nil
+func (n *node) openGUISocket(configPath string) {
+	owner := n.owner()
+
+	n.guiMu.Lock()
+	defer n.guiMu.Unlock()
+	n.shutGUILocked()
+
+	if owner == nil {
+		return
 	}
 
 	path := localapi.GUISocketPath(configPath)
 	ln, err := localapi.ListenUserSocket(path, owner.UID, owner.GID)
 	if err != nil {
 		logf("desktop socket: %v", err)
-		return nil, nil
+		return
 	}
 
 	// allowWrite false: this socket can be read and nothing else. Everything
@@ -178,8 +183,28 @@ func (n *node) serveGUISocket(configPath string) (*http.Server, net.Listener) {
 			logf("desktop socket: %v", err)
 		}
 	}()
-	logf("desktop socket %s", path)
-	return srv, ln
+	n.guiSrv, n.guiLn = srv, ln
+	logf("desktop socket %s, readable by %s", path, owner.Name)
+}
+
+// closeGUISocket shuts the desktop socket down for good, on the way out.
+func (n *node) closeGUISocket() {
+	n.guiMu.Lock()
+	defer n.guiMu.Unlock()
+	n.shutGUILocked()
+}
+
+// shutGUILocked closes whatever is currently serving the desktop socket, with
+// n.guiMu held.
+func (n *node) shutGUILocked() {
+	if n.guiSrv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = n.guiSrv.Shutdown(ctx)
+	_ = n.guiLn.Close()
+	n.guiSrv, n.guiLn = nil, nil
 }
 
 // loopbackOnly reports whether an address can only be reached from this

@@ -88,6 +88,12 @@ type Status struct {
 	// SSH is the built-in shell server's state.
 	SSH SSHInfo `json:"ssh"`
 
+	// Owner is the local account this machine's makima belongs to: the one
+	// the read-only socket is opened for. Empty on a machine where nobody
+	// could be worked out, which is the state that leaves every non-root
+	// tool unable to read any of this.
+	Owner string `json:"owner,omitempty"`
+
 	Filtering bool      `json:"filtering"`
 	Dropped   uint64    `json:"dropped"`
 	Since     time.Time `json:"since"`
@@ -170,6 +176,11 @@ type InboxInfo struct {
 type InboxRequest struct {
 	Dir string `json:"dir,omitempty"`
 	Off bool   `json:"off,omitempty"`
+}
+
+// OwnerRequest names the local account this machine belongs to.
+type OwnerRequest struct {
+	Name string `json:"name"`
 }
 
 // PairingState is an open invitation to be knocked on.
@@ -283,6 +294,10 @@ type Backend interface {
 	// SetSSH switches the built-in SSH server on or off. Nil keys and an
 	// empty user leave those settings as they were.
 	SetSSH(on bool, keys []string, user string) error
+
+	// SetOwner names the local account this machine belongs to, and takes
+	// effect at once: the read-only socket is reopened for them.
+	SetOwner(name string) error
 
 	SetExitNode(name string) error
 
@@ -426,6 +441,19 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if err := s.backend.SetSSH(req.On, req.Keys, req.User); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, okBody())
+	})
+
+	mux.HandleFunc("POST /api/owner", func(w http.ResponseWriter, r *http.Request) {
+		var req OwnerRequest
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.backend.SetOwner(req.Name); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
