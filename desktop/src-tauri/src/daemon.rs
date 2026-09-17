@@ -25,6 +25,7 @@ use tokio::net::UnixStream;
 /// Where the daemon keeps its sockets, matching `localapi.GUISocketPath`.
 const CONFIG_DIR: &str = "/etc/makima";
 const GUI_SOCKET: &str = "makimad-gui.sock";
+const ROOT_SOCKET: &str = "makimad.sock";
 
 /// How long a status read may take.
 ///
@@ -59,6 +60,15 @@ fn socket_path() -> PathBuf {
     real
 }
 
+/// Whether the daemon's own socket is there, beside where the read-only one
+/// would be. It is root's, so this only asks whether it exists.
+fn root_socket_exists() -> bool {
+    match socket_path().parent() {
+        Some(dir) => dir.join(ROOT_SOCKET).exists(),
+        None => false,
+    }
+}
+
 /// What the app knows about the daemon at any moment.
 ///
 /// `running` is separate from the rest because "makimad is not up" is the most
@@ -81,9 +91,19 @@ async fn get(path: &str) -> Result<serde_json::Value, String> {
         .await
         .map_err(|_| format!("{} did not answer", sock.display()))?
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => "makima is not running".to_string(),
+            // A missing socket usually means no daemon. It can also mean a
+            // daemon that is running and belongs to nobody — set up over SSH
+            // as root, where nothing said whose machine it is — and those two
+            // look identical from here unless the root socket is checked.
+            std::io::ErrorKind::NotFound => {
+                if root_socket_exists() {
+                    "makima is running, but it belongs to nobody on this machine, so this app cannot read it — run: sudo makima owner <user>".to_string()
+                } else {
+                    "makima is not running".to_string()
+                }
+            }
             std::io::ErrorKind::PermissionDenied => format!(
-                "{} is not readable by this account — makima was started by somebody else on this machine",
+                "{} is not readable by this account — makima belongs to somebody else on this machine",
                 sock.display()
             ),
             _ => e.to_string(),

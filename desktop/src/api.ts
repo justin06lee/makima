@@ -70,6 +70,7 @@ export type Status = {
     sources?: string[];
     key_error?: string;
   };
+  owner?: string;
   filtering: boolean;
   dropped: number;
   since: string;

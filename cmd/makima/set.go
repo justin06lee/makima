@@ -213,6 +213,13 @@ func status(args []string) error {
 			default:
 				fmt.Printf("%-10s off\n", "inbox")
 			}
+
+			// Worth a line only when it is missing. A makima nobody owns
+			// works perfectly for root and is invisible to everything else
+			// on the machine, which is not a state anybody guesses at.
+			if st.Owner == "" {
+				fmt.Printf("%-10s nobody — only root can read this makima; 'sudo makima owner <user>' fixes it\n", "owner")
+			}
 		}
 	}
 
