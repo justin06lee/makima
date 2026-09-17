@@ -173,6 +173,7 @@ func (f *fake) SetAdvertiseExit(bool) error           { return errReadOnly }
 func (f *fake) AllowFirewall() (netcfg.Report, error) { return netcfg.Report{}, errReadOnly }
 func (f *fake) SetInbox(string, bool) error           { return errReadOnly }
 func (f *fake) SetSSH(bool, []string, string) error   { return errReadOnly }
+func (f *fake) SetOwner(string) error                 { return errReadOnly }
 func (f *fake) OpenPairing(int) (localapi.PairingState, error) {
 	return localapi.PairingState{}, errReadOnly
 }

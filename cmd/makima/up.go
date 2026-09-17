@@ -53,9 +53,13 @@ const (
 func serverSocket() string { return control.SocketPath(serverStatePath) }
 
 // daemonFor is the node daemon, registered with the machine so it is back
-// after a reboot. It carries the name of whoever ran makima, because a daemon
-// launchd starts at boot has no sudo behind it to say so, and the daemon needs
-// to know whose desktop socket to open and whose Downloads to put files in.
+// after a reboot.
+//
+// It carries no owner. Who this machine belongs to is written in the config by
+// recordOwner instead, because a service definition is the wrong place to keep
+// it: `makima owner` would then be undone by the next reboot, and a machine
+// set up over SSH as root — where nothing in the environment says who it is
+// for — would have nothing written anywhere.
 func daemonFor(configPath string) supervise.Daemon {
 	d := supervise.Daemon{
 		Name:    "makimad",
@@ -69,10 +73,31 @@ func daemonFor(configPath string) supervise.Daemon {
 			Description: "makima: this machine's tunnel",
 		},
 	}
-	if u := invokerFromEnv(); u != nil && u.Username != "" {
-		d.Env = map[string]string{"MAKIMA_OWNER": u.Username}
-	}
 	return d
+}
+
+// recordOwner writes down whose machine this is, before the daemon starts.
+//
+// The daemon can work it out for itself from sudo, from polkit, or from who is
+// logged in at the screen — but only when one of those is true at the moment
+// it starts, and for a service launchd or systemd brings up at boot, none of
+// them is. This runs where the answer is still known: inside the `sudo makima
+// up` that a person typed.
+//
+// Best-effort throughout. Not knowing who ran this is normal on a machine
+// administered as root, and it is the daemon's job to fall back; failing to
+// bring up a tunnel over it would be absurd.
+func recordOwner(path string) {
+	u := invokerFromEnv()
+	if u == nil || u.Username == "" {
+		return
+	}
+	f, err := conf.Load(path)
+	if err != nil || f.Owner == u.Username {
+		return
+	}
+	f.Owner = u.Username
+	_ = conf.Save(path, f)
 }
 
 // defaultServerPort is where the network's server listens unless something
@@ -334,6 +359,8 @@ func joinWith(ctx context.Context, path string, inv invite.Invite, name string) 
 
 // bringUp starts the daemon and prints what the machine can now see.
 func bringUp(ctx context.Context, path string) error {
+	recordOwner(path)
+
 	d := daemonFor(path)
 	already := d.Running()
 	if err := d.Start(ctx, startWait); err != nil {

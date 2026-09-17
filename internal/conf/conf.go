@@ -111,6 +111,19 @@ type File struct {
 	// "keep it off the mesh" rather than "take it off the mesh for a moment".
 	DeniedPorts []uint16 `json:"denied_ports,omitempty"`
 
+	// Owner is the local account this machine's makima belongs to: whose
+	// desktop socket is opened, whose Downloads receive files, and which
+	// account a shell session runs as by default.
+	//
+	// Written down because every other way of learning it is a property of
+	// whichever process happened to start the daemon. SUDO_USER exists only
+	// under sudo; the console user exists only while somebody is logged in at
+	// the screen. A machine set up over SSH as root has neither, and one
+	// started by launchd at boot has neither either — so without this, the
+	// read-only socket that the desktop app and every non-root tool read is
+	// never opened at all, and nothing says why.
+	Owner string `json:"owner,omitempty"`
+
 	// Inbox is where files sent by peers land, and InboxOff switches
 	// receiving off entirely.
 	//

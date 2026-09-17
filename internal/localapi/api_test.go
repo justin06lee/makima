@@ -37,6 +37,8 @@ type fakeBackend struct {
 	sshOn   bool
 	sshKeys []string
 	sshUser string
+
+	owner string
 }
 
 func (f *fakeBackend) Status() Status { return f.status }
@@ -67,6 +69,13 @@ func (f *fakeBackend) SetSSH(on bool, keys []string, user string) error {
 		return f.fail
 	}
 	f.sshOn, f.sshKeys, f.sshUser = on, keys, user
+	return nil
+}
+func (f *fakeBackend) SetOwner(name string) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	f.owner = name
 	return nil
 }
 func (f *fakeBackend) SetInbox(dir string, off bool) error {
@@ -466,6 +475,36 @@ func TestSetInboxIsRefusedOnAReadOnlyListener(t *testing.T) {
 	}
 	if b.inboxDir != "" {
 		t.Error("a read-only listener reached the backend anyway")
+	}
+}
+
+// The read-only socket is opened for one account, so naming that account is
+// the one change that can make every other read possible.
+func TestSetOwnerNamesTheAccount(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	w := post(t, h, "/api/owner", OwnerRequest{Name: "justin06lee"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if b.owner != "justin06lee" {
+		t.Errorf("owner = %q, want justin06lee", b.owner)
+	}
+}
+
+// It changes who can read this node, so the read-only listener must not be
+// able to do it.
+func TestSetOwnerIsRefusedOnTheReadOnlyListener(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, false).Handler()
+
+	w := post(t, h, "/api/owner", OwnerRequest{Name: "justin06lee"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if b.owner != "" {
+		t.Errorf("owner = %q, want it untouched", b.owner)
 	}
 }
 

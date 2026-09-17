@@ -2,10 +2,7 @@ package main
 
 import (
 	"log"
-	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/drop"
@@ -22,87 +19,16 @@ import (
 
 // defaultInboxDir is where files land when nothing says otherwise.
 //
-// Under the invoking user's home when there is one, because a file that
+// Under the owner's home when this machine has one, because a file that
 // arrives somewhere you cannot find is barely better than one that did not
 // arrive. Falling back to the daemon's own state directory on a machine with
-// no interactive user — a server — where a home directory would be a worse
-// guess than an obvious system path.
-func defaultInboxDir() (string, *drop.Owner) {
-	if home, u, ok := invokingUser(); ok {
-		return filepath.Join(home, "Downloads", "makima"), u
+// no owner — a server — where a home directory would be a worse guess than an
+// obvious system path.
+func defaultInboxDir(o *owner) (string, *drop.Owner) {
+	if o == nil || o.Home == "" {
+		return "/var/lib/makima/inbox", nil
 	}
-	return "/var/lib/makima/inbox", nil
-}
-
-// invokingUser finds the human behind a sudo, and their home and IDs.
-//
-// The daemon runs as root because it holds a TUN device. Files it creates
-// would therefore be root-owned inside somebody's home directory, where they
-// could not be deleted without sudo — a small thing that makes the whole
-// feature feel broken.
-func invokingUser() (home string, owner *drop.Owner, ok bool) {
-	u := invoker()
-	if u == nil {
-		// Nobody behind us. If the daemon is genuinely running as a person,
-		// their own home is the right answer.
-		if os.Geteuid() != 0 {
-			if h, err := os.UserHomeDir(); err == nil {
-				return h, nil, true
-			}
-		}
-		return "", nil, false
-	}
-	if u.HomeDir == "" {
-		return "", nil, false
-	}
-
-	uid, err1 := strconv.Atoi(u.Uid)
-	gid, err2 := strconv.Atoi(u.Gid)
-	if err1 != nil || err2 != nil {
-		return u.HomeDir, nil, true
-	}
-	return u.HomeDir, &drop.Owner{UID: uid, GID: gid}, true
-}
-
-// invoker is the person makima is running on behalf of, or nil.
-//
-// Four ways to learn it, tried in the order of how directly each one says so:
-//
-//   - SUDO_USER — `sudo makima up` in a terminal, the common case.
-//   - PKEXEC_UID — polkit, which is how the Linux desktop app asks for root.
-//     pkexec scrubs the environment and sets this one variable in its place.
-//   - MAKIMA_OWNER — set on purpose by whatever launched us. The macOS app's
-//     admin prompt runs a shell with none of the above in it, so the app says
-//     who it is running for explicitly. A uid or a username.
-//   - The owner of /dev/console — whoever is logged in at the screen on a
-//     Mac. The last resort, for a daemon a launchd job started.
-//
-// Root itself never counts: the point is to find a person.
-func invoker() *user.User {
-	if name := os.Getenv("SUDO_USER"); name != "" && name != "root" {
-		if u, err := user.Lookup(name); err == nil {
-			return u
-		}
-	}
-	if uid := os.Getenv("PKEXEC_UID"); uid != "" && uid != "0" {
-		if u, err := user.LookupId(uid); err == nil {
-			return u
-		}
-	}
-	if who := os.Getenv("MAKIMA_OWNER"); who != "" && who != "root" && who != "0" {
-		if u, err := user.LookupId(who); err == nil {
-			return u
-		}
-		if u, err := user.Lookup(who); err == nil {
-			return u
-		}
-	}
-	if uid, ok := consoleUID(); ok {
-		if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
-			return u
-		}
-	}
-	return nil
+	return filepath.Join(o.Home, "Downloads", "makima"), &drop.Owner{UID: o.UID, GID: o.GID}
 }
 
 // inboxConfig resolves the flags and the stored settings into what the
@@ -124,13 +50,14 @@ func (n *node) inboxConfig(opts options) drop.Config {
 		return drop.Config{}
 	}
 
-	dir, owner := defaultInboxDir()
+	own := n.owner()
+	dir, owner := defaultInboxDir(own)
 	if stored != "" {
 		dir = stored
 		// A directory chosen by hand may be anywhere, so the ownership guess
 		// no longer applies unless it is under the same user's home.
-		if home, u, ok := invokingUser(); ok && isUnder(dir, home) {
-			owner = u
+		if own != nil && isUnder(dir, own.Home) {
+			owner = &drop.Owner{UID: own.UID, GID: own.GID}
 		} else {
 			owner = nil
 		}
