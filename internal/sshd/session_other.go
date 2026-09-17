@@ -12,6 +12,6 @@ import "golang.org/x/crypto/ssh"
 
 func supported() error { return ErrUnsupported }
 
-func (s *Server) session(nch ssh.NewChannel, _ Config) {
+func (s *Server) session(nch ssh.NewChannel, _ Config, _ *SessionUser, _ Grant) {
 	_ = nch.Reject(ssh.Prohibited, "makima's ssh server does not run on this platform")
 }

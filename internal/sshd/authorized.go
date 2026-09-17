@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -68,7 +69,7 @@ type Keys struct {
 
 	mu      sync.RWMutex
 	sources []Source
-	keys    map[string]bool
+	keys    map[string]AuthorizedKey
 	updated time.Time
 	lastErr error
 
@@ -83,7 +84,7 @@ type Keys struct {
 
 // cachedKeys is one source's last good read, and when it happened.
 type cachedKeys struct {
-	keys []ssh.PublicKey
+	keys []AuthorizedKey
 	at   time.Time
 }
 
@@ -92,7 +93,7 @@ func NewKeys(logger *log.Logger) *Keys {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Keys{log: logger, keys: map[string]bool{}, cached: map[Source]cachedKeys{}}
+	return &Keys{log: logger, keys: map[string]AuthorizedKey{}, cached: map[Source]cachedKeys{}}
 }
 
 // Set replaces the sources and reads them once, synchronously.
@@ -123,15 +124,33 @@ func (k *Keys) Close() {
 	}
 }
 
-// Allow reports whether a key is authorized. Safe for concurrent use, and on
-// the authentication path for every connection.
+// Match reports whether a key is authorized from an address, and what the line
+// it came from permits. On the authentication path for every connection, and
+// safe for concurrent use.
+func (k *Keys) Match(pub ssh.PublicKey, remote netip.Addr) (Grant, bool) {
+	if pub == nil {
+		return Grant{}, false
+	}
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+
+	entry, ok := k.keys[string(pub.Marshal())]
+	if !ok || !entry.Allows(remote) {
+		return Grant{}, false
+	}
+	return Grant{PTY: entry.PTY}, true
+}
+
+// Allow reports whether a key is authorized, ignoring where from. For callers
+// that have no address to offer.
 func (k *Keys) Allow(pub ssh.PublicKey) bool {
 	if pub == nil {
 		return false
 	}
 	k.mu.RLock()
 	defer k.mu.RUnlock()
-	return k.keys[string(pub.Marshal())]
+	_, ok := k.keys[string(pub.Marshal())]
+	return ok
 }
 
 // Status reports how many keys are in force, when they were last read, and
@@ -171,7 +190,7 @@ func (k *Keys) refresh(ctx context.Context) error {
 	k.mu.RUnlock()
 
 	now := time.Now()
-	next := make(map[string]bool)
+	next := make(map[string]AuthorizedKey)
 	fresh := make(map[Source]cachedKeys, len(sources))
 	var failures []string
 
@@ -189,14 +208,14 @@ func (k *Keys) refresh(ctx context.Context) error {
 				failures = append(failures, fmt.Sprintf("%s: %v (still honouring its last good read)", s, err))
 				fresh[s] = c
 				for _, key := range c.keys {
-					next[string(key.Marshal())] = true
+					next[string(key.Key.Marshal())] = key
 				}
 			}
 			continue
 		}
 		fresh[s] = cachedKeys{keys: keys, at: now}
 		for _, key := range keys {
-			next[string(key.Marshal())] = true
+			next[string(key.Key.Marshal())] = key
 		}
 	}
 
@@ -218,7 +237,7 @@ func (k *Keys) refresh(ctx context.Context) error {
 }
 
 // read fetches the keys one source names.
-func (s Source) read(ctx context.Context) ([]ssh.PublicKey, error) {
+func (s Source) read(ctx context.Context) ([]AuthorizedKey, error) {
 	str := string(s)
 	if account, ok := strings.CutPrefix(str, githubPrefix); ok {
 		return fetchGitHub(ctx, account)
@@ -230,16 +249,19 @@ func (s Source) read(ctx context.Context) ([]ssh.PublicKey, error) {
 	return ParseAuthorizedKeys(b)
 }
 
-// ParseAuthorizedKeys reads an authorized_keys file.
+// ParseAuthorizedKeys reads an authorized_keys file, options and all.
 //
 // Tolerant of what such files actually contain: comments, blank lines, and
 // option prefixes. A line that does not parse is skipped rather than failing
-// the file, because one stale entry must not lock out every other key in it.
-func ParseAuthorizedKeys(b []byte) ([]ssh.PublicKey, error) {
-	var out []ssh.PublicKey
+// the file, because one stale entry must not lock out every other key in it —
+// and so is a line whose options say something this server cannot honour, for
+// the same reason in reverse: better one key that does not work here than one
+// that works more freely than its line allows.
+func ParseAuthorizedKeys(b []byte) ([]AuthorizedKey, error) {
+	var out []AuthorizedKey
 
 	for len(b) > 0 {
-		key, _, _, rest, err := ssh.ParseAuthorizedKey(b)
+		key, _, opts, rest, err := ssh.ParseAuthorizedKey(b)
 		if err != nil {
 			// Skip to the next line and carry on.
 			if i := bytes.IndexByte(b, '\n'); i >= 0 {
@@ -248,7 +270,9 @@ func ParseAuthorizedKeys(b []byte) ([]ssh.PublicKey, error) {
 			}
 			break
 		}
-		out = append(out, key)
+		if entry, ok := parseOptions(opts, key); ok {
+			out = append(out, entry)
+		}
 		b = rest
 	}
 
@@ -264,7 +288,7 @@ func ParseAuthorizedKeys(b []byte) ([]ssh.PublicKey, error) {
 const maxKeyBody = 1 << 20
 
 // fetchGitHub reads an account's published SSH keys.
-func fetchGitHub(ctx context.Context, account string) ([]ssh.PublicKey, error) {
+func fetchGitHub(ctx context.Context, account string) ([]AuthorizedKey, error) {
 	if !validAccount(account) {
 		return nil, fmt.Errorf("%q is not a GitHub account name", account)
 	}

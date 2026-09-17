@@ -29,7 +29,9 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
@@ -82,30 +84,59 @@ type Config struct {
 	// HostKey identifies this machine to clients.
 	HostKey ssh.Signer
 
-	// Authorized is consulted for every public key offered. It is a function
-	// rather than a list so the set can be refreshed — from a file that
-	// changed, or from a GitHub account — without restarting the listener or
-	// disturbing an open session.
-	Authorized func(ssh.PublicKey) bool
+	// Authorized is consulted for the keys that open the default account. It
+	// is a function rather than a list so the set can be refreshed — from a
+	// file that changed, or from a GitHub account — without restarting the
+	// listener or disturbing an open session.
+	Authorized func(ssh.PublicKey, netip.Addr) (Grant, bool)
 
-	// User is the local account every session runs as.
-	//
-	// Chosen here, never by the client. A daemon that runs as root and takes
-	// the SSH username at face value is a root shell for anyone holding an
-	// authorized key, and no amount of care elsewhere makes that acceptable.
+	// User is the account a session runs as when the client names no other,
+	// and the one Authorized speaks for.
 	User *SessionUser
+
+	// Accounts lets a client ask for a different local account by SSH
+	// username — root included. Nil keeps the server single-account.
+	//
+	// The username is a request, never a grant. It is honoured only when that
+	// account's own authorized_keys holds the offered key, which is the same
+	// question the system's sshd asks and the same file its administrator
+	// already curates. What this must never become is a daemon that runs as
+	// root and takes the username at face value: that is a root shell for
+	// anyone holding any authorized key.
+	//
+	// The keys in Authorized deliberately do not carry over. A GitHub account
+	// named as a key source says who may use this machine as its owner; it
+	// does not say who may be root on it.
+	Accounts Accounts
 
 	Logger *log.Logger
 }
 
 // SessionUser is the account a shell runs as.
 type SessionUser struct {
-	Name  string
-	UID   int
-	GID   int
+	Name string
+	UID  int
+	GID  int
+
+	// Groups are the account's supplementary groups. Without them a session
+	// would run with root's, or with none at all — and an account that is in
+	// wheel or docker on the machine would not be in them in its own shell.
+	Groups []int
+
 	Home  string
 	Shell string
 }
+
+// ListAccountsUser is the SSH username that asks which accounts a key opens,
+// rather than asking for a session.
+//
+// A colon is the one character a unix account name can never contain — it is
+// the field separator in the password file — so this can never collide with a
+// real account, and no local account can be created to impersonate it.
+//
+// Answering it gives away nothing the caller could not already find out by
+// trying each name in turn: the list is only ever the accounts this key opens.
+const ListAccountsUser = "makima:accounts"
 
 // Server is a running SSH listener.
 type Server struct {
@@ -248,14 +279,15 @@ func (s *Server) handle(c net.Conn) {
 	var authorizedKey ssh.PublicKey
 
 	sc := &ssh.ServerConfig{
-		PublicKeyCallback: func(_ ssh.ConnMetadata, pub ssh.PublicKey) (*ssh.Permissions, error) {
-			if cfg.Authorized == nil || !cfg.Authorized(pub) {
+		PublicKeyCallback: func(meta ssh.ConnMetadata, pub ssh.PublicKey) (*ssh.Permissions, error) {
+			perms, err := s.authorize(cfg, meta.User(), pub, remoteAddr(meta.RemoteAddr()))
+			if err != nil {
 				// One error for every rejection. A client learns whether a key
 				// was accepted, which is unavoidable, and nothing else.
 				return nil, errors.New("key not authorized")
 			}
 			authorizedKey = pub
-			return &ssh.Permissions{}, nil
+			return perms, nil
 		},
 		// No password callback at all, rather than one that always fails:
 		// a server that advertises password authentication invites people to
@@ -281,6 +313,10 @@ func (s *Server) handle(c net.Conn) {
 
 	go ssh.DiscardRequests(reqs)
 
+	account := conn.Permissions.Extensions[accountExtension]
+	listing := conn.Permissions.Extensions[listingExtension]
+	grant := Grant{PTY: conn.Permissions.Extensions[ptyExtension] == "1"}
+
 	for ch := range chans {
 		if ch.ChannelType() != "session" {
 			// Notably absent: direct-tcpip. Port forwarding through this
@@ -290,13 +326,177 @@ func (s *Server) handle(c net.Conn) {
 			_ = ch.Reject(ssh.UnknownChannelType, "only session channels are supported")
 			continue
 		}
-		go s.session(ch, cfg)
+		if listing != "" {
+			go answerAccounts(ch, listing)
+			continue
+		}
+
+		// Resolved again rather than carried from the handshake: an account
+		// removed or locked in between should not still get a shell, and the
+		// lookup is a password-database read.
+		user, err := s.accountByName(cfg, account)
+		if err != nil {
+			_ = ch.Reject(ssh.Prohibited, "that account is no longer available")
+			continue
+		}
+		go s.session(ch, cfg, user, grant)
 	}
 }
 
-// atomic64 is a counter guarded by the server's own mutex, kept as a type so
-// the intent reads at the call site.
-type atomic64 struct{ n uint64 }
+// The facts about a connection that outlive its handshake. ssh.Permissions is
+// the only thing the library carries across, and it carries strings.
+const (
+	accountExtension = "makima-account"
+	listingExtension = "makima-accounts"
+	ptyExtension     = "makima-pty"
+)
 
-func (a *atomic64) inc()        { a.n++ }
-func (a *atomic64) get() uint64 { return a.n }
+// authorize decides whether a key may log in under a username, and as what.
+//
+// The shape of the answer matters more than any single rule in it:
+//
+//	""  or the default account   the keys makima was configured with
+//	another local account        that account's own authorized_keys
+//	a name that is not local     the default account, as before there were any
+//	                             others — a client sends the name of whoever is
+//	                             sitting at it, which is rarely a name here
+//	ListAccountsUser             no session at all, only the list
+func (s *Server) authorize(cfg Config, name string, pub ssh.PublicKey, remote netip.Addr) (*ssh.Permissions, error) {
+	if cfg.User == nil {
+		return nil, errors.New("sshd: no account to run sessions as")
+	}
+
+	if name == ListAccountsUser {
+		list := s.accountsFor(cfg, pub, remote)
+		if len(list.Accounts) == 0 {
+			return nil, errors.New("key opens no account here")
+		}
+		names := make([]string, 0, len(list.Accounts))
+		for _, a := range list.Accounts {
+			names = append(names, encodeAccount(a))
+		}
+		return &ssh.Permissions{Extensions: map[string]string{
+			listingExtension: strings.Join(names, "\n"),
+		}}, nil
+	}
+
+	// The default account, by name or by not naming one.
+	wantsDefault := name == "" || name == cfg.User.Name
+	if !wantsDefault && cfg.Accounts != nil {
+		if _, err := cfg.Accounts.Lookup(name); err != nil {
+			// Not an account here at all. The client is almost certainly
+			// sending the username of whoever is sitting at the far machine,
+			// which is what every ssh client does when nobody says otherwise.
+			wantsDefault = true
+		}
+	} else if !wantsDefault && cfg.Accounts == nil {
+		wantsDefault = true
+	}
+
+	if wantsDefault {
+		grant, ok := defaultGrant(cfg, pub, remote)
+		if !ok {
+			return nil, errors.New("key not authorized")
+		}
+		return permissionsFor(cfg.User.Name, grant), nil
+	}
+
+	user, err := cfg.Accounts.Lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	grant, ok := accountGrant(cfg, user, pub, remote)
+	if !ok {
+		return nil, errors.New("key not authorized")
+	}
+	return permissionsFor(user.Name, grant), nil
+}
+
+// defaultGrant asks the configured key set about the default account.
+func defaultGrant(cfg Config, pub ssh.PublicKey, remote netip.Addr) (Grant, bool) {
+	if cfg.Authorized == nil {
+		return Grant{}, false
+	}
+	return cfg.Authorized(pub, remote)
+}
+
+// accountGrant asks one account's own authorized_keys about a key.
+func accountGrant(cfg Config, u *SessionUser, pub ssh.PublicKey, remote netip.Addr) (Grant, bool) {
+	if cfg.Accounts == nil || pub == nil {
+		return Grant{}, false
+	}
+	keys, err := cfg.Accounts.Keys(u)
+	if err != nil {
+		return Grant{}, false
+	}
+	want := string(pub.Marshal())
+	for _, k := range keys {
+		if k.Key != nil && string(k.Key.Marshal()) == want && k.Allows(remote) {
+			return Grant{PTY: k.PTY}, true
+		}
+	}
+	return Grant{}, false
+}
+
+// accountsFor is every account this key opens on this machine.
+func (s *Server) accountsFor(cfg Config, pub ssh.PublicKey, remote netip.Addr) AccountList {
+	var out []Account
+	if _, ok := defaultGrant(cfg, pub, remote); ok {
+		out = append(out, Account{Name: cfg.User.Name, Default: true, Root: cfg.User.UID == 0})
+	}
+	if cfg.Accounts != nil {
+		users, err := cfg.Accounts.List()
+		if err != nil {
+			s.log.Printf("ssh: could not list accounts: %v", err)
+		}
+		for _, u := range users {
+			if u.Name == cfg.User.Name {
+				continue
+			}
+			if _, ok := accountGrant(cfg, u, pub, remote); ok {
+				out = append(out, Account{Name: u.Name, Root: u.UID == 0})
+			}
+		}
+	}
+	return AccountList{Accounts: SortAccounts(out)}
+}
+
+// accountByName resolves the account a session was authorized for.
+func (s *Server) accountByName(cfg Config, name string) (*SessionUser, error) {
+	if cfg.User != nil && (name == "" || name == cfg.User.Name) {
+		return cfg.User, nil
+	}
+	if cfg.Accounts == nil {
+		return nil, errors.New("sshd: no account source")
+	}
+	return cfg.Accounts.Lookup(name)
+}
+
+func permissionsFor(account string, g Grant) *ssh.Permissions {
+	ext := map[string]string{accountExtension: account}
+	if g.PTY {
+		ext[ptyExtension] = "1"
+	}
+	return &ssh.Permissions{Extensions: ext}
+}
+
+// remoteAddr pulls the address out of whatever net.Addr the connection has.
+func remoteAddr(a net.Addr) netip.Addr {
+	if t, ok := a.(*net.TCPAddr); ok {
+		if addr, ok := netip.AddrFromSlice(t.IP); ok {
+			return addr.Unmap()
+		}
+	}
+	if ap, err := netip.ParseAddrPort(a.String()); err == nil {
+		return ap.Addr().Unmap()
+	}
+	return netip.Addr{}
+}
+
+// atomic64 is a counter touched from every connection's own goroutine, which
+// is why it is atomic rather than guarded: handle runs outside the server's
+// mutex, and the comment here used to claim otherwise.
+type atomic64 struct{ n atomic.Uint64 }
+
+func (a *atomic64) inc()        { a.n.Add(1) }
+func (a *atomic64) get() uint64 { return a.n.Load() }
