@@ -477,10 +477,12 @@ sudo makima owner justin06lee    # say, when it could not be worked out
 
 The daemon runs as root, and the socket it opens for itself is root's. Beside
 it, it opens a second, read-only one for **one account** — the machine's owner.
-That account is what makes `makima status` work without sudo, what the desktop
-app reads, and whose `Downloads/makima` files from peers land in. It is also
-the account an incoming `makima possess` lands on when the other end names
-none.
+That account is what the desktop app reads, what lets `makima ping`, `makima
+cp` and `makima inbox` run from a shell without sudo, and whose
+`Downloads/makima` files from peers land in. It is also the account an incoming
+`makima possess` lands on when the other end names none. (`makima status` and
+`makima doctor` ask for root regardless: they read the config file, which holds
+this node's private keys.)
 
 Normally nobody has to know this exists: `sudo makima up` says who is behind
 it, the macOS app says so through its own prompt, and either way the answer is

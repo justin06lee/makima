@@ -63,7 +63,9 @@ func showOwner(path string) error {
 		fmt.Println("Say whose machine this is with:  sudo makima owner <user>")
 		return nil
 	}
-	fmt.Printf("%s owns makima here: their commands reach it without sudo, and files from peers land in their Downloads.\n", name)
+	fmt.Printf("%s owns makima here. From that account the desktop app and the commands that only ask —\n", name)
+	fmt.Println("ping, cp, inbox — reach makima without sudo, files from peers land in their Downloads,")
+	fmt.Println("and an incoming possess session runs as them.")
 	return nil
 }
 
@@ -98,6 +100,7 @@ func setOwner(path, name string) error {
 	if err := c.SetOwner(name); err != nil {
 		return err
 	}
-	fmt.Printf("%s owns makima here. Their own commands reach it without sudo, and files from peers land in their Downloads.\n", name)
+	fmt.Printf("%s owns makima here: the desktop app can read it, so can their own ping, cp and inbox, and\n", name)
+	fmt.Println("files from peers land in their Downloads.")
 	return nil
 }

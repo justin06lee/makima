@@ -370,7 +370,7 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		add(localapi.Check{
 			Name:   "Owner",
 			OK:     true,
-			Detail: fmt.Sprintf("%s: their own commands reach makima without sudo, and files from peers land in their Downloads", own.Name),
+			Detail: fmt.Sprintf("%s: the desktop app and their own ping, cp and inbox reach makima without sudo, and files from peers land in their Downloads", own.Name),
 		})
 	}
 
