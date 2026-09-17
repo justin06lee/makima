@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/creack/pty"
+	"golang.org/x/crypto/ssh"
 )
 
 // The payloads of the session requests this server understands, parsed here
@@ -103,4 +104,12 @@ func sizeOf(width, height uint32) *pty.Winsize {
 		height = 24
 	}
 	return &pty.Winsize{Cols: uint16(width), Rows: uint16(height)}
+}
+
+// sendExitStatus tells the client what the process returned, which is what
+// makes `makima ssh host false` exit non-zero locally.
+func sendExitStatus(ch ssh.Channel, code int) {
+	var payload [4]byte
+	binary.BigEndian.PutUint32(payload[:], uint32(code))
+	_, _ = ch.SendRequest("exit-status", false, payload[:])
 }

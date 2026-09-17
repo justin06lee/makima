@@ -175,6 +175,11 @@ func TestParseAuthorizedKeysSkipsCommentsAndBlanks(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("parsed %d keys, want 2", len(got))
 	}
+	for _, k := range got {
+		if k.Key == nil {
+			t.Error("a parsed entry has no key")
+		}
+	}
 }
 
 func TestParseAuthorizedKeysRejectsRubbish(t *testing.T) {

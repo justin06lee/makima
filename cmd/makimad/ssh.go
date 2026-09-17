@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/justin06lee/makima/internal/conf"
@@ -80,8 +79,9 @@ func (n *node) applySSH(ctx context.Context) {
 	err = n.ssh.Apply(sshd.Config{
 		Addr:       n.meshAddr(),
 		HostKey:    hostKey,
-		Authorized: n.sshKeys.Allow,
+		Authorized: n.sshKeys.Match,
 		User:       account,
+		Accounts:   sshd.SystemAccounts{},
 		Logger:     log.Default(),
 	})
 	if err != nil {
@@ -133,44 +133,33 @@ func (n *node) SetSSH(on bool, keys []string, userName string) error {
 	return nil
 }
 
-// resolveSSHUser turns a name into the account sessions will run as.
+// resolveSSHUser turns a name into the default account sessions run as.
 //
 // Empty means the person who started makima — the SUDO_USER behind `makima
 // up`, or the daemon's own user when it is not running as root. That is
 // almost always the right answer and never needs to be typed.
 //
-// The account is resolved here rather than taken from the SSH username on
-// purpose. A daemon that runs as root and trusts the username it is handed is
-// a root shell for anyone holding an authorized key.
+// It is the *default*, not the only one: a client may ask for another local
+// account by SSH username, and gets it only if that account's own
+// authorized_keys holds their key. What is never true is that the username
+// alone decides — see sshd.Config.Accounts.
 func resolveSSHUser(name string) (*sshd.SessionUser, error) {
 	if name == "" {
 		if u := os.Getenv("SUDO_USER"); u != "" && u != "root" {
 			name = u
 		}
 	}
-
-	var u *user.User
-	var err error
 	if name == "" {
-		u, err = user.Current()
-	} else {
-		u, err = user.Lookup(name)
+		u, err := user.Current()
+		if err != nil {
+			return nil, fmt.Errorf("no account to run sessions as: %w", err)
+		}
+		name = u.Username
 	}
+
+	account, err := sshd.SystemAccounts{}.Lookup(name)
 	if err != nil {
 		return nil, fmt.Errorf("no local account %q to run sessions as", name)
 	}
-
-	uid, err1 := strconv.Atoi(u.Uid)
-	gid, err2 := strconv.Atoi(u.Gid)
-	if err1 != nil || err2 != nil {
-		return nil, fmt.Errorf("account %s has no numeric id", u.Username)
-	}
-
-	return &sshd.SessionUser{
-		Name:  u.Username,
-		UID:   uid,
-		GID:   gid,
-		Home:  u.HomeDir,
-		Shell: loginShell(u),
-	}, nil
+	return account, nil
 }

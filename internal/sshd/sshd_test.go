@@ -104,8 +104,9 @@ func testServer(t *testing.T, authorized ssh.PublicKey) (string, ssh.Signer) {
 		Addr:    netip.MustParseAddr("127.0.0.1"),
 		Port:    port,
 		HostKey: host,
-		Authorized: func(pub ssh.PublicKey) bool {
-			return authorized != nil && string(pub.Marshal()) == string(authorized.Marshal())
+		Authorized: func(pub ssh.PublicKey, _ netip.Addr) (Grant, bool) {
+			ok := authorized != nil && string(pub.Marshal()) == string(authorized.Marshal())
+			return Grant{PTY: ok}, ok
 		},
 		User: &SessionUser{
 			Name:  me.Username,
@@ -407,7 +408,7 @@ func TestParseAuthorizedKeysSkipsRubbish(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("parsed %d keys, want 1", len(keys))
 	}
-	if string(keys[0].Marshal()) != string(good.PublicKey().Marshal()) {
+	if string(keys[0].Key.Marshal()) != string(good.PublicKey().Marshal()) {
 		t.Error("the wrong key was parsed")
 	}
 }

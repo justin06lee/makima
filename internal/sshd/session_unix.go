@@ -3,7 +3,6 @@
 package sshd
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -25,7 +24,7 @@ func supported() error { return nil }
 // The account is chosen on this machine, the environment is rebuilt rather
 // than inherited from the request, and the command — when there is one — is
 // handed to the account's own shell rather than parsed here.
-func (s *Server) session(nch ssh.NewChannel, cfg Config) {
+func (s *Server) session(nch ssh.NewChannel, cfg Config, u *SessionUser, grant Grant) {
 	ch, reqs, err := nch.Accept()
 	if err != nil {
 		return
@@ -42,8 +41,10 @@ func (s *Server) session(nch ssh.NewChannel, cfg Config) {
 		switch req.Type {
 		case "pty-req":
 			mu.Lock()
-			if started {
+			if started || !grant.PTY {
 				mu.Unlock()
+				// no-pty on the line that authorized this key. The session
+				// still runs a command, which is what no-pty means elsewhere.
 				req.Reply(false, nil)
 				continue
 			}
@@ -88,7 +89,7 @@ func (s *Server) session(nch ssh.NewChannel, cfg Config) {
 			}
 			req.Reply(true, nil)
 
-			code := s.run(ch, cfg, p, command)
+			code := s.run(ch, u, p, command)
 			sendExitStatus(ch, code)
 			ch.Close()
 
@@ -114,9 +115,7 @@ func (s *Server) session(nch ssh.NewChannel, cfg Config) {
 }
 
 // run starts the process and copies streams until it exits.
-func (s *Server) run(ch ssh.Channel, cfg Config, p *ptyRequest, command string) int {
-	u := cfg.User
-
+func (s *Server) run(ch ssh.Channel, u *SessionUser, p *ptyRequest, command string) int {
 	shell := u.Shell
 	if shell == "" {
 		shell = "/bin/sh"
@@ -232,14 +231,26 @@ func wait(cmd *exec.Cmd) int {
 // Nil when the daemon is already that user, which is the whole check: setting
 // a credential to your own uid is a no-op that can still fail, and failing
 // would refuse a session for no reason.
+//
+// The supplementary groups are set even when there are none, and that is the
+// point: leaving Groups empty with NoSetGroups false clears them, so a session
+// never keeps root's. Filling them in is what makes an account that is in
+// wheel, sudo or docker actually in them once it has a shell.
 func credentialFor(u *SessionUser) *syscall.Credential {
 	if u.UID < 0 || os.Geteuid() != 0 {
 		return nil
 	}
-	if u.UID == os.Geteuid() && u.GID == os.Getegid() {
+	if u.UID == os.Geteuid() && u.GID == os.Getegid() && len(u.Groups) == 0 {
 		return nil
 	}
-	return &syscall.Credential{Uid: uint32(u.UID), Gid: uint32(u.GID)}
+
+	groups := make([]uint32, 0, len(u.Groups))
+	for _, g := range u.Groups {
+		if g >= 0 {
+			groups = append(groups, uint32(g))
+		}
+	}
+	return &syscall.Credential{Uid: uint32(u.UID), Gid: uint32(u.GID), Groups: groups}
 }
 
 // environment builds the environment a session starts with.
@@ -284,12 +295,4 @@ func sanitiseTerm(s string) string {
 		}
 		return -1
 	}, s)
-}
-
-// sendExitStatus tells the client what the process returned, which is what
-// makes `makima ssh host false` exit non-zero locally.
-func sendExitStatus(ch ssh.Channel, code int) {
-	var payload [4]byte
-	binary.BigEndian.PutUint32(payload[:], uint32(code))
-	_, _ = ch.SendRequest("exit-status", false, payload[:])
 }
