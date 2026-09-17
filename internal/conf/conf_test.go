@@ -202,3 +202,163 @@ func TestNetMapCarriesThePrivateKeyForLocalUseOnly(t *testing.T) {
 		t.Error("a marshalled netmap still has a private_key field")
 	}
 }
+
+// An upgrade must never be a reason to lose a network. These are the shapes an
+// older or newer makima leaves behind.
+
+func TestAConfigFromBeforeTheDiscoKeyIsBroughtForward(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	f := newFile(t)
+	f.DiscoKey = key.Private{}
+	f.Version = 0
+	if err := Save(path, f); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("a config with no disco key was refused: %v", err)
+	}
+	if got.DiscoKey.IsZero() {
+		t.Error("no disco key was generated")
+	}
+	if got.NodeKey != f.NodeKey || got.MachineKey != f.MachineKey {
+		t.Error("the keys that were there did not survive")
+	}
+	if from, yes := got.Upgraded(); !yes || from != 0 {
+		t.Errorf("Upgraded() = (%d, %v), want (0, true)", from, yes)
+	}
+	if got.Version != SchemaVersion {
+		t.Errorf("version is %d, want %d", got.Version, SchemaVersion)
+	}
+}
+
+// A static node from before machine keys existed gets one. A managed node
+// cannot: its machine key is its identity to the control plane, and inventing
+// one would silently make it a different machine.
+func TestAMissingMachineKeyIsFilledInOnlyWhereItIsSafe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	f := newFile(t)
+	f.MachineKey = key.Private{}
+	if err := Save(path, f); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("a static node with no machine key was refused: %v", err)
+	}
+	if got.MachineKey.IsZero() {
+		t.Error("no machine key was generated for a static node")
+	}
+
+	managed := filepath.Join(t.TempDir(), "node.json")
+	f = newFile(t)
+	f.MachineKey = key.Private{}
+	f.LoginServer = "https://control.example"
+	if err := Save(managed, f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(managed); err == nil {
+		t.Error("a managed node with no machine key was given a new identity silently")
+	}
+}
+
+// Running the current version against a current file changes nothing, which is
+// what makes upgrading safe to attempt on every load.
+func TestLoadingACurrentConfigIsNotAnUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	if err := Save(path, newFile(t)); err != nil {
+		t.Fatal(err)
+	}
+	// Saved by this build, so it is already current.
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, yes := got.Upgraded(); yes {
+		t.Error("a config this build just wrote was treated as an upgrade")
+	}
+}
+
+// A field a newer makima wrote must survive this one rewriting the file, which
+// it does on every netmap update.
+func TestFieldsThisBuildDoesNotKnowSurviveASave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	if err := Save(path, newFile(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Something from the future lands in the file.
+	raw := map[string]any{}
+	b, _ := os.ReadFile(path)
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["version"] = SchemaVersion + 7
+	raw["something_invented_later"] = map[string]any{"keep": "me"}
+	b, _ = json.Marshal(raw)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Self.Name = "renamed"
+	if err := Save(path, f); err != nil {
+		t.Fatal(err)
+	}
+
+	after := map[string]any{}
+	b, _ = os.ReadFile(path)
+	if err := json.Unmarshal(b, &after); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after["something_invented_later"]; !ok {
+		t.Error("a field from a newer version was dropped on save")
+	}
+	if got := after["version"]; got != float64(SchemaVersion+7) {
+		t.Errorf("version became %v, want it left at %d", got, SchemaVersion+7)
+	}
+	if after["self"].(map[string]any)["name"] != "renamed" {
+		t.Error("the change this build made was not saved")
+	}
+}
+
+// Clearing a field must not be undone by the kept-unknowns merge — the auth
+// key is cleared after the first registration and must stay cleared.
+func TestClearingAKnownFieldSticks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	f := newFile(t)
+	f.AuthKey = "secret-join-credential"
+	if err := Save(path, f); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.AuthKey = ""
+	if err := Save(path, got); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "secret-join-credential") {
+		t.Error("a cleared auth key came back")
+	}
+}
+
+func TestKnownFieldsComesFromTheStruct(t *testing.T) {
+	known := knownFields()
+	for _, name := range []string{"node_key", "machine_key", "disco_key", "self", "version", "ssh_user"} {
+		if !known[name] {
+			t.Errorf("%q is a field of File but was not seen as one", name)
+		}
+	}
+	if known["something_invented_later"] {
+		t.Error("a name that is not a field was treated as one")
+	}
+}

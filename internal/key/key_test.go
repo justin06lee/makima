@@ -165,3 +165,36 @@ func TestSharedTextMarshal(t *testing.T) {
 		t.Error("preshared key did not survive a text round trip")
 	}
 }
+
+// A key that was never set has two shapes on disk: all zeroes, and what all
+// zeroes become after clamping. Both mean "unset", and treating the second as
+// a real key is how one gets used.
+func TestAZeroKeyIsStillZeroAfterARoundTrip(t *testing.T) {
+	var unset Private
+	if !unset.IsZero() {
+		t.Fatal("an all-zero key did not report itself unset")
+	}
+
+	back, err := ParsePrivate(unset.Base64())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back == unset {
+		t.Skip("this platform does not clamp on parse, so there is nothing to catch")
+	}
+	if !back.IsZero() {
+		t.Errorf("a zero key read back as %x, which did not report itself unset", back[:])
+	}
+}
+
+func TestARealKeyIsNotMistakenForUnset(t *testing.T) {
+	for range 50 {
+		k, err := NewPrivate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k.IsZero() {
+			t.Fatalf("a generated key reported itself unset: %x", k[:])
+		}
+	}
+}

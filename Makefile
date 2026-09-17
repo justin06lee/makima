@@ -39,30 +39,27 @@ RELEASE := dist/release
 TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-.PHONY: all build install install-bins reinstall update app-version clean-slate clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
+.PHONY: all build install install-bins update stop start uninstall reset-permissions trusted-copy app-version clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
 
-# `make` builds. It does not touch the machine.
+# `make` is the whole golden path: build everything, put it in place, and start
+# again exactly what was running.
 #
-# It used to run the golden path — build, wipe every trace of makima off this
-# machine, install, relaunch — because that is what somebody working on makima
-# wants most of the time. It is not what somebody who typed `make` to see
-# whether the tree compiles wants, and the two are indistinguishable until it
-# has already happened: clean-slate stops the daemon, forgets the network this
-# machine is on *or holds*, and takes its launchd and systemd registrations
-# with it. A build command that can lose a network is a build command people
-# are right to be afraid of.
+# It keeps the machine's state. An install used to run dist/uninstall.sh first,
+# so every one of them was a new machine — the network this box was on or
+# *held* forgotten, its keys gone, its invites spent. A reinstall is not a
+# reason to lose a network, and a build command that can is one people are
+# right to be afraid of.
 #
-# `make install` is now the golden path, and it says what it does.
-all: build
-	@echo "  built into $(BUILD)/. 'make install' replaces makima on this machine."
+# `make uninstall` is still there for when removing makima is the point.
+all: install
 
 # Everything is built before anything is taken down, so a build that fails
 # leaves the machine exactly as it was rather than with nothing on it.
-reinstall: build $(if $(HAVE_APP),app-build) install-bins $(if $(HAVE_APP),app-place app-open,app-skip)
+install: build $(if $(HAVE_APP),app-build) stop install-bins $(if $(HAVE_APP),app-place reset-permissions trusted-copy,app-skip) start $(if $(HAVE_APP),app-open)
 
-# update is the golden path: every install is already a full stop, delete and
-# replace, so there is nothing left for a separate update to do differently.
-update: reinstall
+# update is the same path: stop, replace, start. Kept as its own name because
+# it is the one people type when they mean "pick up my changes".
+update: install
 
 build:
 	@mkdir -p $(BUILD)
@@ -71,27 +68,57 @@ build:
 		go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD)/$$b ./cmd/$$b || exit 1; \
 	done
 
-install: reinstall
-
-# install-bins is the copy step on its own, so `reinstall` can order the wipe
-# and the copy itself rather than through a prerequisite.
-install-bins: clean-slate
+# The binaries themselves. Root's copy too, where the app has made one: the
+# daemon may be registered to run from there rather than from $(BINDIR), and
+# replacing only one of the two leaves the old code running.
+install-bins:
 	@for b in $(BINS); do \
 		echo "  install $(BINDIR)/$$b"; \
 		sudo install -m 0755 $(BUILD)/$$b $(BINDIR)/$$b || exit 1; \
 	done
 	@$(if $(HAVE_APP),true,echo "  makima installed. start with: makima up")
 
-# Every install starts from a machine that has never seen makima: the app and
-# daemons stopped, their registrations gone, the network this machine was on or
-# held forgotten, and every file any earlier version left behind deleted —
-# dist/uninstall.sh says what that is. A new build meeting an old network's
-# state is how "this machine is already on the network held at …" happens.
+# Root's copy of the binaries, which the app runs through sudo so its buttons
+# stop asking for a password (desktop/src-tauri/src/privileged.rs).
+TRUSTED := /Library/PrivilegedHelperTools/makima
+
+# Refresh that copy from the app just installed, where there is one.
 #
-# Nothing is restarted afterwards, because there is nothing left to restart:
-# the app opens on its first screen, where a network is started or joined.
-clean-slate:
+# Two reasons it is the bundle's copies rather than $(BUILD)'s. The daemon may
+# be registered to run from in there — launchd records the path it was given —
+# so leaving it stale would keep the old code running after an install. And
+# `install -p` carries the modification times over, which is exactly how the
+# app decides its copy is current: from a different source they would differ,
+# and the first click after every install would ask for a password again.
+trusted-copy:
+	@if [ "$$(uname -s)" = Darwin ] && [ -d $(TRUSTED) ] && [ -d $(APP) ]; then \
+		for b in $(BINS); do \
+			sudo install -p -m 0755 $(APP)/Contents/MacOS/$$b $(TRUSTED)/$$b || exit 1; \
+		done; \
+		echo "  install $(TRUSTED)/*"; \
+	fi
+
+# Stop what is running, and start back exactly that. Neither touches state:
+# dist/update.sh says what it does and does not do.
+stop:
+	@sudo sh dist/update.sh stop
+
+start:
+	@sudo sh dist/update.sh start
+
+# Taking makima off the machine, which is a thing to ask for rather than a step
+# on the way to installing it.
+uninstall:
 	@sudo sh dist/uninstall.sh
+
+# macOS ties a privacy grant to the binary that was granted it, so a rebuilt
+# app inherits a stale entry that looks enabled in System Settings and is not.
+# Resetting is the app's own bundle id and nothing else.
+reset-permissions:
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		osascript -e 'quit app "System Settings"' >/dev/null 2>&1 || true; \
+		tccutil reset All sh.makima.desktop >/dev/null 2>&1 || true; \
+	fi
 
 check: fmt vet test race
 
@@ -204,10 +231,9 @@ kits:
 		rm -rf $$(dirname $$dir); \
 	done
 
-# Build it and put it where apps go, then open it — so `make` ends with the
-# new app in the menu bar, not with a bundle in a target directory. Like every
-# install, it replaces all of makima on this machine, not just the app.
-app: app-build clean-slate app-place app-open
+# Build it and put it where apps go, then open it — so `make app` ends with the
+# new app in the menu bar, not with a bundle in a target directory.
+app: app-build stop app-place reset-permissions trusted-copy start app-open
 
 # On a Mac only the .app is built here: the .dmg is for handing the app to
 # somebody else, and its packaging step leaves a mounted volume behind when it
@@ -220,10 +246,11 @@ app-build: app-version sidecars
 dmg: app-version sidecars
 	@cd desktop && bun install --frozen-lockfile && bun run tauri build --bundles dmg
 
-app-install: clean-slate app-place app-open
+app-install: stop app-place reset-permissions trusted-copy start app-open
 
-# The app where apps go. clean-slate has already stopped and removed the old one.
+# The app where apps go, over whatever was there. `stop` has already quit it.
 app-place:
+	@if [ "$$(uname -s)" = Darwin ] && [ -d $(APP) ]; then rm -rf $(APP); fi
 	@if [ "$$(uname -s)" = Darwin ]; then \
 		echo "  install $(APP)"; \
 		cp -R $(BUNDLE)/macos/makima.app $(APP); \

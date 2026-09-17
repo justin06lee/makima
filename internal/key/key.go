@@ -76,7 +76,20 @@ func (p Private) Public() Public {
 }
 
 // IsZero reports whether the key was never set.
-func (p Private) IsZero() bool { return p == Private{} }
+//
+// Two shapes count, because a key that was never set has two. An all-zero
+// array is one. The other is what an all-zero array becomes after a round trip
+// through disk: clamping sets bit 62, so a key saved as 32 zero bytes reads
+// back as 0…0,64 — which is not a key anybody generated, and whose public half
+// is the identity point. Treating that as set is how an unset key gets used.
+func (p Private) IsZero() bool {
+	if p == (Private{}) {
+		return true
+	}
+	var clampedZero Private
+	clampedZero.clamp()
+	return p == clampedZero
+}
 
 // IsZero reports whether the key was never set.
 func (p Public) IsZero() bool { return p == Public{} }
