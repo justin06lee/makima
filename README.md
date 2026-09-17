@@ -64,16 +64,20 @@ and what is not yet there — not as instructions that quietly fail.
 
 ```sh
 git clone https://github.com/justin06lee/makima && cd makima
-make install    # the four binaries in /usr/local/bin, and the app if Rust and bun are here
+make
 ```
 
-Requires Go 1.26 or newer. The app needs Rust and bun as well, and the build
-skips it with a note when they are absent.
+`make` is the whole golden path: build the four binaries, put them in
+`/usr/local/bin`, build the app where Rust and bun are present, and start again
+exactly what was running. Requires Go 1.26 or newer; the app is skipped with a
+note when its toolchain is absent.
 
 ```sh
-make            # build only; changes nothing on this machine
-make install    # replace makima on this machine, and open the app
-make update     # the same thing
+make            # the golden path, above
+make build      # produce the binaries in ./build and nothing else
+make install    # the same as make
+make update     # the same as make — for when you mean "pick up my changes"
+make uninstall  # take makima off this machine entirely
 make check      # fmt, vet, test, and the race detector
 make release    # cross-built archives and checksums, in dist/release
 ```
@@ -85,22 +89,32 @@ go run github.com/justin06lee/makima/cmd/makima@latest try -serve 8080
 ```
 
 <details>
-<summary>What the install replaces</summary>
+<summary>What an install does and does not touch</summary>
 
-`make install`, `make update`, `make app` and `make app-install` each start
-from a clean slate: they run [`dist/uninstall.sh`](dist/uninstall.sh), which
-stops the app and all three daemons and removes everything any version left
-behind. That includes the network this machine was on or held, the launchd and
-systemd registrations, logs, the resolver file, the app's sudoers rule and
-data, and its privacy grants. The new build opens on the app's first screen.
-The old network's keys are copied to `/tmp/makima-uninstalled-*` first, in case
-you wiped the machine holding a network by mistake — `/tmp` is cleared on
-reboot, so that is a safety net for the next hour, not a backup.
+Installing keeps your state. The network this machine is on — or holds — its
+keys, its address, the app's settings and the launchd or systemd registrations
+all stay exactly as they were. What is replaced is the binaries, and what is
+restarted is precisely what was running: a node that was deliberately down
+stays down, and the server and relay come back only on the machine that was
+running them. [`dist/update.sh`](dist/update.sh) is the whole of it.
 
-`make` on its own only builds. It deliberately does not do any of the above:
-somebody checking that the tree compiles should not lose a network for it.
+One thing is deliberately removed: a `/etc/sudoers.d/makima_*` rule written by
+an app old enough to have asked for wildcards (`makima join *` and friends,
+with no password). The app writes a narrower one the next time you say yes.
 
-Run `sh dist/uninstall.sh` on its own to take makima off a machine for good.
+A config written by an older makima is brought forward on the next start —
+fields it never wrote are filled in, fields a *newer* makima wrote are left
+alone rather than stripped, and a copy of the original is kept beside it as
+`node.json.v<N>.bak`. What cannot be guessed is refused rather than invented:
+a managed node with no machine key is asked to rejoin, because inventing one
+would quietly make it a different machine.
+
+`make uninstall` is the other thing entirely — it runs
+[`dist/uninstall.sh`](dist/uninstall.sh), which stops everything, removes every
+registration, and deletes the network this machine was on or held, the logs,
+the resolver file, the app and its data. The old network's keys are copied to
+`/tmp/makima-uninstalled-*` first; `/tmp` is cleared on reboot, so that is a
+safety net for the next hour, not a backup.
 
 </details>
 

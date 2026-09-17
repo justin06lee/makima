@@ -8,10 +8,9 @@
 # the app's "don't ask again" created, the app and its data, the `die` alias,
 # and the app's privacy grants. Afterwards the machine has never seen makima.
 #
-# `make`, `make install`, `make update`, `make app` and `make app-install` run
-# this before putting a new build in place, so a fresh build never meets an old
-# network — "this machine is already on the network held at …" cannot happen to
-# a machine that was just built.
+# Nothing runs this on your behalf. Installing keeps a machine's state and only
+# replaces what runs — see dist/update.sh — because a reinstall is not a reason
+# to lose a network. This is for when removing makima is the point.
 #
 # This machine only. Other machines on the network keep their own state; run
 # this on each of them to take them off too.

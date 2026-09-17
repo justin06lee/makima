@@ -16,13 +16,16 @@ make app-dev    # develop against a pretend mesh, no root and no tunnel
 ```
 
 `make` on its own does the same whenever Rust and bun are present, so the app
-on the machine is never older than the code. Both first run
-`dist/uninstall.sh`, so the new app opens on its first screen with no network,
-sudoers rule or saved data from an earlier build. Both targets build the four Go
-binaries first and drop them in `src-tauri/binaries/`, named for the target
-triple, which is how Tauri bundles "sidecars". The app runs the `makima`
-beside its own executable, so a downloaded bundle works with nothing else
-installed.
+on the machine is never older than the code. Both keep the machine's state —
+the network, its keys, the app's settings — and only quit the app, replace it,
+and start it again. Both build the four Go binaries first and drop them in
+`src-tauri/binaries/`, named for the target triple, which is how Tauri bundles
+"sidecars". The app runs the `makima` beside its own executable, so a
+downloaded bundle works with nothing else installed.
+
+macOS ties a privacy grant to the binary that was granted it, so each install
+resets this app's own grants (`tccutil reset All sh.makima.desktop`) and the
+app asks again rather than inheriting an entry that looks enabled and is not.
 
 `make app-dev` needs a status server to talk to, in another terminal:
 

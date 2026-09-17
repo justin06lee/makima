@@ -172,6 +172,21 @@ func run(opts options) error {
 	if err != nil {
 		return err
 	}
+	// An upgraded config is written back with a copy of the original beside
+	// it. The daemon rewrites this file on every netmap update anyway, so the
+	// old shape would be gone within seconds of starting; keeping a copy is
+	// what makes going back to the previous makima possible.
+	if from, yes := f.Upgraded(); yes {
+		if backup, err := conf.Backup(configPath, from); err != nil {
+			log.Printf("config: could not back up the old %s: %v", configPath, err)
+		} else {
+			log.Printf("config: brought forward from version %d to %d; the old one is at %s",
+				from, conf.SchemaVersion, backup)
+		}
+		if err := conf.Save(configPath, f); err != nil {
+			return fmt.Errorf("save the upgraded config: %w", err)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
