@@ -61,10 +61,29 @@ func onAPTY(t *testing.T, typed string, fn func()) string {
 
 	fn()
 
+	// The pty is drained on another goroutine, so the picker's last write —
+	// putting the cursor back — can still be in flight when fn returns.
+	// Waiting for it is what makes the end of the output something a test can
+	// assert on, rather than a race that is only ever lost on a loaded
+	// machine somebody else is watching.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		settled := strings.HasSuffix(drawn.String(), showCursor)
+		mu.Unlock()
+		if settled || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 	return drawn.String()
 }
+
+// showCursor is the picker's last act, whichever way it ends.
+const showCursor = "\x1b[?25h"
 
 func TestChooseOnARealTerminal(t *testing.T) {
 	items := []menuItem{
@@ -93,7 +112,7 @@ func TestChooseOnARealTerminal(t *testing.T) {
 		}
 	}
 	// The cursor is hidden while the list is up and put back afterwards.
-	if !strings.Contains(drawn, "\x1b[?25l") || !strings.HasSuffix(strings.TrimRight(drawn, "\r"), "\x1b[?25h") {
+	if !strings.Contains(drawn, "\x1b[?25l") || !strings.HasSuffix(strings.TrimRight(drawn, "\r"), showCursor) {
 		t.Error("the terminal cursor was not hidden and restored")
 	}
 }
