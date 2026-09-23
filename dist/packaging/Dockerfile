@@ -10,7 +10,7 @@
 # reconfigures the *container's* network, not the host's. That is occasionally
 # what somebody wants and is usually a misunderstanding, so it is not the
 # default command.
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 
