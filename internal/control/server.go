@@ -61,10 +61,15 @@ func NewServer(store *Store, logger *log.Logger) *Server {
 // still meet here, through whatever path — a port forward, a name, a reverse
 // proxy — already brought them to the control plane.
 //
+// It serves this network's nodes and nobody else's: the control plane is the
+// membership list, and a relay on a home connection's open port has no reason
+// to carry strangers' traffic.
+//
 // Call before Handler.
-func (s *Server) SetRelay(h http.Handler, relayKey key.Public) {
-	s.relay = h
-	s.store.SetBuiltinRelay(netmap.Relay{URL: relay.Path, Key: relayKey})
+func (s *Server) SetRelay(rs *relay.Server) {
+	rs.SetAllow(s.store.IsMember)
+	s.relay = rs
+	s.store.SetBuiltinRelay(netmap.Relay{URL: relay.Path, Key: rs.PublicKey()})
 }
 
 // Handler builds the routing table.

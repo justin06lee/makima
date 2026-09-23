@@ -764,6 +764,19 @@ func (s *Store) Forget(name string) error {
 	return nil
 }
 
+// IsMember reports whether a node key belongs to a node of this network that
+// may currently use it — registered, and not expired by an operator.
+func (s *Store) IsMember(nodeKey key.Public) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, n := range s.state.Nodes {
+		if n.NodeKey == nodeKey {
+			return !n.Expired
+		}
+	}
+	return false
+}
+
 func (s *Store) findByMachineKey(k key.Public) *Node {
 	for _, n := range s.state.Nodes {
 		if n.MachineKey == k {

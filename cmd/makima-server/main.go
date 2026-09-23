@@ -173,7 +173,7 @@ func serve(args []string) error {
 		}
 		rs = relay.NewServer(id.PrivateKey, log.Default())
 		defer rs.Close()
-		handlers.SetRelay(rs, id.PrivateKey.Public())
+		handlers.SetRelay(rs)
 	}
 
 	// Claim the admin socket before binding the public port, so a second
