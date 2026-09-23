@@ -145,21 +145,11 @@ func (c *Client) Run(ctx context.Context) {
 
 // session runs one connection from dial to disconnect.
 func (c *Client) session(ctx context.Context) error {
-	addr, err := DialAddr(c.url)
-	if err != nil {
-		return err
-	}
-
-	d := net.Dialer{Timeout: dialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := c.dial(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-
-	if tc, ok := conn.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-	}
 
 	if err := c.handshake(conn); err != nil {
 		return fmt.Errorf("handshake: %w", err)
@@ -433,11 +423,16 @@ func (c *Client) setConn(conn net.Conn) {
 // DialAddr turns a relay URL into a host:port to dial.
 //
 // Accepts a bare host, a host:port, or a URL, because an operator writing a
-// config by hand should not have to remember which one this field wants.
+// config by hand should not have to remember which one this field wants. A
+// relay carried by a web server (see webRelay) defaults to that scheme's port
+// rather than the relay's own.
 func DialAddr(relayURL string) (string, error) {
 	s := strings.TrimSpace(relayURL)
 	if s == "" {
 		return "", errors.New("relay: empty address")
+	}
+	if strings.HasPrefix(s, "/") {
+		return "", fmt.Errorf("relay %q is relative to the control plane and was never resolved against it", s)
 	}
 
 	if strings.Contains(s, "://") {
@@ -452,6 +447,9 @@ func DialAddr(relayURL string) (string, error) {
 		port := u.Port()
 		if port == "" {
 			port = strconv.Itoa(DefaultPort)
+			if _, web := webRelay(s); web {
+				port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+			}
 		}
 		return net.JoinHostPort(host, port), nil
 	}
