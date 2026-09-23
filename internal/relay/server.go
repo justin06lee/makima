@@ -65,7 +65,20 @@ type Server struct {
 	// because they are touched on every forwarded packet, and the routing
 	// table's lock is already the hot one.
 	stats Stats
+
+	// allow, when set, decides which node keys may use this relay at all.
+	// Set once, before serving.
+	allow func(key.Public) bool
 }
+
+// SetAllow restricts the relay to node keys fn accepts. Call before serving.
+//
+// A standalone relay does not know which keys belong to a network, and does
+// not need to: it forwards ciphertext for whoever proves a key. A relay the
+// control plane carries does know — the control plane is the membership list
+// — and on a home connection's port, open to the internet, serving strangers
+// would be lending them that connection's upload for their own traffic.
+func (s *Server) SetAllow(fn func(key.Public) bool) { s.allow = fn }
 
 // Stats is a relay's lifetime activity.
 type Stats struct {
@@ -296,6 +309,11 @@ func (s *Server) handshake(c net.Conn) (key.Public, error) {
 	}
 	if len(plain) != challengeSize || string(plain) != string(challenge[:]) {
 		return key.Public{}, errors.New("challenge response did not match")
+	}
+	// Checked after the proof, so the answer is about a key the caller has
+	// shown it holds rather than one it merely named.
+	if s.allow != nil && !s.allow(ch.NodeKey) {
+		return key.Public{}, errors.New("not a member of this network")
 	}
 	return ch.NodeKey, nil
 }

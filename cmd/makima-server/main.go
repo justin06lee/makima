@@ -18,9 +18,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -28,6 +31,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/relay"
 )
 
 // DefaultStatePath is where the mesh's membership lives.
@@ -59,6 +63,10 @@ func main() {
 		err = showKey(os.Args[2:])
 	case "relay":
 		err = relayCmd(os.Args[2:])
+	case "urls":
+		err = urlsCmd(os.Args[2:])
+	case "ddns":
+		err = ddnsCmd(os.Args[2:])
 	case "routes":
 		err = routesCmd(os.Args[2:])
 	case "acl":
@@ -92,7 +100,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `makima-server — the coordination plane for a makima mesh
 
 running it:
-  makima-server serve   [-addr :8080]
+  makima-server serve   [-addr :8080] [-no-relay]
   makima-server key
 
 admitting machines:
@@ -101,6 +109,14 @@ admitting machines:
   makima-server forget  -name N     remove a machine entirely
   makima-server expire  -name N     make it re-authenticate, keeping its address
   makima-server tags    -name N -tags t1,t2
+
+reaching this server from anywhere:
+  makima-server ddns set     -name NAME [-token T]   a free NAME.duckdns.org, kept pointed here
+  makima-server ddns                                 how that is going
+  makima-server ddns off
+  makima-server urls add     -url http://NAME:8080   another address nodes can use
+  makima-server urls ls
+  makima-server urls rm      -url http://NAME:8080
 
 reaching machines that cannot reach each other:
   makima-server relay add    -url HOST:3478 -key K
@@ -128,6 +144,7 @@ func serve(args []string) error {
 	statePath := fs.String("state", DefaultStatePath, "path to control plane state")
 	socketPath := fs.String("socket", "", "admin socket path (default: beside the state file)")
 	addr := fs.String("addr", ":8080", "address to listen on")
+	noRelay := fs.Bool("no-relay", false, "do not carry a relay on this port")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -137,6 +154,27 @@ func serve(args []string) error {
 		return err
 	}
 	handlers := control.NewServer(store, log.Default())
+	if _, p, err := net.SplitHostPort(*addr); err == nil {
+		if port, err := strconv.Atoi(p); err == nil {
+			handlers.SetListenPort(port)
+		}
+	}
+
+	// On by default, because a relay is what lets two machines that cannot
+	// reach each other directly still connect — and this is the one machine
+	// every other is already known to reach. Its key is kept beside the
+	// state, since nodes pin it and a new one on every start would lock every
+	// node out of the relay until its next netmap.
+	var rs *relay.Server
+	if !*noRelay {
+		id, err := relay.LoadIdentity(builtinRelayPath(*statePath))
+		if err != nil {
+			return fmt.Errorf("relay: %w", err)
+		}
+		rs = relay.NewServer(id.PrivateKey, log.Default())
+		defer rs.Close()
+		handlers.SetRelay(rs)
+	}
 
 	// Claim the admin socket before binding the public port, so a second
 	// server refuses to start rather than racing the first over the state
@@ -167,6 +205,8 @@ func serve(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	go control.RunDDNS(ctx, store, log.Default())
+
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -176,6 +216,9 @@ func serve(args []string) error {
 	}()
 
 	log.Printf("listening on %s", *addr)
+	if rs != nil {
+		log.Printf("relay    %s on the same port, key %s", relay.Path, rs.PublicKey())
+	}
 	log.Printf("state    %s", *statePath)
 	log.Printf("admin    %s", sock(*socketPath, *statePath))
 	log.Printf("key      %s", store.ServerKey().Public())
@@ -187,6 +230,13 @@ func serve(args []string) error {
 	}
 	log.Print("stopped")
 	return nil
+}
+
+// builtinRelayPath is where the relay this server carries keeps its key:
+// beside the state, and apart from a standalone makima-relay's on the same
+// machine, which is a different relay with its own identity.
+func builtinRelayPath(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "control-relay.json")
 }
 
 func authkey(args []string) error {

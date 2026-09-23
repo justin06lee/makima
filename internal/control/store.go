@@ -50,6 +50,15 @@ type State struct {
 	// netmap, the whole mesh moves together or not at all.
 	Relays []netmap.Relay `json:"relays,omitempty"`
 
+	// ControlURLs are other addresses nodes can reach this server at, handed
+	// to every node so it can fall back to them. See MapResponse.ControlURLs.
+	ControlURLs []string `json:"control_urls,omitempty"`
+
+	// DDNS is a DuckDNS name kept pointed at this server. Its URL is one of
+	// ControlURLs. The token lives here, in a file only root can read, beside
+	// the server's own private key.
+	DDNS *DDNS `json:"ddns,omitempty"`
+
 	// Domain is the DNS suffix mesh names live under.
 	Domain string `json:"domain,omitempty"`
 
@@ -182,6 +191,16 @@ type Store struct {
 	// changed is closed and replaced on every change, so any number of
 	// waiting pollers wake at once without the store tracking who they are.
 	changed chan struct{}
+
+	// builtinRelay is the relay this server carries on its own port, handed
+	// out when no other relay is registered. Not persisted: it exists exactly
+	// as long as the process serving it does.
+	builtinRelay netmap.Relay
+
+	// ddnsKick asks RunDDNS to refresh now, and ddnsStatus is what its last
+	// refresh found. Neither is persisted.
+	ddnsKick   chan struct{}
+	ddnsStatus DDNSStatus
 }
 
 // DefaultPrefix is where a new network's addresses come from: makima's own
@@ -193,7 +212,7 @@ var DefaultPrefix = netip.MustParsePrefix("10.77.0.0/16")
 // OpenStore loads state from path, creating it — and the control plane's
 // identity — on first run.
 func OpenStore(path string) (*Store, error) {
-	s := &Store{path: path, changed: make(chan struct{})}
+	s := &Store{path: path, changed: make(chan struct{}), ddnsKick: make(chan struct{}, 1)}
 
 	b, err := os.ReadFile(path)
 	switch {
@@ -494,11 +513,12 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 	relay := s.activeRelayLocked()
 
 	resp := &MapResponse{
-		Version:   s.version,
-		Self:      s.toNetmapNode(self, relay),
-		Peers:     make([]netmap.Node, 0, len(s.state.Nodes)-1),
-		HomeRelay: relay,
-		Domain:    s.domainLocked(),
+		Version:     s.version,
+		Self:        s.toNetmapNode(self, relay),
+		Peers:       make([]netmap.Node, 0, len(s.state.Nodes)-1),
+		HomeRelay:   relay,
+		ControlURLs: append([]string(nil), s.state.ControlURLs...),
+		Domain:      s.domainLocked(),
 		DNS: netmap.DNSConfig{
 			Enabled: s.state.DNSEnabled,
 			Domain:  s.domainLocked(),
@@ -566,11 +586,30 @@ func (n *Node) policyNode() policy.Node {
 }
 
 // activeRelayLocked is the relay every node is currently assigned.
+//
+// A registered relay wins over the built-in one: somebody who went to the
+// trouble of running a relay on a machine with better bandwidth than their
+// home connection meant for it to be used.
 func (s *Store) activeRelayLocked() netmap.Relay {
 	if len(s.state.Relays) == 0 {
-		return netmap.Relay{}
+		return s.builtinRelay
 	}
 	return s.state.Relays[0]
+}
+
+// SetBuiltinRelay records the relay this server carries on its own port.
+func (s *Store) SetBuiltinRelay(r netmap.Relay) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.builtinRelay = r
+	s.bump()
+}
+
+// BuiltinRelay is the relay this server carries itself, if it does.
+func (s *Store) BuiltinRelay() netmap.Relay {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.builtinRelay
 }
 
 func (s *Store) domainLocked() string {
@@ -723,6 +762,19 @@ func (s *Store) Forget(name string) error {
 	}
 	s.bump()
 	return nil
+}
+
+// IsMember reports whether a node key belongs to a node of this network that
+// may currently use it — registered, and not expired by an operator.
+func (s *Store) IsMember(nodeKey key.Public) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, n := range s.state.Nodes {
+		if n.NodeKey == nodeKey {
+			return !n.Expired
+		}
+	}
+	return false
 }
 
 func (s *Store) findByMachineKey(k key.Public) *Node {

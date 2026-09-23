@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
@@ -23,22 +26,69 @@ import (
 // exactly like a flaky network and is maddening to diagnose.
 const clientTimeout = pollTimeout + 30*time.Second
 
+// dialTimeout bounds connecting to one of the control plane's addresses.
+//
+// Far shorter than the default, because it is what decides how long a laptop
+// that has left the house spends knocking on the LAN address before trying the
+// public one. A control plane that takes eight seconds to accept a TCP
+// connection is not one worth waiting on.
+const dialTimeout = 8 * time.Second
+
 // Client talks to a control plane on behalf of one node.
 type Client struct {
-	baseURL    string
 	serverKey  key.Public
 	machineKey key.Private
 	http       *http.Client
+
+	// urls are every address the control plane answers at: the one the node
+	// joined through first, then whatever others the server has named. cur is
+	// the one currently in use, kept until it stops answering — so a node
+	// that had to fall back stays on the address that works rather than
+	// retrying the dead one on every poll.
+	mu   sync.Mutex
+	urls []string
+	cur  int
 }
 
 // NewClient builds a client for a known server key.
 func NewClient(baseURL string, serverKey key.Public, machineKey key.Private) *Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		urls:       []string{strings.TrimRight(baseURL, "/")},
 		serverKey:  serverKey,
 		machineKey: machineKey,
-		http:       &http.Client{Timeout: clientTimeout},
+		http:       &http.Client{Timeout: clientTimeout, Transport: t},
 	}
+}
+
+// BaseURL is the address this client is currently reaching the control plane
+// at.
+func (c *Client) BaseURL() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.urls[c.cur]
+}
+
+// SetAlternates records the other addresses the control plane answers at.
+//
+// The address the node joined through stays first, and whichever one is in
+// use stays in use: learning about a new address is no reason to leave one
+// that works.
+func (c *Client) SetAlternates(alts []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	current := c.urls[c.cur]
+	urls := []string{c.urls[0]}
+	for _, a := range alts {
+		a = strings.TrimRight(strings.TrimSpace(a), "/")
+		if a != "" && !slices.Contains(urls, a) {
+			urls = append(urls, a)
+		}
+	}
+	c.urls = urls
+	c.cur = max(slices.Index(urls, current), 0)
 }
 
 // FetchServerKey retrieves the control plane's public key.
@@ -152,7 +202,14 @@ func (c *Client) PollMap(ctx context.Context, version uint64, endpoints []netip.
 	return &resp, nil
 }
 
-// roundTrip seals req, posts it, and opens the reply into resp.
+// roundTrip seals req, posts it, and opens the reply into resp — at the
+// address in use, and then at each of the others until one answers.
+//
+// Anything short of a sealed reply counts as not answering, not only a failed
+// connection. Away from home, the LAN address can belong to some other
+// machine entirely — a hotel's router with a web page on 8080 — and the only
+// thing that proves an answer came from this control plane is that it opens
+// under the server's key.
 func (c *Client) roundTrip(ctx context.Context, path string, req, resp any) error {
 	env, err := Seal(req, c.machineKey.Public(), c.serverKey, c.machineKey)
 	if err != nil {
@@ -164,7 +221,36 @@ func (c *Client) roundTrip(ctx context.Context, path string, req, resp any) erro
 		return fmt.Errorf("encode envelope: %w", err)
 	}
 
-	u, err := url.JoinPath(c.baseURL, path)
+	c.mu.Lock()
+	urls := append([]string(nil), c.urls...)
+	start := c.cur
+	c.mu.Unlock()
+
+	var errs []string
+	for i := range urls {
+		idx := (start + i) % len(urls)
+		err := c.post(ctx, urls[idx], path, body, resp)
+		if err == nil {
+			if idx != start {
+				c.mu.Lock()
+				if c.cur == start && idx < len(c.urls) && c.urls[idx] == urls[idx] {
+					c.cur = idx
+				}
+				c.mu.Unlock()
+			}
+			return nil
+		}
+		if len(urls) == 1 || ctx.Err() != nil {
+			return err
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", urls[idx], err))
+	}
+	return fmt.Errorf("no address of the control server answered — %s", strings.Join(errs, "; "))
+}
+
+// post sends one sealed request to one address and opens the reply.
+func (c *Client) post(ctx context.Context, base, path string, body []byte, resp any) error {
+	u, err := url.JoinPath(base, path)
 	if err != nil {
 		return fmt.Errorf("build URL: %w", err)
 	}

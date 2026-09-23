@@ -12,6 +12,7 @@ import (
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
+	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/serve"
 )
 
@@ -717,7 +718,7 @@ func (n *node) Ping(name string) (localapi.Ping, error) {
 	}
 
 	addr, _ := peer.Addr()
-	out := localapi.Ping{Name: peer.Name, Address: addr, Path: "no path", RelayURL: peer.RelayURL}
+	out := localapi.Ping{Name: peer.Name, Address: addr, Path: "no path", RelayURL: relay.Resolve(peer.RelayURL, n.controlURL())}
 
 	if n.sock == nil {
 		// A static mesh has one fixed path per peer and nothing to select

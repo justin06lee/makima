@@ -24,6 +24,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/policy"
 	"github.com/justin06lee/makima/internal/portmap"
+	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/serve"
 	"github.com/justin06lee/makima/internal/sshd"
 	"github.com/justin06lee/makima/internal/stun"
@@ -103,6 +105,10 @@ type node struct {
 	// ownerAcct is the local account this machine's makima belongs to,
 	// resolved once at startup by learnOwner. Guarded by mu with the rest.
 	ownerAcct *owner
+
+	// relayBase is the control plane address the relay was last resolved
+	// against, so a failover to another address can move it. Guarded by mu.
+	relayBase string
 
 	// lastPoll and lastPollErr are what the doctor reports about the control
 	// plane. Guarded by mu with the rest.
@@ -261,6 +267,7 @@ func run(opts options) error {
 
 	if f.Managed() {
 		n.client = control.NewClient(f.LoginServer, f.ServerKey, f.MachineKey)
+		n.client.SetAlternates(f.ControlURLs)
 
 		if err := n.register(ctx); err != nil {
 			if len(f.Self.Addresses) == 0 {
@@ -504,6 +511,8 @@ func (n *node) poll(ctx context.Context) {
 		n.lastPollErr = nil
 		n.mu.Unlock()
 
+		n.followControlURL()
+
 		if resp.Version == version {
 			continue // heartbeat, nothing moved
 		}
@@ -531,6 +540,10 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	n.file.Peers = peers
 	n.file.Domain = resp.Domain
 	n.file.HomeRelay = resp.HomeRelay
+	if !slices.Equal(n.file.ControlURLs, resp.ControlURLs) {
+		n.file.ControlURLs = resp.ControlURLs
+		n.client.SetAlternates(resp.ControlURLs)
+	}
 
 	m := n.netMapLocked()
 	n.mu.Unlock()
@@ -568,24 +581,66 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 		log.Printf("cache netmap: %v", saveErr)
 	}
 
-	log.Printf("netmap v%d: %d peer(s)%s", resp.Version, len(peers), relaySuffix(resp.HomeRelay))
+	log.Printf("netmap v%d: %d peer(s)%s", resp.Version, len(peers), relaySuffix(resp.HomeRelay, n.controlURL()))
 	for _, p := range peers {
-		logPeer(p)
+		logPeer(p, n.controlURL())
 	}
 }
 
 // applyNetwork hands the socket its view of who is reachable how.
+//
+// A relay the control plane carries itself arrives as a path, and is resolved
+// here against the address this node is reaching the control plane at — so a
+// laptop that reaches it by name from a hotel dials the relay by that name
+// too, rather than at a LAN address that means nothing where it is.
 func (n *node) applyNetwork(m *netmap.NetMap) {
+	base := n.controlURL()
+	n.mu.Lock()
+	n.relayBase = base
+	n.mu.Unlock()
+
 	peers := make([]magicsock.PeerConfig, 0, len(m.Peers))
 	for _, p := range m.Peers {
 		peers = append(peers, magicsock.PeerConfig{
 			NodeKey:   p.Key,
 			DiscoKey:  p.DiscoKey,
 			Endpoints: p.Endpoints,
-			RelayURL:  p.RelayURL,
+			RelayURL:  relay.Resolve(p.RelayURL, base),
 		})
 	}
-	n.sock.SetNetwork(peers, m.HomeRelay.URL, m.HomeRelay.Key)
+	n.sock.SetNetwork(peers, relay.Resolve(m.HomeRelay.URL, base), m.HomeRelay.Key)
+}
+
+// followControlURL moves the relay when the control plane is now being reached
+// at a different address than the one the relay was resolved against.
+//
+// The relay the control plane carries lives at whatever address the node
+// reaches it by. When the node fails over — the LAN address stopped answering
+// because the laptop left the house — the relay has to follow, or it keeps
+// dialling an address that means nothing on this network.
+func (n *node) followControlURL() {
+	if n.sock == nil || n.client == nil {
+		return
+	}
+	base := n.client.BaseURL()
+	n.mu.Lock()
+	moved := base != n.relayBase
+	m := n.netMapLocked()
+	n.mu.Unlock()
+	if !moved {
+		return
+	}
+	log.Printf("control plane: reaching it at %s now", base)
+	n.applyNetwork(m)
+}
+
+// controlURL is the address this node is currently reaching its control plane
+// at, or "" for a node that has none.
+func (n *node) controlURL() string {
+	if n.client == nil {
+		return ""
+	}
+	return n.client.BaseURL()
 }
 
 // gatherEndpoints keeps this node's own reachability up to date.
@@ -615,11 +670,18 @@ func (n *node) gatherEndpoints(ctx context.Context) {
 }
 
 func (n *node) refreshEndpoints(ctx context.Context) {
+	// A peer that answered a probe has already said where this machine's
+	// packets appear to come from, which is all a STUN server would say. The
+	// public servers are the fallback, for before any peer has — a new node,
+	// or one that has only spoken to peers on its own LAN.
+	//
 	// STUN answers arrive on the shared socket's normal receive path, so this
 	// only sends. There is nothing to wait for here — the observation lands
 	// asynchronously and the next poll advertises it.
-	if err := n.sock.QuerySTUN(ctx, stun.DefaultServers); err != nil && n.verbose {
-		log.Printf("stun: %v", err)
+	if !n.sock.PeerSawUsPublicly() {
+		if err := n.sock.QuerySTUN(ctx, stun.DefaultServers); err != nil && n.verbose {
+			log.Printf("stun: %v", err)
+		}
 	}
 
 	if n.pm != nil {
@@ -672,30 +734,30 @@ func (n *node) logState(iface string) {
 
 	log.Printf("%s up on %s as %s [%s], %d peer(s)", iface, addr, name, mode, len(peers))
 	for _, p := range peers {
-		logPeer(p)
+		logPeer(p, n.controlURL())
 	}
 	for _, s := range services {
 		log.Printf("  serving %s", s)
 	}
 }
 
-func logPeer(p netmap.Node) {
+func logPeer(p netmap.Node, controlURL string) {
 	via := "no known path"
 	switch {
 	case len(p.Endpoints) > 0:
 		via = p.Endpoints[0].String()
 	case p.RelayURL != "":
-		via = "relay " + p.RelayURL
+		via = "relay " + relay.Resolve(p.RelayURL, controlURL)
 	}
 	a, _ := p.Addr()
 	log.Printf("  peer %-16s %-15s via %s", p.Name, a, via)
 }
 
-func relaySuffix(r netmap.Relay) string {
+func relaySuffix(r netmap.Relay, controlURL string) string {
 	if r.URL == "" {
 		return ""
 	}
-	return ", relay " + r.URL
+	return ", relay " + relay.Resolve(r.URL, controlURL)
 }
 
 func describePending(routes []netip.Prefix, exit bool) string {

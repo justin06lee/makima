@@ -184,27 +184,24 @@ Pick the machine that will hold the mesh together, and run:
 makima up
 ```
 
-**Pick it deliberately.** Every other machine has to be able to reach this one
-to join, so if it is a desktop behind your home NAT, the mesh only works from
-inside your house — a laptop in a café cannot join, and once joined can only
-find its way home through a relay. `makima up` tells you which of the two you
-just did.
+**Pick it deliberately.** It is the one machine every other has to be able to
+reach: they check in with it to learn where each other are, and when two of
+them cannot connect directly, they meet on the relay it carries on the same
+port. A desktop at home is a fine choice. Out of the box it only works inside
+the house, and `makima up` says so; two steps make it work from anywhere —
+see [Working from anywhere](#working-from-anywhere).
 
 If you already self-host something on a public name, you have already solved
 this and can reuse it. Whatever carries `something.example.dev` into your
-network — a reverse proxy, a Cloudflare tunnel, a port forward — can carry the
-coordination plane too. Point it at the server's port — 8080, or the next free
-one if something already has 8080, which `makima up` says — and say so:
+network — a reverse proxy, a port forward — can carry the coordination plane
+too. Point it at the server's port — 8080, or the next free one if something
+already has 8080, which `makima up` says — and say so:
 
 ```sh
 makima up -advertise https://makima.example.dev
 ```
 
-Otherwise put it on anything with a public address; a small VPS is plenty.
-
-A public machine automatically becomes the relay as well, so machines that
-cannot reach each other directly still meet there. Nothing at home needs a port
-forwarded either way.
+Or put it on anything with a public address; a small VPS is plenty.
 
 That is the whole thing. There is no mesh yet, so it makes one, puts the
 coordination plane on this machine, turns on names, joins itself, starts the
@@ -612,22 +609,50 @@ one.
 ### Working from anywhere
 
 Two machines on the same network find each other without help. Two behind
-different NATs need somewhere to meet. Put a relay on anything with a public
-address:
+different routers need somewhere to meet, and the machine holding the network
+is it: every node checks in with it to learn where the others are, and it
+carries a relay on its own port, at `/relay`, for pairs that cannot connect
+directly. Sessions start relayed when they have to and move to a direct path
+the moment one is found. Nothing to configure.
+
+What has to be true is that the holding machine can be reached. On a VPS it
+already can. At home, it takes a name and a way in:
+
+```sh
+# on the machine holding the network — a free name from https://www.duckdns.org
+sudo makima-server ddns set -name tenet
+```
+
+It checks the name and token (asked for, never echoed) with DuckDNS, keeps
+`tenet.duckdns.org` pointed at your home's public address from then on — home
+addresses change, and the name follows — and tells every node about it. A node
+that cannot reach the server at the address it joined through, because the
+laptop left the house, tries the name instead, and the relay follows it there.
+The command ends by printing exactly what to forward on your router: one TCP
+port for the server and the relay, one UDP port so the others can connect to
+this machine directly.
+
+That one step is the only one no program can take, and it is also the one that
+can make it impossible. If your ISP puts you behind carrier-grade NAT — your
+router's WAN address is not the one https://ifconfig.co shows, or starts with
+`100.64`–`100.127` — there is no public address to forward, and the holding
+machine has to live somewhere that has one.
+
+Any other address the server answers at can be handed out the same way:
+
+```sh
+makima-server urls add -url https://makima.example.dev
+```
+
+The relay holds no WireGuard key and decrypts nothing, so relaying costs
+nothing in confidentiality. What it costs is the holding machine's upload
+bandwidth, which on a home connection is the slow direction. If many machines
+lean on it, put a relay somewhere with more, and it takes over:
 
 ```sh
 makima-relay serve
 makima-server relay add -url <that host>:3478 -key <the relay's key>
 ```
-
-That is the whole configuration. Every node connects to it, and sessions that
-cannot start directly start relayed and upgrade the moment a direct path is
-found — so adding a relay is what makes the mesh work from a hotel, a phone
-tether, or a corporate network, not just from home.
-
-A relay holds no WireGuard key and decrypts nothing. Running one costs you
-nothing in confidentiality, which is why it is reasonable to put one on a cheap
-VPS and forget about it.
 
 ### The desktop app
 
@@ -1037,7 +1062,12 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 - **The machine holding the mesh has to be reachable by the others.** That is
   self-hosting rather than a limitation of makima, but it is the thing most
   likely to surprise: a coordination plane behind a home NAT makes a mesh that
-  only works from inside that house.
+  only works from inside that house until a port is forwarded to it (see
+  [Working from anywhere](#working-from-anywhere)) — and behind carrier-grade
+  NAT, no port forward can make it reachable at all.
+- **The built-in relay runs on the holding machine's upload bandwidth.** Fine
+  for shells and web pages; slow for large files between two machines that are
+  both away from home and cannot connect directly.
 - **One relay at a time.** Two nodes can only meet on a relay they are both
   connected to, and a relay does not forward to other relays. Registering
   several gives you failover, not load spreading: the control plane picks one
@@ -1046,7 +1076,8 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   cannot pair through either of them.
 - **No UPnP.** NAT-PMP and PCP are spoken; UPnP IGD would need SSDP discovery
   and SOAP for a shrinking share of routers, and every router that speaks only
-  UPnP still works through the relay.
+  UPnP still works through the relay. A router that speaks none of them — many
+  ISP-supplied gateways — needs its port forwards set by hand.
 - **Subnet routers and exit nodes are Linux-only.** They need NAT, which on
   macOS means editing the system pf configuration — not something a daemon
   should do behind an operator's back.
@@ -1115,6 +1146,7 @@ internal/disco      the probe protocol that finds direct paths, and knocks
 internal/pair       serverless pairing addresses: two machines, no server
 internal/invite     a whole join as one pasteable string, or as fifteen words
 internal/stun       asking a public server what address we appear to come from
+internal/ddns       keeping a DuckDNS name pointed at the holding machine
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/serve      publishing a local port on the mesh, and nowhere else
 internal/drop       sending a file to another machine, and receiving one

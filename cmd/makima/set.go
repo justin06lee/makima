@@ -178,6 +178,11 @@ func status(args []string) error {
 	switch {
 	case f.Managed():
 		fmt.Printf("%-10s %s\n", "server", f.LoginServer)
+		for _, u := range f.ControlURLs {
+			if u != f.LoginServer {
+				fmt.Printf("%-10s %s  (used when the one above does not answer)\n", "", u)
+			}
+		}
 	case f.Serverless:
 		fmt.Printf("%-10s none (paired directly)\n", "server")
 	default:
@@ -185,7 +190,11 @@ func status(args []string) error {
 	}
 
 	if f.HomeRelay.URL != "" {
-		fmt.Printf("%-10s %s\n", "relay", f.HomeRelay.URL)
+		if strings.HasPrefix(f.HomeRelay.URL, "/") {
+			fmt.Printf("%-10s the server's own, on the same port\n", "relay")
+		} else {
+			fmt.Printf("%-10s %s\n", "relay", f.HomeRelay.URL)
+		}
 	}
 	if f.Domain != "" {
 		fmt.Printf("%-10s *.%s\n", "names", f.Domain)

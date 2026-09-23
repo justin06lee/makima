@@ -12,6 +12,7 @@ import (
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/policy"
+	"github.com/justin06lee/makima/internal/relay"
 )
 
 // --- relay --------------------------------------------------------------
@@ -142,9 +143,9 @@ func listRelays(args []string) error {
 	}
 
 	if len(relays) == 0 {
-		fmt.Print("no relays registered\n\n")
-		fmt.Print("without one, two nodes that cannot already reach each other will not connect.\n")
-		fmt.Print("run 'makima-relay serve' somewhere with a public address, then:\n")
+		fmt.Print("no relays registered, so this server relays on its own port, at " + relay.Path + ".\n\n")
+		fmt.Print("that is enough wherever the server itself is reachable. a relay somewhere with more\n")
+		fmt.Print("bandwidth than a home connection is worth adding if many machines lean on it:\n")
 		fmt.Print("  makima-server relay add -url <host>:3478 -key <its key>\n")
 		return nil
 	}
@@ -168,6 +169,98 @@ func listRelays(args []string) error {
 		return err
 	}
 	fmt.Print("\n* is the active relay. the others are failover, not load spreading.\n")
+	return nil
+}
+
+// --- urls ---------------------------------------------------------------
+
+// urlsCmd manages the other addresses nodes are told this server answers at.
+//
+// A network is usually started on a LAN address, because that is what the
+// machine knows about itself. A laptop that leaves the house needs another
+// way in — a public name, a tunnel — and this is how every node learns it,
+// without being re-invited.
+func urlsCmd(args []string) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return listURLs(args)
+	}
+	switch args[0] {
+	case "add":
+		return changeURL(args[1:], true)
+	case "rm", "remove":
+		return changeURL(args[1:], false)
+	case "ls", "list":
+		return listURLs(args[1:])
+	default:
+		return fmt.Errorf("unknown urls subcommand %q (try: add, rm, ls)", args[0])
+	}
+}
+
+func changeURL(args []string, add bool) error {
+	verb := map[bool]string{true: "urls add", false: "urls rm"}[add]
+	af := newAdminFlags(verb)
+	u := af.fs.String("url", "", "an address this server answers at, e.g. http://tenet.duckdns.org:8080")
+	t, err := af.open(args)
+	if err != nil {
+		return err
+	}
+	if *u == "" {
+		// Accepted positionally too, since it is the only argument.
+		if rest := af.fs.Args(); len(rest) > 0 {
+			*u = rest[0]
+		}
+	}
+	if *u == "" {
+		return fmt.Errorf("%s needs -url", verb)
+	}
+
+	switch {
+	case add && t.live():
+		err = t.admin.AddControlURL(*u)
+	case add:
+		err = t.store.AddControlURL(*u)
+	case t.live():
+		err = t.admin.RemoveControlURL(*u)
+	default:
+		err = t.store.RemoveControlURL(*u)
+	}
+	if err != nil {
+		return err
+	}
+	if add {
+		fmt.Println("added; every node learns it on its next netmap and falls back to it when its usual address stops answering")
+	} else {
+		fmt.Println("removed")
+	}
+	return nil
+}
+
+func listURLs(args []string) error {
+	af := newAdminFlags("urls ls")
+	t, err := af.open(args)
+	if err != nil {
+		return err
+	}
+
+	var urls []string
+	if t.live() {
+		urls, err = t.admin.ControlURLs()
+	} else {
+		urls = t.store.ControlURLs()
+	}
+	if err != nil {
+		return err
+	}
+	if len(urls) == 0 {
+		fmt.Print("nodes know this server only by the address they joined through.\n\n")
+		fmt.Print("to reach it from outside this network, give it a public address and add it:\n")
+		fmt.Print("  makima-server ddns set -name NAME -token TOKEN   # a free NAME.duckdns.org, kept current\n")
+		fmt.Print("  makima-server urls add -url http://HOST:8080     # or any address you already have\n")
+		return nil
+	}
+	for _, u := range urls {
+		fmt.Println(u)
+	}
 	return nil
 }
 

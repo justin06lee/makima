@@ -299,11 +299,6 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 		return err
 	}
 
-	// A machine with a public address is the only kind that can hold a mesh
-	// usable from outside the house, and it is also the only kind that can be
-	// a relay. Since it is already both, make it both.
-	startRelayIfPublic(ctx, admin, reachable)
-
 	decoded, err := checkInvite(inv)
 	if err != nil {
 		return err
@@ -596,32 +591,31 @@ func guessReachableAddr() string {
 }
 
 // warnIfUnreachable says so when the mesh is being held somewhere the rest of
-// the world cannot get to.
+// the world cannot get to, and what makes it reachable.
 //
-// The one thing about self-hosting that cannot be automated away. A machine
-// behind a home NAT can hold a mesh perfectly well for machines inside the
-// house, and a laptop that leaves will keep its tunnel but stop learning about
-// changes. Better said now than discovered in a hotel.
+// The one thing about self-hosting that cannot be automated away: a router
+// has to let the traffic in. Everything else — a name that follows the home
+// address, every node learning it, the relay riding along — makima does once
+// asked. Better said now than discovered in a hotel.
 func warnIfUnreachable(addr string) {
 	ip, err := netip.ParseAddr(addr)
 	if err != nil || !ip.IsPrivate() {
 		return
 	}
 	fmt.Println()
-	fmt.Printf("  ⚠ This network only works from inside this building's network.\n\n")
-	fmt.Printf("    %s is a private address. A machine somewhere else cannot reach it, so\n", addr)
-	fmt.Println("    'makima join' will fail from anywhere but here — a laptop has to be on this")
-	fmt.Println("    network to be added, and once added it can only find its way back home")
-	fmt.Println("    through a relay.")
+	fmt.Printf("  ⚠ For now, this network only works inside this building.\n\n")
+	fmt.Printf("    %s is a private address, so a machine somewhere else cannot reach it.\n", addr)
+	fmt.Println("    Machines added here keep working when they leave, but lose track of the")
+	fmt.Println("    others until they are back.")
 	fmt.Println()
-	fmt.Println("    Two ways out. Run 'makima up' on a machine with a public address instead —")
-	fmt.Println("    any cheap VPS — and join this one to that; it becomes the relay too.")
+	fmt.Println("    To reach it from anywhere, give it a name and let the traffic in:")
 	fmt.Println()
-	fmt.Println("    Or, if something already carries traffic into this network for you — a")
-	fmt.Printf("    reverse proxy, a Cloudflare tunnel, a port forward — point it at port %d\n", serverPort())
-	fmt.Printf("    here and re-run with the name it answers on:\n")
+	fmt.Println("      1. get a free name at https://www.duckdns.org, then run here:")
+	fmt.Println("           sudo makima-server ddns set -name NAME")
+	fmt.Printf("      2. forward TCP %d on your router to this machine — the command above\n", serverPort())
+	fmt.Println("         prints exactly what to forward.")
 	fmt.Println()
-	fmt.Println("      makima up -advertise https://makima.example.dev")
+	fmt.Println("    Every machine learns the name on its own, and the relay rides the same port.")
 }
 
 // waitForPeers gives the first netmap a moment to land.
@@ -711,44 +705,6 @@ func relayDaemon() supervise.Daemon {
 			Description: "makima: the relay",
 		},
 	}
-}
-
-// startRelayIfPublic turns the coordination machine into a relay as well.
-//
-// Two machines behind different NATs cannot dial each other, and the way they
-// meet is a relay — which has to be somewhere both can reach, which means a
-// public address. The machine holding the mesh already needs one for anything
-// to work from outside the house, so it is exactly the machine that can be a
-// relay, and asking somebody to set up a second one would be asking them to
-// solve a problem they have already solved.
-//
-// Skipped on a private address, where it would be a listener nothing could
-// ever connect to.
-func startRelayIfPublic(ctx context.Context, admin *control.AdminClient, addr string) {
-	ip, err := netip.ParseAddr(addr)
-	if err != nil || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-		return
-	}
-
-	id, err := relay.LoadIdentity(relayStatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "note: no relay here: %v\n", err)
-		return
-	}
-
-	if err := relayDaemon().Start(ctx, startWait); err != nil {
-		fmt.Fprintf(os.Stderr, "note: no relay here: %v\n", err)
-		return
-	}
-
-	url := net.JoinHostPort(addr, strconv.Itoa(relay.DefaultPort))
-	if err := admin.AddRelay(url, id.PrivateKey.Public()); err != nil {
-		fmt.Fprintf(os.Stderr, "note: the relay is running but the mesh was not told about it: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Relaying on %s too, so machines that cannot reach each other directly still can.\n", url)
-	fmt.Printf("Open TCP %d on this host's firewall if it has one.\n", relay.DefaultPort)
 }
 
 // controlURL turns what somebody passed to -advertise into a URL a joining

@@ -98,6 +98,13 @@ type MapResponse struct {
 	// for it when no direct path exists.
 	HomeRelay netmap.Relay `json:"home_relay,omitzero"`
 
+	// ControlURLs are other addresses this control plane answers at, beyond
+	// the one the node joined through — typically a public name for a server
+	// that was joined on its LAN address. A node keeps them and falls back to
+	// them when the one it is using stops answering, which is what a laptop
+	// leaving the house needs to still find its way back.
+	ControlURLs []string `json:"control_urls,omitempty"`
+
 	// Filter is the compiled access policy this node enforces on ingress. Nil
 	// means no policy, which is allow-all.
 	Filter *policy.Filter `json:"filter,omitempty"`

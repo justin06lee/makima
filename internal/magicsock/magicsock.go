@@ -71,6 +71,10 @@ type Conn struct {
 	selfMu   sync.Mutex
 	observed []selfObservation
 
+	// peerSawPublic is when a peer last reported seeing us at a public
+	// address. Guarded by selfMu.
+	peerSawPublic time.Time
+
 	// stunTx tracks outstanding STUN binding transactions. Separate from the
 	// main lock for the same reason as selfMu: a reply arriving must not
 	// contend with the packet path.
