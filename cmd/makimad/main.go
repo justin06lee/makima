@@ -145,6 +145,10 @@ type node struct {
 	// operator's own configuration. Guarded by mu.
 	autoServices []serve.Service
 
+	// settled decides which of the ports a scan finds have been up long
+	// enough to publish. Only the scanner touches it.
+	settled *settler
+
 	// autoServe is whether to look for them at all, and uiPort is the one
 	// loopback port that must never be republished onto the mesh.
 	autoServe bool
@@ -217,6 +221,7 @@ func run(opts options) error {
 		filter:    policy.NewGuard(),
 		serve:     serve.New(log.Default()),
 		autoServe: !opts.noAutoServe,
+		settled:   newSettler(),
 		uiPort:    uiPort(opts.uiAddr),
 		inbox:     drop.New(log.Default()),
 		ssh:       sshd.New(log.Default()),
