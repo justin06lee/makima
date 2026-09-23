@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,11 @@ type State struct {
 	// Lock is the network lock — the signing authority that lets nodes verify
 	// each other's keys without trusting this server. Nil means disabled.
 	Lock *Lock `json:"lock,omitempty"`
+
+	// Update is the release every node has been asked to run, nil when
+	// nobody has asked. Kept, so a machine that was off when it was given
+	// catches up the next time it comes on.
+	Update *UpdateOrder `json:"update,omitempty"`
 }
 
 // DefaultDomain is the suffix mesh names live under when none is configured.
@@ -133,6 +139,11 @@ type Node struct {
 
 	// Services are the ports this node publishes, as it last reported them.
 	Services []netmap.Service `json:"services,omitempty"`
+
+	// Version is the makima release the node runs, and Update how its move to
+	// another one is going, both as it last reported them.
+	Version string               `json:"version,omitempty"`
+	Update  *netmap.UpdateStatus `json:"update,omitempty"`
 }
 
 // Online reports whether the node has polled recently enough to be considered
@@ -207,6 +218,9 @@ type Store struct {
 	// refresh found. Neither is persisted.
 	ddnsKick   chan struct{}
 	ddnsStatus DDNSStatus
+
+	// serverVersion is the release this server runs, handed to every node.
+	serverVersion string
 }
 
 // DefaultPrefix is where a new network's addresses come from: makima's own
@@ -395,6 +409,9 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		existing.AdvertisedRoutes = req.AdvertiseRoutes
 		existing.AdvertisesExit = req.AdvertiseExit
 		existing.Services = req.Services
+		if req.Version != "" {
+			existing.Version = req.Version
+		}
 		if req.AdvertiseExit && !existing.ExitRevoked {
 			existing.ExitApproved = true
 		}
@@ -445,6 +462,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		AdvertisedRoutes: req.AdvertiseRoutes,
 		AdvertisesExit:   req.AdvertiseExit,
 		Services:         req.Services,
+		Version:          req.Version,
 		// An exit-node offer is accepted as it arrives. Unlike a subnet route,
 		// which every node installs the moment it is approved, an exit node
 		// changes nothing until a person on another machine chooses it by
@@ -492,6 +510,121 @@ func (s *Store) UpdateEndpoints(machineKey key.Public, eps []netip.AddrPort) (bo
 	}
 	s.bump()
 	return true, nil
+}
+
+// Checkin is what a node says about itself on every poll.
+type Checkin struct {
+	Endpoints []netip.AddrPort
+	Running   string
+	Update    *netmap.UpdateStatus
+}
+
+// Checkin records a polling node's report: where it can be reached, what it
+// runs, and how an update is going. Returns whether anything changed; like
+// UpdateEndpoints, a report that changes nothing must not wake every other
+// node.
+//
+// Endpoints and Running are left alone when the node sends none, which is
+// what a node from before either existed does. Update is taken as sent, nil
+// included: a node reports its update on every poll until it is over.
+func (s *Store) Checkin(machineKey key.Public, c Checkin) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := s.findByMachineKey(machineKey)
+	if n == nil {
+		return false, fmt.Errorf("unknown machine key")
+	}
+	n.LastSeen = time.Now().UTC()
+
+	changed := false
+	if len(c.Endpoints) > 0 && !sameEndpoints(n.Endpoints, c.Endpoints) {
+		n.Endpoints = c.Endpoints
+		changed = true
+	}
+	if c.Running != "" && c.Running != n.Version {
+		n.Version = c.Running
+		changed = true
+	}
+	if !sameUpdate(n.Update, c.Update) {
+		n.Update = c.Update
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := s.save(); err != nil {
+		return false, err
+	}
+	s.bump()
+	return true, nil
+}
+
+func sameUpdate(a, b *netmap.UpdateStatus) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// RequestUpdate asks every node to move to the release tagged tag, and
+// returns the order that became. by is who asked, for the record.
+//
+// Only the shape of the tag is checked here. Whether the release exists, and
+// is what it says it is, each node finds out for itself from the project's
+// releases — which is the point: nothing this server says can make a node
+// install something the project did not publish.
+func (s *Store) RequestUpdate(by, tag string) (UpdateOrder, error) {
+	tag = strings.TrimSpace(tag)
+	if tag != "" && !strings.HasPrefix(tag, "v") {
+		tag = "v" + tag
+	}
+	if !releaseTag.MatchString(tag) {
+		return UpdateOrder{}, fmt.Errorf("%q is not a release version (they look like v0.3.0)", tag)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var id uint64 = 1
+	if s.state.Update != nil {
+		id = s.state.Update.ID + 1
+	}
+	o := &UpdateOrder{ID: id, Tag: tag, By: by, At: time.Now().UTC()}
+	s.state.Update = o
+	if err := s.save(); err != nil {
+		return UpdateOrder{}, err
+	}
+	s.bump()
+	return *o, nil
+}
+
+// releaseTag is what a makima release is tagged: v, three numbers, and
+// perhaps a prerelease like -rc1.
+var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
+
+// UpdateOrdered is the standing update order, if there is one.
+func (s *Store) UpdateOrdered() (UpdateOrder, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Update == nil {
+		return UpdateOrder{}, false
+	}
+	return *s.state.Update, true
+}
+
+// ServerVersion is the release this server runs.
+func (s *Store) ServerVersion() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serverVersion
+}
+
+// SetServerVersion records the release this server runs, for the nodes.
+func (s *Store) SetServerVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serverVersion = v
 }
 
 func sameEndpoints(a, b []netip.AddrPort) bool {
@@ -571,6 +704,11 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 			TrustedKeys: s.state.Lock.TrustedKeys,
 		}
 	}
+	if s.state.Update != nil {
+		o := *s.state.Update
+		resp.Update = &o
+	}
+	resp.ServerVersion = s.serverVersion
 	return resp, nil
 }
 
@@ -642,6 +780,11 @@ func (s *Store) toNetmapNode(n *Node, relay netmap.Relay) netmap.Node {
 		Online:       n.Online(),
 		KeySignature: n.KeySignature,
 		Services:     n.Services,
+		Version:      n.Version,
+	}
+	if n.Update != nil {
+		u := *n.Update
+		out.Update = &u
 	}
 
 	// Only approved routes are ever published. An advertised-but-unapproved
@@ -786,6 +929,18 @@ func (s *Store) IsMember(nodeKey key.Public) bool {
 		}
 	}
 	return false
+}
+
+// NameOf is the name of the node holding a machine key, and whether it is a
+// node of this network that may act — registered, and not expired.
+func (s *Store) NameOf(machineKey key.Public) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.findByMachineKey(machineKey)
+	if n == nil || n.Expired {
+		return "", false
+	}
+	return n.Name, true
 }
 
 func (s *Store) findByMachineKey(k key.Public) *Node {

@@ -23,10 +23,12 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/justin06lee/makima/internal/relay"
+	"github.com/justin06lee/makima/internal/update"
 )
 
 var version = "dev"
@@ -44,6 +46,9 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		err = serve(os.Args[2:])
+		if errors.Is(err, errRestart) {
+			err = update.Exec(update.Self())
+		}
 	case "key":
 		err = showKey(os.Args[2:])
 	case "version":
@@ -100,6 +105,17 @@ func serve(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	ctx, stopForUpdate := context.WithCancel(ctx)
+	defer stopForUpdate()
+
+	// An update replaces this binary under it; the relay then restarts
+	// itself as the new one. See internal/update.
+	var restarting atomic.Bool
+	go update.WatchExecutable(ctx, update.Self(), 5*time.Second, []string{"version"}, func() {
+		log.Print("a new makima-relay is in place; restarting into it")
+		restarting.Store(true)
+		stopForUpdate()
+	})
 
 	var statusSrv *http.Server
 	if *status != "" {
@@ -134,12 +150,19 @@ func serve(args []string) error {
 	}
 	log.Print("register it with: makima-server relay add -url <host>:" + strconv.Itoa(relay.DefaultPort) + " -key " + srv.PublicKey().String())
 
-	if err := srv.Serve(ln); err != nil {
+	if err := srv.Serve(ln); err != nil && !restarting.Load() {
 		return err
 	}
 	log.Print("stopped")
+	if restarting.Load() {
+		return errRestart
+	}
 	return nil
 }
+
+// errRestart is serve's way of saying the relay should start again as the
+// binary now at its own path.
+var errRestart = errors.New("restarting into the new version")
 
 func showKey(args []string) error {
 	fs := flag.NewFlagSet("key", flag.ExitOnError)

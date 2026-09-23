@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/relay"
+	"github.com/justin06lee/makima/internal/update"
 )
 
 // DefaultStatePath is where the mesh's membership lives.
@@ -53,6 +55,9 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		err = serve(os.Args[2:])
+		if errors.Is(err, errRestart) {
+			err = update.Exec(update.Self())
+		}
 	case "authkey":
 		err = authkey(os.Args[2:])
 	case "nodes":
@@ -79,6 +84,8 @@ func main() {
 		err = tagsCmd(os.Args[2:])
 	case "expire":
 		err = expireCmd(os.Args[2:])
+	case "update":
+		err = updateCmd(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 		return
@@ -109,6 +116,9 @@ admitting machines:
   makima-server forget  -name N     remove a machine entirely
   makima-server expire  -name N     make it re-authenticate, keeping its address
   makima-server tags    -name N -tags t1,t2
+
+keeping every machine current:
+  makima-server update [vX.Y.Z]     move every machine to the latest release, or that one
 
 reaching this server from anywhere:
   makima-server ddns set     -name NAME [-token T]   a free NAME.duckdns.org, kept pointed here
@@ -153,6 +163,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	store.SetServerVersion(version)
 	handlers := control.NewServer(store, log.Default())
 	if _, p, err := net.SplitHostPort(*addr); err == nil {
 		if port, err := strconv.Atoi(p); err == nil {
@@ -204,14 +215,35 @@ func serve(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	ctx, stopForUpdate := context.WithCancel(ctx)
+	defer stopForUpdate()
 
 	go control.RunDDNS(ctx, store, log.Default())
 
+	// An update swaps this binary on disk; the node daemon on this machine
+	// does that, and restarts itself, but this is a separate process. So it
+	// watches its own file and restarts as the new one.
+	var restarting atomic.Bool
+	go update.WatchExecutable(ctx, update.Self(), 5*time.Second, []string{"version"}, func() {
+		log.Print("a new makima-server is in place; restarting into it")
+		restarting.Store(true)
+		stopForUpdate()
+	})
+
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// A restart does not wait out the long polls: every node is holding
+		// one open for up to a minute, and each simply polls again, a second
+		// later, of the new server.
+		grace := 10 * time.Second
+		if restarting.Load() {
+			grace = time.Second
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		if srv.Shutdown(shutdownCtx) != nil {
+			_ = srv.Close()
+		}
 		_ = adminSrv.Shutdown(shutdownCtx)
 	}()
 
@@ -229,8 +261,15 @@ func serve(args []string) error {
 		return err
 	}
 	log.Print("stopped")
+	if restarting.Load() {
+		return errRestart
+	}
 	return nil
 }
+
+// errRestart is serve's way of saying the server should start again as the
+// binary now at its own path.
+var errRestart = errors.New("restarting into the new version")
 
 // builtinRelayPath is where the relay this server carries keeps its key:
 // beside the state, and apart from a standalone makima-relay's on the same
@@ -326,14 +365,14 @@ func nodes(args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprint(w, "ID\tNAME\tADDRESS\tENDPOINTS\tLAST SEEN\n")
+	fmt.Fprint(w, "ID\tNAME\tADDRESS\tENDPOINTS\tLAST SEEN\tVERSION\n")
 	for _, n := range all {
 		eps := "—"
 		if len(n.Endpoints) > 0 {
 			eps = n.Endpoints[0].String()
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
-			n.ID, n.Name, n.Address.Addr(), eps, humanAge(n.LastSeen))
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n",
+			n.ID, n.Name, n.Address.Addr(), eps, humanAge(n.LastSeen), versionColumn(n.Version, n.Update))
 	}
 	return w.Flush()
 }

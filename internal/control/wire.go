@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -62,6 +63,9 @@ type RegisterRequest struct {
 	// already do, and the access policy still decides who may connect. What
 	// registering them buys is that other nodes can *find* them.
 	Services []netmap.Service `json:"services,omitempty"`
+
+	// Version is the makima release this node runs.
+	Version string `json:"version,omitempty"`
 }
 
 // RegisterResponse is the server's answer to a join.
@@ -85,6 +89,13 @@ type RegisterResponse struct {
 type MapRequest struct {
 	Version   uint64           `json:"version"`
 	Endpoints []netip.AddrPort `json:"endpoints,omitempty"`
+
+	// Running is the makima release this node runs, and Update how its move
+	// to another one is going. Sent on every poll rather than only when
+	// registering, so a node that came back on a new version says so even
+	// when its registration is still being retried.
+	Running string               `json:"running,omitempty"`
+	Update  *netmap.UpdateStatus `json:"update,omitempty"`
 }
 
 // MapResponse is one node's complete view of the mesh.
@@ -117,6 +128,47 @@ type MapResponse struct {
 	// signatures without asking the server what to trust — which would defeat
 	// the point entirely.
 	Lock *LockConfig `json:"lock,omitempty"`
+
+	// Update is the version every node in the network has been asked to run,
+	// nil when nobody has asked. A node already on it or past it ignores it.
+	Update *UpdateOrder `json:"update_order,omitempty"`
+
+	// ServerVersion is the makima release the control plane runs.
+	ServerVersion string `json:"server_version,omitempty"`
+}
+
+// UpdateOrder asks every node in the network to move to one release.
+//
+// It names a release and nothing else. Each node fetches that release from
+// the project's own GitHub releases, checks it against the checksums
+// published beside it, and refuses anything older than what it already runs,
+// so the most an order can do — whoever sent it, the control plane included —
+// is move a machine forward to a release the project published. It cannot
+// hand anybody's code to a machine.
+type UpdateOrder struct {
+	// ID tells one order from the next, so a node that failed an order does
+	// not retry it forever, and one asked again does.
+	ID uint64 `json:"id"`
+
+	// Tag is the release, e.g. "v0.3.0".
+	Tag string `json:"tag"`
+
+	// By names who asked: a node, or "admin" for the control plane's own
+	// command line.
+	By string    `json:"by,omitempty"`
+	At time.Time `json:"at"`
+}
+
+// UpdateRequest is a node asking the control plane to move every node to a
+// release.
+type UpdateRequest struct {
+	Tag string `json:"tag"`
+}
+
+// UpdateResponse is the order that request became.
+type UpdateResponse struct {
+	Order UpdateOrder `json:"order"`
+	Error string      `json:"error,omitempty"`
 }
 
 // stripServerSuppliedSecrets clears the fields a control plane has no business

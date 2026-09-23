@@ -33,6 +33,25 @@ func (c *AdminClient) Relays() ([]netmap.Relay, error) {
 	return out, nil
 }
 
+// RequestUpdate asks every node to move to a release.
+func (c *AdminClient) RequestUpdate(tag string) (UpdateOrder, error) {
+	var o UpdateOrder
+	err := c.call(http.MethodPost, "/admin/update", UpdateRequest{Tag: tag}, &o)
+	return o, err
+}
+
+// UpdateOrdered is the standing update order; ok is false when there is none.
+func (c *AdminClient) UpdateOrdered() (o UpdateOrder, ok bool, err error) {
+	var p *UpdateOrder
+	if err := c.call(http.MethodGet, "/admin/update", nil, &p); err != nil {
+		return UpdateOrder{}, false, err
+	}
+	if p == nil {
+		return UpdateOrder{}, false, nil
+	}
+	return *p, true, nil
+}
+
 // DDNS reports the DuckDNS name and how keeping it current is going.
 func (c *AdminClient) DDNS() (DDNSStatus, error) {
 	var st DDNSStatus
