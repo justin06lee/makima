@@ -65,3 +65,19 @@ func TestLocalEndpointsExcludeMeshAddresses(t *testing.T) {
 		}
 	}
 }
+
+// Container and VM bridges lead only into this host, carry the same address
+// on every host that runs the same software, and appear whenever a container
+// starts. None of that is a path to this machine, or a change of network.
+func TestHostOnlyBridgesAreNotPaths(t *testing.T) {
+	for _, name := range []string{"docker0", "br-3f2a9c1d7e10", "veth9a1b2c3", "virbr0", "vnet3", "lxdbr0", "cni0", "cali12ab", "podman1", "vmnet8", "vboxnet0"} {
+		if !hostOnly(name) {
+			t.Errorf("%s is treated as a way to reach this machine", name)
+		}
+	}
+	for _, name := range []string{"en0", "eth0", "wlan0", "enp2s0", "wlp3s0", "bridge0", "utun4", "makima0"} {
+		if hostOnly(name) {
+			t.Errorf("%s is treated as a host-only bridge", name)
+		}
+	}
+}

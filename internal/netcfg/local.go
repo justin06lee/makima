@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strings"
 )
 
 // LocalEndpoints lists the addresses this host believes it can be reached at,
@@ -23,19 +24,51 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 		return nil
 	}
 
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-
 	var out []netip.AddrPort
 	seen := make(map[netip.AddrPort]bool)
+	hostAddrs(func(addr netip.Addr) {
+		if !usableEndpoint(addr) {
+			return
+		}
+		ap := netip.AddrPortFrom(addr, port)
+		if !seen[ap] {
+			seen[ap] = true
+			out = append(out, ap)
+		}
+	})
 
+	// Stable order so an unchanged set of addresses does not look like a
+	// change to the control server and bump the netmap version on every poll.
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// NetworkAddrs lists the addresses that say which networks this host is on:
+// every address LocalEndpoints would advertise, and its global IPv6 ones too,
+// which are not advertised yet but tell one network from another where two
+// hand out the same IPv4 address. Sorted.
+func NetworkAddrs() []netip.Addr {
+	var out []netip.Addr
+	hostAddrs(func(addr netip.Addr) {
+		if usableEndpoint(addr) || (addr.Is6() && addr.IsGlobalUnicast() && !IsMeshAddr(addr)) {
+			out = append(out, addr)
+		}
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Less(out[j]) })
+	return out
+}
+
+// hostAddrs calls fn with every address on an interface that is up, is not
+// loopback, and leads somewhere other than this host.
+func hostAddrs(fn func(netip.Addr)) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return
+	}
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || hostOnly(iface.Name) {
 			continue
 		}
-
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
@@ -45,28 +78,33 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 			if !ok {
 				continue
 			}
-			addr, ok := netip.AddrFromSlice(ipnet.IP)
-			if !ok {
-				continue
+			if addr, ok := netip.AddrFromSlice(ipnet.IP); ok {
+				fn(addr.Unmap())
 			}
-			addr = addr.Unmap()
-
-			if !usableEndpoint(addr) {
-				continue
-			}
-			ap := netip.AddrPortFrom(addr, port)
-			if seen[ap] {
-				continue
-			}
-			seen[ap] = true
-			out = append(out, ap)
 		}
 	}
+}
 
-	// Stable order so an unchanged set of addresses does not look like a
-	// change to the control server and bump the netmap version on every poll.
-	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
-	return out
+// hostOnly reports whether an interface is a bridge to containers or virtual
+// machines on this host.
+//
+// These are matched by name, unlike VPNs, because nothing about the address
+// gives them away: Docker's 172.17.0.1 and libvirt's 192.168.122.1 are
+// ordinary private addresses. But they lead only into this host — and every
+// other host running the same software has the very same address, so a peer
+// told to try 172.17.0.1 reaches its own Docker bridge, not this machine. They
+// also come and go as containers start, which is not this machine changing
+// networks.
+func hostOnly(name string) bool {
+	for _, prefix := range []string{
+		"docker", "br-", "veth", "virbr", "vnet", "lxcbr", "lxdbr", "incusbr",
+		"cni", "flannel", "cali", "cilium", "weave", "podman", "vmnet", "vboxnet",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // usableEndpoint reports whether an address is worth advertising to peers.

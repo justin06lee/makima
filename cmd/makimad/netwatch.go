@@ -67,13 +67,12 @@ func (n *node) networkChanged(ctx context.Context) {
 // addresses because an IPv6 privacy address is rotated every day on the same
 // network, and that is not a move.
 func networkFingerprint() string {
-	return fingerprint(netcfg.LocalEndpoints(1))
+	return fingerprint(netcfg.NetworkAddrs())
 }
 
-func fingerprint(addrs []netip.AddrPort) string {
+func fingerprint(addrs []netip.Addr) string {
 	var parts []string
-	for _, ap := range addrs {
-		a := ap.Addr()
+	for _, a := range addrs {
 		if a.Is6() {
 			p, err := a.Prefix(64)
 			if err != nil {
