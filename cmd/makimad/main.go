@@ -24,6 +24,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -45,6 +46,7 @@ import (
 	"github.com/justin06lee/makima/internal/serve"
 	"github.com/justin06lee/makima/internal/sshd"
 	"github.com/justin06lee/makima/internal/stun"
+	"github.com/justin06lee/makima/internal/update"
 	"github.com/justin06lee/makima/internal/wg"
 )
 
@@ -86,7 +88,30 @@ func main() {
 		inbox:       *inbox,
 		maxFile:     *maxFile,
 	}
-	if err := run(opts); err != nil {
+	// Before anything else: whether an update is waiting to be proven, and
+	// whether the version now here has had its chances.
+	self := update.Self()
+	upd := &update.Installer{Running: version, Self: self, StateDir: filepath.Dir(*configPath)}
+	switch out, err := upd.Starting(); {
+	case err != nil:
+		log.Printf("update: %v", err)
+	case out == update.RolledBack:
+		log.Printf("update: %s did not stay up, so the previous version is back; starting it", version)
+		if err := update.Exec(self); err != nil {
+			log.Fatalf("update: could not start the previous version: %v", err)
+		}
+	case out == update.Trying:
+		log.Printf("update: now running %s, until it reaches the control plane", version)
+	}
+
+	err := run(opts, upd)
+	if errors.Is(err, errRestart) {
+		if err := update.Exec(self); err != nil {
+			// The service manager starts whatever is at the path now.
+			log.Fatalf("could not restart in place (%v); exiting so the service manager starts the new version", err)
+		}
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -115,9 +140,26 @@ type node struct {
 	// has to register; the poll loop does it.
 	registerPending atomic.Bool
 
-	// pollCancel ends the long poll in flight. See kickPoll.
+	// pollCancel ends the long poll in flight, and pollKick cuts short the
+	// wait before the next one. See kickPoll.
 	pollMu     sync.Mutex
 	pollCancel context.CancelFunc
+	pollKick   chan struct{}
+
+	// updater moves this machine to a release; updating is set while it
+	// does, and updStatus is what the rest of the network is told about it.
+	updater   *update.Installer
+	updating  atomic.Bool
+	updMu     sync.Mutex
+	updStatus *netmap.UpdateStatus
+
+	// serverVersion is the release the control plane said it runs.
+	serverVersion atomic.Value
+
+	// stopRun ends run so the daemon can start again as the binary now at
+	// its own path; restarting says that is why it ended.
+	stopRun    context.CancelFunc
+	restarting atomic.Bool
 
 	// lastPoll and lastPollErr are what the doctor reports about the control
 	// plane. Guarded by mu with the rest.
@@ -191,7 +233,7 @@ type options struct {
 	maxFile int64
 }
 
-func run(opts options) error {
+func run(opts options, upd *update.Installer) error {
 	if os.Geteuid() != 0 {
 		return errors.New("makima needs root to create its network interface — run 'makima up', which asks for it")
 	}
@@ -220,6 +262,8 @@ func run(opts options) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	ctx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
 
 	n := &node{
 		cfgPath:   configPath,
@@ -236,7 +280,11 @@ func run(opts options) error {
 		ssh:       sshd.New(log.Default()),
 		sshKeys:   sshd.NewKeys(log.Default()),
 		opts:      opts,
+		pollKick:  make(chan struct{}, 1),
+		updater:   upd,
+		stopRun:   stopRun,
 	}
+	n.loadUpdateFailure()
 	defer n.serve.Close()
 	defer n.inbox.Close()
 	defer n.ssh.Close()
@@ -375,9 +423,19 @@ func run(opts options) error {
 	down := make(chan struct{})
 	go func() { engine.Wait(); close(down) }()
 
+	// A node with no control plane has nothing to reach before a new version
+	// counts as working; staying up is the test.
+	if n.client == nil && upd.Pending() != nil {
+		time.AfterFunc(30*time.Second, n.settleUpdate)
+	}
+
 	select {
 	case <-ctx.Done():
-		log.Print("shutting down")
+		if n.restarting.Load() {
+			log.Print("restarting into the new version")
+		} else {
+			log.Print("shutting down")
+		}
 	case <-down:
 		log.Print("device went down")
 	}
@@ -386,6 +444,9 @@ func run(opts options) error {
 	// settings outlive the process that made them, and a node that leaves them
 	// behind blackholes mesh addresses until the next reboot.
 	n.shutdown()
+	if n.restarting.Load() {
+		return errRestart
+	}
 	return nil
 }
 
@@ -424,6 +485,7 @@ func (n *node) register(ctx context.Context) error {
 		AdvertiseRoutes: n.file.AdvertiseRoutes,
 		AdvertiseExit:   n.file.AdvertiseExit,
 		Services:        n.advertisedServicesLocked(),
+		Version:         version,
 	}
 	nodeKey, discoKey := n.file.NodeKey, n.file.DiscoKey
 	n.mu.Unlock()
@@ -494,10 +556,16 @@ func (n *node) endpoints() []netip.AddrPort {
 
 // poll keeps the local netmap in step with the control server.
 func (n *node) poll(ctx context.Context) {
-	var version uint64
+	var mapVersion uint64
 	backoff := time.Second
 
 	for ctx.Err() == nil {
+		// This poll carries whatever a kick was for.
+		select {
+		case <-n.pollKick:
+		default:
+		}
+
 		if n.registerPending.Load() {
 			rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			err := n.register(rctx)
@@ -520,7 +588,12 @@ func (n *node) poll(ctx context.Context) {
 		n.pollMu.Lock()
 		n.pollCancel = cancel
 		n.pollMu.Unlock()
-		resp, err := n.client.PollMap(pctx, version, n.endpoints())
+		resp, err := n.client.Poll(pctx, &control.MapRequest{
+			Version:   mapVersion,
+			Endpoints: n.endpoints(),
+			Running:   version,
+			Update:    n.updateStatus(),
+		})
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -537,6 +610,7 @@ func (n *node) poll(ctx context.Context) {
 
 			select {
 			case <-time.After(backoff):
+			case <-n.pollKick:
 			case <-ctx.Done():
 				return
 			}
@@ -553,12 +627,16 @@ func (n *node) poll(ctx context.Context) {
 		n.lastPollErr = nil
 		n.mu.Unlock()
 
+		// Reaching the control plane is what a new version has to manage
+		// before it counts as working.
+		n.settleUpdate()
+
 		n.followControlURL()
 
-		if resp.Version == version {
+		if resp.Version == mapVersion {
 			continue // heartbeat, nothing moved
 		}
-		version = resp.Version
+		mapVersion = resp.Version
 
 		n.apply(ctx, resp)
 	}
@@ -571,6 +649,11 @@ func (n *node) kickPoll() {
 	n.pollMu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	// And cut short a wait between failed polls.
+	select {
+	case n.pollKick <- struct{}{}:
+	default:
 	}
 }
 
@@ -636,6 +719,11 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	log.Printf("netmap v%d: %d peer(s)%s", resp.Version, len(peers), relaySuffix(resp.HomeRelay, n.controlURL()))
 	for _, p := range peers {
 		logPeer(p, n.controlURL())
+	}
+
+	n.serverVersion.Store(resp.ServerVersion)
+	if resp.Update != nil {
+		n.considerUpdate(ctx, *resp.Update)
 	}
 }
 

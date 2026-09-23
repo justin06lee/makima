@@ -39,6 +39,9 @@ type fakeBackend struct {
 	sshUser string
 
 	owner string
+
+	updateTag   string
+	updateLocal bool
 }
 
 func (f *fakeBackend) Status() Status { return f.status }
@@ -71,6 +74,14 @@ func (f *fakeBackend) SetSSH(on bool, keys []string, user string) error {
 	f.sshOn, f.sshKeys, f.sshUser = on, keys, user
 	return nil
 }
+func (f *fakeBackend) RequestUpdate(_ context.Context, tag string, local bool) (UpdateResult, error) {
+	if f.fail != nil {
+		return UpdateResult{}, f.fail
+	}
+	f.updateTag, f.updateLocal = tag, local
+	return UpdateResult{Tag: tag, Order: 3, Local: local}, nil
+}
+
 func (f *fakeBackend) SetOwner(name string) error {
 	if f.fail != nil {
 		return f.fail
@@ -700,5 +711,35 @@ func TestReadOnlyRefusesEveryMutatingMethod(t *testing.T) {
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s returned %d on a read-only listener, want 403", method, w.Code)
 		}
+	}
+}
+
+func TestUpdateReachesTheBackend(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, true).Handler()
+
+	w := post(t, h, "/api/update", UpdateRequest{Tag: "v0.3.0"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	var res UpdateResult
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if b.updateTag != "v0.3.0" || b.updateLocal || res.Order != 3 {
+		t.Errorf("backend got %q local=%v, answered %+v", b.updateTag, b.updateLocal, res)
+	}
+}
+
+// Deciding what every machine runs is not something the read-only socket —
+// the desktop app's, readable by the machine's owner — gets to do.
+func TestUpdateIsRefusedOnTheReadOnlyListener(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewServer(b, false).Handler()
+	if w := post(t, h, "/api/update", UpdateRequest{Tag: "v0.3.0"}); w.Code != http.StatusForbidden {
+		t.Fatalf("got %d: %s", w.Code, w.Body)
+	}
+	if b.updateTag != "" {
+		t.Error("the backend was asked anyway")
 	}
 }
