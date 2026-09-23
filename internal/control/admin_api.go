@@ -21,6 +21,11 @@ type RelayRequest struct {
 	Key key.Public `json:"key,omitzero"`
 }
 
+// ControlURLRequest adds or removes one of the server's other addresses.
+type ControlURLRequest struct {
+	URL string `json:"url"`
+}
+
 // RoutesRequest approves or revokes a node's advertised routes.
 type RoutesRequest struct {
 	Name   string         `json:"name"`
@@ -119,6 +124,34 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /admin/relay", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.store.Relays())
+	})
+
+	mux.HandleFunc("GET /admin/urls", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.store.ControlURLs())
+	})
+
+	post("/admin/urls/add", func(w http.ResponseWriter, body []byte) error {
+		var req ControlURLRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return err
+		}
+		if err := s.store.AddControlURL(req.URL); err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, okResponse())
+		return nil
+	})
+
+	post("/admin/urls/rm", func(w http.ResponseWriter, body []byte) error {
+		var req ControlURLRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return err
+		}
+		if err := s.store.RemoveControlURL(req.URL); err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, okResponse())
+		return nil
 	})
 
 	post("/admin/routes/approve", func(w http.ResponseWriter, body []byte) error {

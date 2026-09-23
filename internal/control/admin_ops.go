@@ -1,8 +1,11 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
@@ -57,6 +60,86 @@ func (s *Store) RemoveRelay(url string) error {
 	}
 	s.bump()
 	return nil
+}
+
+// AddControlURL records another address nodes can reach this server at, and
+// hands it to every node on its next netmap.
+func (s *Store) AddControlURL(raw string) error {
+	u, err := NormalizeControlURL(raw)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, have := range s.state.ControlURLs {
+		if have == u {
+			return nil
+		}
+	}
+	s.state.ControlURLs = append(s.state.ControlURLs, u)
+	if err := s.save(); err != nil {
+		return err
+	}
+	s.bump()
+	return nil
+}
+
+// RemoveControlURL forgets one.
+func (s *Store) RemoveControlURL(raw string) error {
+	u, err := NormalizeControlURL(raw)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.state.ControlURLs[:0:0]
+	for _, have := range s.state.ControlURLs {
+		if have != u {
+			kept = append(kept, have)
+		}
+	}
+	if len(kept) == len(s.state.ControlURLs) {
+		return fmt.Errorf("%s is not one of this server's addresses", u)
+	}
+	s.state.ControlURLs = kept
+	if err := s.save(); err != nil {
+		return err
+	}
+	s.bump()
+	return nil
+}
+
+// ControlURLs lists the other addresses nodes are told about.
+func (s *Store) ControlURLs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.state.ControlURLs...)
+}
+
+// NormalizeControlURL turns what somebody typed into the form nodes are
+// given: a scheme, a host, and no trailing slash. A bare host:port is taken
+// as http, the way every other control URL in makima is.
+func NormalizeControlURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", errors.New("no address given")
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("parse %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("%q: a control URL is http:// or https://", raw)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("%q has no host", raw)
+	}
+	return strings.TrimRight(s, "/"), nil
 }
 
 // Relays lists registered relays in preference order.

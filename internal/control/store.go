@@ -50,6 +50,10 @@ type State struct {
 	// netmap, the whole mesh moves together or not at all.
 	Relays []netmap.Relay `json:"relays,omitempty"`
 
+	// ControlURLs are other addresses nodes can reach this server at, handed
+	// to every node so it can fall back to them. See MapResponse.ControlURLs.
+	ControlURLs []string `json:"control_urls,omitempty"`
+
 	// Domain is the DNS suffix mesh names live under.
 	Domain string `json:"domain,omitempty"`
 
@@ -499,11 +503,12 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 	relay := s.activeRelayLocked()
 
 	resp := &MapResponse{
-		Version:   s.version,
-		Self:      s.toNetmapNode(self, relay),
-		Peers:     make([]netmap.Node, 0, len(s.state.Nodes)-1),
-		HomeRelay: relay,
-		Domain:    s.domainLocked(),
+		Version:     s.version,
+		Self:        s.toNetmapNode(self, relay),
+		Peers:       make([]netmap.Node, 0, len(s.state.Nodes)-1),
+		HomeRelay:   relay,
+		ControlURLs: append([]string(nil), s.state.ControlURLs...),
+		Domain:      s.domainLocked(),
 		DNS: netmap.DNSConfig{
 			Enabled: s.state.DNSEnabled,
 			Domain:  s.domainLocked(),

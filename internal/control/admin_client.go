@@ -33,6 +33,25 @@ func (c *AdminClient) Relays() ([]netmap.Relay, error) {
 	return out, nil
 }
 
+// ControlURLs lists the server's other addresses.
+func (c *AdminClient) ControlURLs() ([]string, error) {
+	var out []string
+	if err := c.call(http.MethodGet, "/admin/urls", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AddControlURL tells every node about another address for this server.
+func (c *AdminClient) AddControlURL(u string) error {
+	return c.call(http.MethodPost, "/admin/urls/add", ControlURLRequest{URL: u}, nil)
+}
+
+// RemoveControlURL forgets one.
+func (c *AdminClient) RemoveControlURL(u string) error {
+	return c.call(http.MethodPost, "/admin/urls/rm", ControlURLRequest{URL: u}, nil)
+}
+
 // ApproveRoutes accepts a node's advertised subnets.
 func (c *AdminClient) ApproveRoutes(name string, routes []netip.Prefix, exit, all bool) error {
 	return c.call(http.MethodPost, "/admin/routes/approve",

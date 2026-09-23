@@ -61,6 +61,8 @@ func main() {
 		err = showKey(os.Args[2:])
 	case "relay":
 		err = relayCmd(os.Args[2:])
+	case "urls":
+		err = urlsCmd(os.Args[2:])
 	case "routes":
 		err = routesCmd(os.Args[2:])
 	case "acl":
@@ -103,6 +105,11 @@ admitting machines:
   makima-server forget  -name N     remove a machine entirely
   makima-server expire  -name N     make it re-authenticate, keeping its address
   makima-server tags    -name N -tags t1,t2
+
+reaching this server from anywhere:
+  makima-server urls add     -url http://NAME:8080   another address nodes can use
+  makima-server urls ls
+  makima-server urls rm      -url http://NAME:8080
 
 reaching machines that cannot reach each other:
   makima-server relay add    -url HOST:3478 -key K

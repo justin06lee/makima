@@ -70,6 +70,11 @@ type File struct {
 	LoginServer string     `json:"login_server,omitempty"`
 	ServerKey   key.Public `json:"server_key,omitzero"`
 
+	// ControlURLs are the control plane's other addresses, as it last named
+	// them — kept so a node that starts somewhere its LoginServer cannot be
+	// reached still knows where else to look.
+	ControlURLs []string `json:"control_urls,omitempty"`
+
 	// Serverless marks a node that gains peers by pairing rather than by
 	// registering with a control plane.
 	//
