@@ -59,6 +59,7 @@ type Conn struct {
 	relayClient *relay.Client
 	relayCancel context.CancelFunc
 	relayURL    string
+	relayKey    key.Public
 
 	// relayIn carries inbound relayed packets from whichever client is
 	// current. Keeping it on the Conn rather than the client means a relay
@@ -630,6 +631,7 @@ func (c *Conn) setRelay(url string, relayKey key.Public) {
 	oldClient := c.relayClient
 	oldCancel := c.relayCancel
 	c.relayURL = url
+	c.relayKey = relayKey
 	c.relayClient = nil
 	c.relayCancel = nil
 

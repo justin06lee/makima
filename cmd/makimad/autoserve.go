@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/justin06lee/makima/internal/localports"
@@ -16,6 +17,81 @@ import (
 // immediate, long enough that the scan is invisible. On Linux it is two small
 // file reads; on macOS it is one lsof, which is why it is not a second.
 const autoServeInterval = 5 * time.Second
+
+// A port is published once it has been listening for publishAfter scans in a
+// row, and withdrawn once it has been gone for withdrawAfter.
+//
+// Every change to what a node publishes reaches every other node as a new
+// netmap, so a scanner that reports each scan as it finds it turns a dev
+// server restarting on save into a mesh-wide update every few seconds. A
+// service worth reaching from another machine is one that stays up for ten
+// seconds; one that blinks out for a moment while it restarts is still there.
+const (
+	publishAfter  = 2
+	withdrawAfter = 3
+)
+
+// dynamicPorts is where the IANA dynamic range starts. A listener up there is
+// almost always something's private helper — a language server, a debugger,
+// a tor control port — bound to whatever the kernel handed it, gone and back
+// on another number next time. Publishing those is noise, and churn.
+// `makima serve` still publishes one on purpose.
+const dynamicPorts = 49152
+
+// settler turns a stream of scans into the set of ports steady enough to
+// publish. The first scan is taken as it is: whatever was already running
+// when the daemon started has been up for a while.
+type settler struct {
+	primed bool
+	seen   map[uint16]int
+	gone   map[uint16]int
+	up     map[uint16]localports.Listener
+}
+
+func newSettler() *settler {
+	return &settler{
+		seen: make(map[uint16]int),
+		gone: make(map[uint16]int),
+		up:   make(map[uint16]localports.Listener),
+	}
+}
+
+// observe records one scan and returns what should be published now, in port
+// order.
+func (s *settler) observe(found []localports.Listener) []localports.Listener {
+	present := make(map[uint16]bool, len(found))
+	for _, l := range found {
+		present[l.Port] = true
+		delete(s.gone, l.Port)
+		s.seen[l.Port] = min(s.seen[l.Port]+1, publishAfter)
+		if _, ok := s.up[l.Port]; ok || !s.primed || s.seen[l.Port] >= publishAfter {
+			s.up[l.Port] = l
+		}
+	}
+	for p := range s.seen {
+		if !present[p] {
+			delete(s.seen, p)
+		}
+	}
+	for p := range s.up {
+		if present[p] {
+			continue
+		}
+		s.gone[p]++
+		if s.gone[p] >= withdrawAfter {
+			delete(s.up, p)
+			delete(s.gone, p)
+		}
+	}
+	s.primed = true
+
+	out := make([]localports.Listener, 0, len(s.up))
+	for _, l := range s.up {
+		out = append(out, l)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	return out
+}
 
 // watchLocalPorts publishes this machine's loopback-only services on the mesh,
 // and withdraws them again when they stop.
@@ -65,7 +141,13 @@ func (n *node) refreshAutoServices() {
 	}
 	n.mu.Unlock()
 
-	discovered := localports.Forwardable(found, exclude)
+	var candidates []localports.Listener
+	for _, l := range localports.Forwardable(found, exclude) {
+		if l.Port < dynamicPorts {
+			candidates = append(candidates, l)
+		}
+	}
+	discovered := n.settled.observe(candidates)
 
 	auto := make([]serve.Service, 0, len(discovered))
 	for _, l := range discovered {

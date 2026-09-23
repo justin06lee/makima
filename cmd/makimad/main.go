@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -110,6 +111,14 @@ type node struct {
 	// against, so a failover to another address can move it. Guarded by mu.
 	relayBase string
 
+	// registerPending says the node came up on its cached netmap and still
+	// has to register; the poll loop does it.
+	registerPending atomic.Bool
+
+	// pollCancel ends the long poll in flight. See kickPoll.
+	pollMu     sync.Mutex
+	pollCancel context.CancelFunc
+
 	// lastPoll and lastPollErr are what the doctor reports about the control
 	// plane. Guarded by mu with the rest.
 	lastPoll    time.Time
@@ -144,6 +153,10 @@ type node struct {
 	// itself, kept apart from file.Services so a scan never rewrites the
 	// operator's own configuration. Guarded by mu.
 	autoServices []serve.Service
+
+	// settled decides which of the ports a scan finds have been up long
+	// enough to publish. Only the scanner touches it.
+	settled *settler
 
 	// autoServe is whether to look for them at all, and uiPort is the one
 	// loopback port that must never be republished onto the mesh.
@@ -217,6 +230,7 @@ func run(opts options) error {
 		filter:    policy.NewGuard(),
 		serve:     serve.New(log.Default()),
 		autoServe: !opts.noAutoServe,
+		settled:   newSettler(),
 		uiPort:    uiPort(opts.uiAddr),
 		inbox:     drop.New(log.Default()),
 		ssh:       sshd.New(log.Default()),
@@ -269,15 +283,18 @@ func run(opts options) error {
 		n.client = control.NewClient(f.LoginServer, f.ServerKey, f.MachineKey)
 		n.client.SetAlternates(f.ControlURLs)
 
-		if err := n.register(ctx); err != nil {
-			if len(f.Self.Addresses) == 0 {
+		// A node with a cached netmap comes up on it at once and registers
+		// from the poll loop. Registering first held the tunnel down for as
+		// long as the control plane took to answer — thirty seconds when it
+		// was unreachable, and every time the control plane itself was
+		// restarting in the same moment, which is exactly what an update
+		// does. The mesh as of last contact is far better than no mesh.
+		if len(f.Self.Addresses) == 0 {
+			if err := n.register(ctx); err != nil {
 				return fmt.Errorf("%w (and no cached netmap to fall back on)", err)
 			}
-			// A cached netmap is enough to come up. The mesh as of last contact
-			// is far better than no mesh at all, and the poll loop reconciles
-			// once the server returns.
-			log.Printf("warning: %v", err)
-			log.Print("starting from the last known netmap; will keep retrying")
+		} else {
+			n.registerPending.Store(true)
 		}
 	}
 
@@ -345,6 +362,7 @@ func run(opts options) error {
 	if n.client != nil {
 		go n.poll(ctx)
 	}
+	go n.watchNetwork(ctx)
 	// Endpoint gathering belongs to the socket, not the control plane. A
 	// serverless node needs its own reachable addresses just as much — they
 	// are what a pairing address is mostly made of, and without them two
@@ -480,13 +498,37 @@ func (n *node) poll(ctx context.Context) {
 	backoff := time.Second
 
 	for ctx.Err() == nil {
+		if n.registerPending.Load() {
+			rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			err := n.register(rctx)
+			cancel()
+			if err == nil {
+				n.registerPending.Store(false)
+			} else if ctx.Err() == nil {
+				log.Printf("register: %v (running on the last known netmap)", err)
+			}
+		}
+
 		// Re-read on every poll rather than once at startup: a laptop that
 		// moves between networks gets a new address, and a peer holding the
 		// old one has no way to notice it went stale.
-		resp, err := n.client.PollMap(ctx, version, n.endpoints())
+		//
+		// Each poll gets its own context so kickPoll can end it early: a
+		// poll parked on the old network, or one that should carry news the
+		// control plane is waiting for, is not left to run out its minute.
+		pctx, cancel := context.WithCancel(ctx)
+		n.pollMu.Lock()
+		n.pollCancel = cancel
+		n.pollMu.Unlock()
+		resp, err := n.client.PollMap(pctx, version, n.endpoints())
+		cancel()
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			if ctx.Err() != nil {
 				return
+			}
+			if pctx.Err() != nil {
+				backoff = time.Second
+				continue
 			}
 			log.Printf("netmap poll failed: %v (retrying in %s)", err, backoff)
 			n.mu.Lock()
@@ -519,6 +561,16 @@ func (n *node) poll(ctx context.Context) {
 		version = resp.Version
 
 		n.apply(ctx, resp)
+	}
+}
+
+// kickPoll ends the poll in flight, so the loop starts another at once.
+func (n *node) kickPoll() {
+	n.pollMu.Lock()
+	cancel := n.pollCancel
+	n.pollMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 

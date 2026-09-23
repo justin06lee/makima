@@ -313,10 +313,13 @@ on every machine and nothing has to be switched over.
 
 ### Services publish themselves
 
-Anything listening on `127.0.0.1` is put on the mesh as it appears, and taken
-off again when it stops. Start Ollama and it is at `desktop.makima:11434` from
-your laptop a few seconds later. Start a dev server and it is reachable from
-the sofa. There is no command.
+Anything listening on `127.0.0.1` is put on the mesh once it has stayed up for
+a few seconds, and taken off again once it has stayed down for fifteen. Start
+Ollama and it is at `desktop.makima:11434` from your laptop ten seconds later.
+Start a dev server and it is reachable from the sofa, and it stays reachable
+while it restarts on save. There is no command. Listeners on the dynamic range
+(49152 and up) are left alone: those are other programs' private helpers, on a
+different number every run. `makima allow` publishes one on purpose.
 
 That is a deliberate policy: **your mesh is trusted the way this machine is.**
 It is the right default for the machines one person owns, and the wrong one the

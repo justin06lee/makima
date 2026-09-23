@@ -1,9 +1,12 @@
 package main
 
 import (
+	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/localports"
 	"github.com/justin06lee/makima/internal/serve"
 )
 
@@ -187,5 +190,49 @@ func TestPortListHelpers(t *testing.T) {
 	}
 	if got := dropPort([]uint16{1}, 9); len(got) != 1 {
 		t.Fatalf("dropPort removed something it should not have: %v", got)
+	}
+}
+
+func listening(ports ...uint16) []localports.Listener {
+	out := make([]localports.Listener, 0, len(ports))
+	for _, p := range ports {
+		out = append(out, localports.Listener{Addr: netip.MustParseAddr("127.0.0.1"), Port: p})
+	}
+	return out
+}
+
+func ports(ls []localports.Listener) []uint16 {
+	out := make([]uint16, 0, len(ls))
+	for _, l := range ls {
+		out = append(out, l.Port)
+	}
+	return out
+}
+
+// What the Mac's log showed: a dev server restarting on every save, and
+// helpers coming and going, each one a netmap for the whole mesh. A port has
+// to stay up to be published and stay down to be withdrawn.
+func TestSettlerIgnoresPortsThatBlink(t *testing.T) {
+	s := newSettler()
+	scans := []struct {
+		found []uint16
+		want  []uint16
+	}{
+		{found: []uint16{11434}, want: []uint16{11434}},             // already running at startup
+		{found: []uint16{11434, 5173}, want: []uint16{11434}},       // vite appears
+		{found: []uint16{11434}, want: []uint16{11434}},             // and is gone again
+		{found: []uint16{11434, 5173}, want: []uint16{11434}},       // back
+		{found: []uint16{11434, 5173}, want: []uint16{5173, 11434}}, // and staying
+		{found: []uint16{11434}, want: []uint16{5173, 11434}},       // restarting on save
+		{found: []uint16{11434, 5173}, want: []uint16{5173, 11434}}, // back before anyone noticed
+		{found: []uint16{11434}, want: []uint16{5173, 11434}},       // stopped for real
+		{found: []uint16{11434}, want: []uint16{5173, 11434}},
+		{found: []uint16{11434}, want: []uint16{11434}}, // withdrawn
+	}
+	for i, sc := range scans {
+		got := ports(s.observe(listening(sc.found...)))
+		if !slices.Equal(got, sc.want) {
+			t.Fatalf("scan %d: published %v, want %v", i, got, sc.want)
+		}
 	}
 }

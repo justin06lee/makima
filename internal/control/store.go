@@ -186,6 +186,12 @@ type Store struct {
 
 	// version increments on every change to the mesh. Long-polling nodes
 	// compare against it to decide whether they are behind.
+	//
+	// It starts at the clock, in microseconds, rather than at zero, so a
+	// restarted server is ahead of the version every node last saw unless the
+	// old one changed a million times a second. From zero, a node polling
+	// with the old server's version 800 was held until the minute's
+	// heartbeat — every node, after every restart, a minute behind.
 	version uint64
 
 	// changed is closed and replaced on every change, so any number of
@@ -212,7 +218,12 @@ var DefaultPrefix = netip.MustParsePrefix("10.77.0.0/16")
 // OpenStore loads state from path, creating it — and the control plane's
 // identity — on first run.
 func OpenStore(path string) (*Store, error) {
-	s := &Store{path: path, changed: make(chan struct{}), ddnsKick: make(chan struct{}, 1)}
+	s := &Store{
+		path:     path,
+		version:  uint64(time.Now().UnixMicro()),
+		changed:  make(chan struct{}),
+		ddnsKick: make(chan struct{}, 1),
+	}
 
 	b, err := os.ReadFile(path)
 	switch {

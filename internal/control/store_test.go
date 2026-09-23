@@ -316,3 +316,28 @@ func TestStatePersists(t *testing.T) {
 		t.Errorf("node did not survive the restart: %+v", all)
 	}
 }
+
+// A restarted server has to be ahead of the version every node last saw, or
+// each of them is held until the next heartbeat before it hears anything.
+func TestARestartedStoreIsAheadOfTheOldOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.json")
+	first, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 50 {
+		first.mu.Lock()
+		first.bump()
+		first.mu.Unlock()
+	}
+	seen := first.Version()
+
+	time.Sleep(2 * time.Millisecond)
+	second, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Version() <= seen {
+		t.Fatalf("restarted at version %d, behind the %d nodes last saw", second.Version(), seen)
+	}
+}

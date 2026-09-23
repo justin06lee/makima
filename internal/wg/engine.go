@@ -12,7 +12,9 @@ package wg
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
@@ -80,6 +82,12 @@ type Engine struct {
 	dev      *device.Device
 	name     string
 	endpoint EndpointString
+
+	// mu serialises SetConfig, and applied is the configuration the device
+	// was last given successfully, nil before the first one or after a
+	// failure left the device's state unknown.
+	mu      sync.Mutex
+	applied *Config
 }
 
 // Options configure a device beyond its peer set.
@@ -189,19 +197,57 @@ func UpOn(tunDev tun.Device, cfg Config, opts Options) (*Engine, error) {
 	return e, nil
 }
 
-// SetConfig replaces the device's peer set in place.
+// SetConfig brings the device's configuration to cfg in place.
 //
-// This is the seam M1 plugs the control plane into: a fresh netmap arrives,
-// gets rendered to a Config, and lands here. No interface teardown, so
-// existing flows survive a peer list changing underneath them.
+// This is the seam the control plane plugs into: a fresh netmap arrives, gets
+// rendered to a Config, and lands here — which happens every time anything in
+// the mesh changes, a published port included. So only what differs from the
+// last configuration is sent. Replacing the whole peer set would throw away
+// every peer's session keys, making every tunnel in the mesh handshake again
+// for a change that had nothing to do with it; restating the listen port would
+// close and reopen the UDP socket under live traffic. A peer whose entry did
+// not change is not touched at all.
 func (e *Engine) SetConfig(cfg Config) error {
-	if err := e.dev.IpcSet(uapi(cfg, e.endpoint)); err != nil {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	text := uapi(cfg, e.endpoint)
+	if e.applied != nil {
+		text = uapiDiff(*e.applied, cfg, e.endpoint)
+	}
+	if text == "" {
+		return nil
+	}
+	if err := e.dev.IpcSet(text); err != nil {
+		// Part of it may have landed. Nothing is known about the device's
+		// state now, so the next configuration is sent whole.
+		e.applied = nil
 		return fmt.Errorf("configure wireguard: %w", err)
 	}
+	applied := cfg.clone()
+	e.applied = &applied
 	return nil
 }
 
-// uapi renders a Config into wireguard-go's IPC text protocol.
+// clone copies a Config deeply enough that the caller changing its slices
+// afterwards cannot change what the engine believes it applied.
+func (c Config) clone() Config {
+	out := c
+	out.Peers = make([]Peer, len(c.Peers))
+	for i, p := range c.Peers {
+		p.AllowedIPs = slices.Clone(p.AllowedIPs)
+		if p.Endpoint != nil {
+			ep := *p.Endpoint
+			p.Endpoint = &ep
+		}
+		out.Peers[i] = p
+	}
+	return out
+}
+
+// uapi renders a whole Config into wireguard-go's IPC text protocol, replacing
+// whatever the device held. Used for the first configuration, and after a
+// failure leaves the device's state unknown.
 //
 // Field order is load-bearing: replace_peers must precede any peer, and each
 // public_key line opens a new peer block that subsequent lines attach to.
@@ -213,22 +259,94 @@ func uapi(cfg Config, endpoint EndpointString) string {
 	b.WriteString("replace_peers=true\n")
 
 	for _, p := range cfg.Peers {
-		fmt.Fprintf(&b, "public_key=%s\n", p.PublicKey.Hex())
-		b.WriteString("replace_allowed_ips=true\n")
-		for _, ip := range p.AllowedIPs {
-			fmt.Fprintf(&b, "allowed_ip=%s\n", ip.String())
+		writePeer(&b, p, endpoint)
+	}
+	return b.String()
+}
+
+// uapiDiff renders only what changed between two configurations: the peers
+// that left, the peers that arrived, and the fields that moved on the peers
+// that stayed. Empty when nothing did.
+//
+// A peer that stays is addressed with update_only, so a stale diff can never
+// resurrect a peer that something else removed.
+func uapiDiff(old, cfg Config, endpoint EndpointString) string {
+	var b strings.Builder
+
+	if old.PrivateKey != cfg.PrivateKey {
+		fmt.Fprintf(&b, "private_key=%s\n", cfg.PrivateKey.Hex())
+	}
+	if old.ListenPort != cfg.ListenPort {
+		fmt.Fprintf(&b, "listen_port=%d\n", cfg.ListenPort)
+	}
+
+	was := make(map[key.Public]Peer, len(old.Peers))
+	for _, p := range old.Peers {
+		was[p.PublicKey] = p
+	}
+	stays := make(map[key.Public]bool, len(cfg.Peers))
+	for _, p := range cfg.Peers {
+		stays[p.PublicKey] = true
+	}
+
+	for _, p := range old.Peers {
+		if !stays[p.PublicKey] {
+			fmt.Fprintf(&b, "public_key=%s\nremove=true\n", p.PublicKey.Hex())
 		}
-		if !p.PresharedKey.IsZero() {
-			fmt.Fprintf(&b, "preshared_key=%s\n", p.PresharedKey.Hex())
+	}
+
+	for _, p := range cfg.Peers {
+		prev, ok := was[p.PublicKey]
+		if !ok {
+			writePeer(&b, p, endpoint)
+			continue
 		}
-		if ep := endpoint(p); ep != "" {
-			fmt.Fprintf(&b, "endpoint=%s\n", ep)
+
+		var lines strings.Builder
+		if !slices.Equal(prev.AllowedIPs, p.AllowedIPs) {
+			lines.WriteString("replace_allowed_ips=true\n")
+			for _, ip := range p.AllowedIPs {
+				fmt.Fprintf(&lines, "allowed_ip=%s\n", ip.String())
+			}
 		}
-		if p.Keepalive > 0 {
-			fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", int(p.Keepalive.Seconds()))
+		if prev.PresharedKey != p.PresharedKey {
+			// All zeroes is how UAPI spells "none", so removing a key is the
+			// same line as setting one.
+			fmt.Fprintf(&lines, "preshared_key=%s\n", p.PresharedKey.Hex())
+		}
+		// An endpoint the configuration has not moved is left alone, so the
+		// address WireGuard roamed to — the one the peer is actually
+		// answering from — is not reset to a stale one on every netmap.
+		if ep := endpoint(p); ep != "" && ep != endpoint(prev) {
+			fmt.Fprintf(&lines, "endpoint=%s\n", ep)
+		}
+		if prev.Keepalive != p.Keepalive {
+			fmt.Fprintf(&lines, "persistent_keepalive_interval=%d\n", int(p.Keepalive.Seconds()))
+		}
+		if lines.Len() > 0 {
+			fmt.Fprintf(&b, "public_key=%s\nupdate_only=true\n", p.PublicKey.Hex())
+			b.WriteString(lines.String())
 		}
 	}
 	return b.String()
+}
+
+// writePeer renders one whole peer block.
+func writePeer(b *strings.Builder, p Peer, endpoint EndpointString) {
+	fmt.Fprintf(b, "public_key=%s\n", p.PublicKey.Hex())
+	b.WriteString("replace_allowed_ips=true\n")
+	for _, ip := range p.AllowedIPs {
+		fmt.Fprintf(b, "allowed_ip=%s\n", ip.String())
+	}
+	if !p.PresharedKey.IsZero() {
+		fmt.Fprintf(b, "preshared_key=%s\n", p.PresharedKey.Hex())
+	}
+	if ep := endpoint(p); ep != "" {
+		fmt.Fprintf(b, "endpoint=%s\n", ep)
+	}
+	if p.Keepalive > 0 {
+		fmt.Fprintf(b, "persistent_keepalive_interval=%d\n", int(p.Keepalive.Seconds()))
+	}
 }
 
 // Name is the OS-assigned interface name, e.g. "utun6" or "makima0".
