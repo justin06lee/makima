@@ -178,6 +178,11 @@ func status(args []string) error {
 	switch {
 	case f.Managed():
 		fmt.Printf("%-10s %s\n", "server", f.LoginServer)
+		for _, u := range f.ControlURLs {
+			if u != f.LoginServer {
+				fmt.Printf("%-10s %s  (used when the one above does not answer)\n", "", u)
+			}
+		}
 	case f.Serverless:
 		fmt.Printf("%-10s none (paired directly)\n", "server")
 	default:
