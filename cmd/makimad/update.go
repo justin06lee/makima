@@ -45,6 +45,9 @@ func (n *node) setUpdateStatus(s *netmap.UpdateStatus) {
 // one a rollback leaves — so the network hears why this machine is still on
 // the old version.
 func (n *node) loadUpdateFailure() {
+	if n.updater == nil {
+		return
+	}
 	if f := n.updater.Failed(); f != nil {
 		n.updStatus = &netmap.UpdateStatus{Tag: f.Tag, State: netmap.UpdateFailed, Error: f.Error}
 	}
@@ -54,7 +57,7 @@ func (n *node) loadUpdateFailure() {
 // for a release newer than this one. A development build ahead of the release
 // is left alone.
 func (n *node) considerUpdate(ctx context.Context, o control.UpdateOrder) {
-	if n.updater.Handled(o.ID) || n.updater.Pending() != nil {
+	if n.updater == nil || n.updater.Handled(o.ID) || n.updater.Pending() != nil {
 		return
 	}
 	if !subaru.Newer(o.Tag, version) {
@@ -116,6 +119,9 @@ func (n *node) runUpdate(ctx context.Context, tag string, order uint64) {
 // settleUpdate records that the version now running works, once it has shown
 // it can: reached the control plane, or for a node without one, stayed up.
 func (n *node) settleUpdate() {
+	if n.updater == nil {
+		return
+	}
 	p := n.updater.Pending()
 	if p == nil {
 		return

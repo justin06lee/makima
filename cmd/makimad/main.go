@@ -425,7 +425,7 @@ func run(opts options, upd *update.Installer) error {
 
 	// A node with no control plane has nothing to reach before a new version
 	// counts as working; staying up is the test.
-	if n.client == nil && upd.Pending() != nil {
+	if n.client == nil && upd != nil && upd.Pending() != nil {
 		time.AfterFunc(30*time.Second, n.settleUpdate)
 	}
 
