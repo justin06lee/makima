@@ -185,7 +185,11 @@ func status(args []string) error {
 	}
 
 	if f.HomeRelay.URL != "" {
-		fmt.Printf("%-10s %s\n", "relay", f.HomeRelay.URL)
+		if strings.HasPrefix(f.HomeRelay.URL, "/") {
+			fmt.Printf("%-10s the server's own, on the same port\n", "relay")
+		} else {
+			fmt.Printf("%-10s %s\n", "relay", f.HomeRelay.URL)
+		}
 	}
 	if f.Domain != "" {
 		fmt.Printf("%-10s *.%s\n", "names", f.Domain)

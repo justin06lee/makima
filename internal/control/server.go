@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netmap"
+	"github.com/justin06lee/makima/internal/relay"
 )
 
 // pollTimeout bounds how long a map request is held open.
@@ -27,6 +29,10 @@ type Server struct {
 	// this server do. See limit.go.
 	polls     *polls
 	registers *buckets
+
+	// relay is the relay carried on this server's own port, nil when it
+	// carries none.
+	relay http.Handler
 }
 
 // NewServer wires handlers onto a store.
@@ -39,6 +45,21 @@ func NewServer(store *Store, logger *log.Logger) *Server {
 	}
 }
 
+// SetRelay carries a relay on this server's own port, at relay.Path, and hands
+// it to every node that has no other relay assigned.
+//
+// This is what makes the control plane the one machine that has to be
+// reachable. Every node already reaches it to learn about the others; with the
+// relay on the same port, two nodes that cannot reach each other directly
+// still meet here, through whatever path — a port forward, a name, a reverse
+// proxy — already brought them to the control plane.
+//
+// Call before Handler.
+func (s *Server) SetRelay(h http.Handler, relayKey key.Public) {
+	s.relay = h
+	s.store.SetBuiltinRelay(netmap.Relay{URL: relay.Path, Key: relayKey})
+}
+
 // Handler builds the routing table.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -46,6 +67,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /machine/register", s.handleRegister)
 	mux.HandleFunc("POST /machine/map", s.handleMap)
+	if s.relay != nil {
+		mux.Handle("GET "+relay.Path, s.relay)
+	}
 	return mux
 }
 

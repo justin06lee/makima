@@ -41,6 +41,10 @@ func NewClient(baseURL string, serverKey key.Public, machineKey key.Private) *Cl
 	}
 }
 
+// BaseURL is the address this client is currently reaching the control plane
+// at.
+func (c *Client) BaseURL() string { return c.baseURL }
+
 // FetchServerKey retrieves the control plane's public key.
 //
 // Only for bootstrapping a node whose invitation did not pin one. Trusting the

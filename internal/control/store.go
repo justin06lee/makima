@@ -182,6 +182,11 @@ type Store struct {
 	// changed is closed and replaced on every change, so any number of
 	// waiting pollers wake at once without the store tracking who they are.
 	changed chan struct{}
+
+	// builtinRelay is the relay this server carries on its own port, handed
+	// out when no other relay is registered. Not persisted: it exists exactly
+	// as long as the process serving it does.
+	builtinRelay netmap.Relay
 }
 
 // DefaultPrefix is where a new network's addresses come from: makima's own
@@ -566,11 +571,30 @@ func (n *Node) policyNode() policy.Node {
 }
 
 // activeRelayLocked is the relay every node is currently assigned.
+//
+// A registered relay wins over the built-in one: somebody who went to the
+// trouble of running a relay on a machine with better bandwidth than their
+// home connection meant for it to be used.
 func (s *Store) activeRelayLocked() netmap.Relay {
 	if len(s.state.Relays) == 0 {
-		return netmap.Relay{}
+		return s.builtinRelay
 	}
 	return s.state.Relays[0]
+}
+
+// SetBuiltinRelay records the relay this server carries on its own port.
+func (s *Store) SetBuiltinRelay(r netmap.Relay) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.builtinRelay = r
+	s.bump()
+}
+
+// BuiltinRelay is the relay this server carries itself, if it does.
+func (s *Store) BuiltinRelay() netmap.Relay {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.builtinRelay
 }
 
 func (s *Store) domainLocked() string {

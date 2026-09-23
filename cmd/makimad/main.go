@@ -39,6 +39,7 @@ import (
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/policy"
 	"github.com/justin06lee/makima/internal/portmap"
+	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/serve"
 	"github.com/justin06lee/makima/internal/sshd"
 	"github.com/justin06lee/makima/internal/stun"
@@ -568,24 +569,39 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 		log.Printf("cache netmap: %v", saveErr)
 	}
 
-	log.Printf("netmap v%d: %d peer(s)%s", resp.Version, len(peers), relaySuffix(resp.HomeRelay))
+	log.Printf("netmap v%d: %d peer(s)%s", resp.Version, len(peers), relaySuffix(resp.HomeRelay, n.controlURL()))
 	for _, p := range peers {
-		logPeer(p)
+		logPeer(p, n.controlURL())
 	}
 }
 
 // applyNetwork hands the socket its view of who is reachable how.
+//
+// A relay the control plane carries itself arrives as a path, and is resolved
+// here against the address this node is reaching the control plane at — so a
+// laptop that reaches it by name from a hotel dials the relay by that name
+// too, rather than at a LAN address that means nothing where it is.
 func (n *node) applyNetwork(m *netmap.NetMap) {
+	base := n.controlURL()
 	peers := make([]magicsock.PeerConfig, 0, len(m.Peers))
 	for _, p := range m.Peers {
 		peers = append(peers, magicsock.PeerConfig{
 			NodeKey:   p.Key,
 			DiscoKey:  p.DiscoKey,
 			Endpoints: p.Endpoints,
-			RelayURL:  p.RelayURL,
+			RelayURL:  relay.Resolve(p.RelayURL, base),
 		})
 	}
-	n.sock.SetNetwork(peers, m.HomeRelay.URL, m.HomeRelay.Key)
+	n.sock.SetNetwork(peers, relay.Resolve(m.HomeRelay.URL, base), m.HomeRelay.Key)
+}
+
+// controlURL is the address this node is currently reaching its control plane
+// at, or "" for a node that has none.
+func (n *node) controlURL() string {
+	if n.client == nil {
+		return ""
+	}
+	return n.client.BaseURL()
 }
 
 // gatherEndpoints keeps this node's own reachability up to date.
@@ -672,30 +688,30 @@ func (n *node) logState(iface string) {
 
 	log.Printf("%s up on %s as %s [%s], %d peer(s)", iface, addr, name, mode, len(peers))
 	for _, p := range peers {
-		logPeer(p)
+		logPeer(p, n.controlURL())
 	}
 	for _, s := range services {
 		log.Printf("  serving %s", s)
 	}
 }
 
-func logPeer(p netmap.Node) {
+func logPeer(p netmap.Node, controlURL string) {
 	via := "no known path"
 	switch {
 	case len(p.Endpoints) > 0:
 		via = p.Endpoints[0].String()
 	case p.RelayURL != "":
-		via = "relay " + p.RelayURL
+		via = "relay " + relay.Resolve(p.RelayURL, controlURL)
 	}
 	a, _ := p.Addr()
 	log.Printf("  peer %-16s %-15s via %s", p.Name, a, via)
 }
 
-func relaySuffix(r netmap.Relay) string {
+func relaySuffix(r netmap.Relay, controlURL string) string {
 	if r.URL == "" {
 		return ""
 	}
-	return ", relay " + r.URL
+	return ", relay " + relay.Resolve(r.URL, controlURL)
 }
 
 func describePending(routes []netip.Prefix, exit bool) string {

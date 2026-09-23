@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/relay"
 )
 
 // DefaultStatePath is where the mesh's membership lives.
@@ -92,7 +94,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `makima-server — the coordination plane for a makima mesh
 
 running it:
-  makima-server serve   [-addr :8080]
+  makima-server serve   [-addr :8080] [-no-relay]
   makima-server key
 
 admitting machines:
@@ -128,6 +130,7 @@ func serve(args []string) error {
 	statePath := fs.String("state", DefaultStatePath, "path to control plane state")
 	socketPath := fs.String("socket", "", "admin socket path (default: beside the state file)")
 	addr := fs.String("addr", ":8080", "address to listen on")
+	noRelay := fs.Bool("no-relay", false, "do not carry a relay on this port")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -137,6 +140,22 @@ func serve(args []string) error {
 		return err
 	}
 	handlers := control.NewServer(store, log.Default())
+
+	// On by default, because a relay is what lets two machines that cannot
+	// reach each other directly still connect — and this is the one machine
+	// every other is already known to reach. Its key is kept beside the
+	// state, since nodes pin it and a new one on every start would lock every
+	// node out of the relay until its next netmap.
+	var rs *relay.Server
+	if !*noRelay {
+		id, err := relay.LoadIdentity(builtinRelayPath(*statePath))
+		if err != nil {
+			return fmt.Errorf("relay: %w", err)
+		}
+		rs = relay.NewServer(id.PrivateKey, log.Default())
+		defer rs.Close()
+		handlers.SetRelay(rs, id.PrivateKey.Public())
+	}
 
 	// Claim the admin socket before binding the public port, so a second
 	// server refuses to start rather than racing the first over the state
@@ -176,6 +195,9 @@ func serve(args []string) error {
 	}()
 
 	log.Printf("listening on %s", *addr)
+	if rs != nil {
+		log.Printf("relay    %s on the same port, key %s", relay.Path, rs.PublicKey())
+	}
 	log.Printf("state    %s", *statePath)
 	log.Printf("admin    %s", sock(*socketPath, *statePath))
 	log.Printf("key      %s", store.ServerKey().Public())
@@ -187,6 +209,13 @@ func serve(args []string) error {
 	}
 	log.Print("stopped")
 	return nil
+}
+
+// builtinRelayPath is where the relay this server carries keeps its key:
+// beside the state, and apart from a standalone makima-relay's on the same
+// machine, which is a different relay with its own identity.
+func builtinRelayPath(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "control-relay.json")
 }
 
 func authkey(args []string) error {

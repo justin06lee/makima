@@ -12,6 +12,7 @@ import (
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/policy"
+	"github.com/justin06lee/makima/internal/relay"
 )
 
 // --- relay --------------------------------------------------------------
@@ -142,9 +143,9 @@ func listRelays(args []string) error {
 	}
 
 	if len(relays) == 0 {
-		fmt.Print("no relays registered\n\n")
-		fmt.Print("without one, two nodes that cannot already reach each other will not connect.\n")
-		fmt.Print("run 'makima-relay serve' somewhere with a public address, then:\n")
+		fmt.Print("no relays registered, so this server relays on its own port, at " + relay.Path + ".\n\n")
+		fmt.Print("that is enough wherever the server itself is reachable. a relay somewhere with more\n")
+		fmt.Print("bandwidth than a home connection is worth adding if many machines lean on it:\n")
 		fmt.Print("  makima-server relay add -url <host>:3478 -key <its key>\n")
 		return nil
 	}

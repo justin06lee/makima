@@ -299,11 +299,6 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 		return err
 	}
 
-	// A machine with a public address is the only kind that can hold a mesh
-	// usable from outside the house, and it is also the only kind that can be
-	// a relay. Since it is already both, make it both.
-	startRelayIfPublic(ctx, admin, reachable)
-
 	decoded, err := checkInvite(inv)
 	if err != nil {
 		return err
@@ -711,44 +706,6 @@ func relayDaemon() supervise.Daemon {
 			Description: "makima: the relay",
 		},
 	}
-}
-
-// startRelayIfPublic turns the coordination machine into a relay as well.
-//
-// Two machines behind different NATs cannot dial each other, and the way they
-// meet is a relay — which has to be somewhere both can reach, which means a
-// public address. The machine holding the mesh already needs one for anything
-// to work from outside the house, so it is exactly the machine that can be a
-// relay, and asking somebody to set up a second one would be asking them to
-// solve a problem they have already solved.
-//
-// Skipped on a private address, where it would be a listener nothing could
-// ever connect to.
-func startRelayIfPublic(ctx context.Context, admin *control.AdminClient, addr string) {
-	ip, err := netip.ParseAddr(addr)
-	if err != nil || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-		return
-	}
-
-	id, err := relay.LoadIdentity(relayStatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "note: no relay here: %v\n", err)
-		return
-	}
-
-	if err := relayDaemon().Start(ctx, startWait); err != nil {
-		fmt.Fprintf(os.Stderr, "note: no relay here: %v\n", err)
-		return
-	}
-
-	url := net.JoinHostPort(addr, strconv.Itoa(relay.DefaultPort))
-	if err := admin.AddRelay(url, id.PrivateKey.Public()); err != nil {
-		fmt.Fprintf(os.Stderr, "note: the relay is running but the mesh was not told about it: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Relaying on %s too, so machines that cannot reach each other directly still can.\n", url)
-	fmt.Printf("Open TCP %d on this host's firewall if it has one.\n", relay.DefaultPort)
 }
 
 // controlURL turns what somebody passed to -advertise into a URL a joining
