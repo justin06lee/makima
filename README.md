@@ -513,8 +513,10 @@ The one machine holding the coordination plane has `makima-server`, and it is
 where the mesh is administered from:
 
 ```sh
-makima-server nodes                  # every machine on it
+makima-server nodes                  # every machine on it, and what it runs
 makima-server forget -name laptop    # evict one; every node drops it at once
+makima-server forget -id 3           # when a name repeats, by the ID nodes shows
+makima-server update                 # every machine to the latest release
 makima-server acl set -file p.json   # who may reach whom
 makima-server lock status            # stop trusting this server about membership
 ```
