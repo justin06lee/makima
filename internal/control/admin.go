@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netmap"
 )
 
 // The control plane's state is a single JSON file held in memory by whichever
@@ -69,7 +70,8 @@ type AuthKeyRequest struct {
 
 // ForgetRequest removes a node.
 type ForgetRequest struct {
-	Name string `json:"name"`
+	Name string        `json:"name,omitempty"`
+	ID   netmap.NodeID `json:"id,omitempty"`
 }
 
 // adminError is the shape of a failed admin call.
@@ -114,7 +116,7 @@ func (s *Server) AdminHandler() http.Handler {
 			writeJSON(w, http.StatusBadRequest, adminError{err.Error()})
 			return
 		}
-		if err := s.store.Forget(req.Name); err != nil {
+		if err := s.store.ForgetNode(req.Name, req.ID); err != nil {
 			writeJSON(w, http.StatusNotFound, adminError{err.Error()})
 			return
 		}
@@ -232,7 +234,12 @@ func (c *AdminClient) Nodes() ([]Node, error) {
 
 // Forget removes a node.
 func (c *AdminClient) Forget(name string) error {
-	return c.call(http.MethodPost, "/admin/forget", ForgetRequest{Name: name}, nil)
+	return c.ForgetNode(name, 0)
+}
+
+// ForgetNode removes one node, by ID when id is non-zero.
+func (c *AdminClient) ForgetNode(name string, id netmap.NodeID) error {
+	return c.call(http.MethodPost, "/admin/forget", ForgetRequest{Name: name, ID: id}, nil)
 }
 
 // ServerKey returns the control plane's public key.

@@ -3,10 +3,12 @@ package control
 import (
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netmap"
 )
 
 func newStore(t *testing.T) *Store {
@@ -339,5 +341,43 @@ func TestARestartedStoreIsAheadOfTheOldOne(t *testing.T) {
 	}
 	if second.Version() <= seen {
 		t.Fatalf("restarted at version %d, behind the %d nodes last saw", second.Version(), seen)
+	}
+}
+
+// Names repeat — a machine that rejoined under a new identity leaves its old
+// entry behind with the same name — so forgetting by a name that several
+// nodes share would take the live one too. It is refused, with the IDs.
+func TestForgettingAnAmbiguousNameIsRefused(t *testing.T) {
+	s := newStore(t)
+	auth, _ := s.MintAuthKey(true, time.Hour)
+	var ids []netmap.NodeID
+	for range 2 {
+		mk, _ := key.NewPrivate()
+		nk, _ := key.NewPrivate()
+		n, err := s.Register(mk.Public(), &RegisterRequest{Name: "laptop", NodeKey: nk.Public(), AuthKey: auth.Secret})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, n.ID)
+	}
+
+	err := s.Forget("laptop")
+	if err == nil || !strings.Contains(err.Error(), "-id") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(s.Nodes()) != 2 {
+		t.Fatal("an ambiguous forget removed something")
+	}
+
+	if err := s.ForgetNode("", ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	left := s.Nodes()
+	if len(left) != 1 || left[0].ID != ids[1] {
+		t.Fatalf("left %+v", left)
+	}
+	// Now the name is unambiguous again.
+	if err := s.Forget("laptop"); err != nil {
+		t.Fatal(err)
 	}
 }
