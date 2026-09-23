@@ -343,7 +343,13 @@ func (c *Conn) handlePong(ps *peerState, p *disco.Pong, src netip.AddrPort) {
 	// this is our public address as observed by a peer — free STUN, from a
 	// party that already has reason to talk to us.
 	if p.Src.IsValid() {
-		c.noteSelfObservation(normalise(p.Src))
+		seen := normalise(p.Src)
+		c.noteSelfObservation(seen)
+		if isPublic(seen.Addr()) {
+			c.selfMu.Lock()
+			c.peerSawPublic = time.Now()
+			c.selfMu.Unlock()
+		}
 	}
 
 	if !src.IsValid() {

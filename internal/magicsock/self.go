@@ -103,6 +103,26 @@ func (c *Conn) SelfEndpoints() []netip.AddrPort {
 //
 // Duplicated from netcfg rather than imported, because netcfg shells out to
 // platform tools and magicsock must stay usable in a unit test.
+// PeerSawUsPublicly reports whether a peer has recently told this node the
+// public address its packets arrive from.
+//
+// That is the question a STUN server is asked, answered instead by a machine
+// on the mesh — the control plane's own machine, typically, which every node
+// probes. While a peer is answering it, asking a public STUN server as well
+// only tells a third party where this machine is.
+func (c *Conn) PeerSawUsPublicly() bool {
+	c.selfMu.Lock()
+	defer c.selfMu.Unlock()
+	return !c.peerSawPublic.IsZero() && time.Since(c.peerSawPublic) < observationTTL
+}
+
+// isPublic reports whether an address is one the internet at large could
+// send to: not private, not loopback or link-local, and not a mesh address.
+func isPublic(a netip.Addr) bool {
+	a = a.Unmap()
+	return a.IsGlobalUnicast() && !a.IsPrivate() && !isMeshAddr(a)
+}
+
 func isMeshAddr(a netip.Addr) bool {
 	a = a.Unmap()
 	return meshRange.Contains(a) || legacyMeshRange.Contains(a)

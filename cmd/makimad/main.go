@@ -670,11 +670,18 @@ func (n *node) gatherEndpoints(ctx context.Context) {
 }
 
 func (n *node) refreshEndpoints(ctx context.Context) {
+	// A peer that answered a probe has already said where this machine's
+	// packets appear to come from, which is all a STUN server would say. The
+	// public servers are the fallback, for before any peer has — a new node,
+	// or one that has only spoken to peers on its own LAN.
+	//
 	// STUN answers arrive on the shared socket's normal receive path, so this
 	// only sends. There is nothing to wait for here — the observation lands
 	// asynchronously and the next poll advertises it.
-	if err := n.sock.QuerySTUN(ctx, stun.DefaultServers); err != nil && n.verbose {
-		log.Printf("stun: %v", err)
+	if !n.sock.PeerSawUsPublicly() {
+		if err := n.sock.QuerySTUN(ctx, stun.DefaultServers); err != nil && n.verbose {
+			log.Printf("stun: %v", err)
+		}
 	}
 
 	if n.pm != nil {
