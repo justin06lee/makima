@@ -165,6 +165,9 @@ func (in *Installer) Install(ctx context.Context, tag string, order uint64) erro
 	if len(targets["makimad"]) == 0 {
 		return fmt.Errorf("found no makimad to replace (looked beside %s)", in.Self)
 	}
+	if err := managed(targets); err != nil {
+		return err
+	}
 	staged, err := u.Stage(ctx, rel, targets)
 	if err != nil {
 		return err
@@ -207,6 +210,23 @@ func (in *Installer) Install(ctx context.Context, tag string, order uint64) erro
 		_ = in.save(st)
 		dropPrevious(files)
 		return err
+	}
+	return nil
+}
+
+// managed refuses to replace files a package manager owns. Swapping them
+// behind its back leaves it believing an older version is installed, and its
+// next upgrade or uninstall acting on files that are not what it wrote.
+func managed(targets map[string][]string) error {
+	for _, paths := range targets {
+		for _, p := range paths {
+			switch {
+			case strings.Contains(p, "/Cellar/"):
+				return errors.New("makima here was installed by Homebrew; update it with: brew upgrade makima")
+			case strings.HasPrefix(p, "/nix/store/"):
+				return errors.New("makima here was installed by Nix; update it through Nix")
+			}
+		}
 	}
 	return nil
 }

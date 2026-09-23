@@ -294,3 +294,14 @@ func TestWatchExecutableNoticesAReplacement(t *testing.T) {
 		t.Fatal("never noticed the new binary")
 	}
 }
+
+func TestAPackageManagersFilesAreLeftToIt(t *testing.T) {
+	for _, p := range []string{"/opt/homebrew/Cellar/makima/0.2.0/bin/makimad", "/nix/store/abc-makima/bin/makimad"} {
+		if err := managed(map[string][]string{"makimad": {p}}); err == nil {
+			t.Errorf("%s would be replaced", p)
+		}
+	}
+	if err := managed(map[string][]string{"makimad": {"/usr/local/bin/makimad"}}); err != nil {
+		t.Errorf("/usr/local/bin refused: %v", err)
+	}
+}
