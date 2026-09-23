@@ -657,6 +657,67 @@ makima-relay serve
 makima-server relay add -url <that host>:3478 -key <the relay's key>
 ```
 
+### Updating every machine at once
+
+```sh
+makima update            # every machine to the latest release
+makima update v0.3.1     # or to that one
+```
+
+Run it on any machine in the network. The order goes to the control plane,
+and every machine that is on hears it within seconds. Each one fetches the
+release for its own platform from this repository's GitHub releases, checks it
+against the `SHA256SUMS` published beside it, runs the new daemon once off to
+the side to see that it starts here and is the version it claims, and only
+then swaps every copy of all four programs together — `/usr/local/bin`, the
+app bundle, root's copy the app keeps — and restarts into it in place. The
+command stays to show each machine arrive, then checks from here that the
+ones that moved still answer:
+
+```
+moving every machine to v0.3.1
+
+  tenet                  v0.3.0                 ✓ v0.3.1
+  justin06lee            v0.3.0                 ✓ v0.3.1
+  huiyuns-macbook-air-2  v0.3.0                 off — moves when it next comes on
+  huiyuns-mac (here)     v0.3.0                 ✓ v0.3.1
+
+3 of 3 machines that are on now run v0.3.1.
+
+from here, after the restart:
+  tenet                  direct 192.168.1.253:51820 (3ms)
+  justin06lee            direct 192.168.1.40:51820 (5ms)
+```
+
+They all restart in the same few seconds, deliberately: a mesh that spends a
+day half on one version and half on another is what to avoid. A restart comes
+back up on the last netmap it had without waiting for the control plane —
+which is restarting too — so the gap is a couple of seconds. Traffic over the
+mesh stalls for those seconds; a TCP connection, an ssh session say, is
+normally patient enough to carry on afterwards. A machine that was off gets
+the order when it next comes on.
+
+What can go wrong is contained to the machine it goes wrong on. A release
+that will not run there is caught by the dry run and nothing is replaced. One
+that runs but will not stay up — dies on the way up three times — has the
+previous version put back automatically, and the machine reports why. A
+failed machine is not retried on every netmap; running `makima update` again
+is what asks it to try again.
+
+An order names a release and nothing else, and a machine refuses anything
+older than what it runs, so the most any machine in the network — or the
+control plane — can do with it is move the others forward to something this
+repository published. A development build ahead of the release is left alone.
+The same caveat as the installer applies: the checksum proves the archive is
+the one the release published, not that the release itself is honest.
+
+Releases are cut by pushing a tag — `git tag v0.3.1 && git push origin
+v0.3.1` — after which the release workflow publishes the archives in a few
+minutes. `makima-server update` does the same as `makima update` from the
+machine holding the network, and `makima-server nodes` shows every machine's
+version. Machines running a makima from before this existed have to be
+updated by hand once (`make install` there); from then on this is the way.
+
 ### The desktop app
 
 `makima up` and `makima status` are a fine way to run a network and a poor way
@@ -1132,6 +1193,16 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   `/etc/sudoers.d/makima_<you>` makes everything ask again.
 - **The app is not signed or notarized**, so it has to be built rather than
   downloaded. See [Install](#install).
+- **`makima update` moves the four programs, not the app's window.** The daemon
+  the app runs, and the copies inside its bundle, are updated with everything
+  else; the app's own interface is not, until it is rebuilt with `make`.
+- **A machine updating restarts its daemon, and with it anything the daemon
+  itself serves:** a session on the built-in SSH server (`makima sshd`, which
+  `makima possess` prefers when it is on), a file transfer in flight, and
+  connections to its published ports, which it proxies. Anything talking to a
+  mesh address directly — `possess` through the system's own sshd, a database
+  client — sees a stall of a couple of seconds, not a disconnect, as long as
+  it is patient for that long.
 
 ## Layout
 
@@ -1150,6 +1221,7 @@ internal/pair       serverless pairing addresses: two machines, no server
 internal/invite     a whole join as one pasteable string, or as fifteen words
 internal/stun       asking a public server what address we appear to come from
 internal/ddns       keeping a DuckDNS name pointed at the holding machine
+internal/update     moving a machine to a release, and back if it will not run
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/serve      publishing a local port on the mesh, and nowhere else
 internal/drop       sending a file to another machine, and receiving one
