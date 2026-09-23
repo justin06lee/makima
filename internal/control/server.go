@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /machine/register", s.handleRegister)
 	mux.HandleFunc("POST /machine/map", s.handleMap)
+	mux.HandleFunc("POST /machine/update", s.handleUpdate)
 	if s.relay != nil {
 		mux.Handle("GET "+relay.Path, s.relay)
 	}
@@ -125,6 +126,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"nodes":   len(s.store.Nodes()),
 		"version": s.store.Version(),
+		"release": s.store.ServerVersion(),
 	})
 }
 
@@ -169,11 +171,13 @@ func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Endpoints) > 0 {
-		if _, err := s.store.UpdateEndpoints(env.MachineKey, req.Endpoints); err != nil {
-			s.reply(w, env.MachineKey, &MapResponse{Error: err.Error()})
-			return
-		}
+	if _, err := s.store.Checkin(env.MachineKey, Checkin{
+		Endpoints: req.Endpoints,
+		Running:   req.Running,
+		Update:    req.Update,
+	}); err != nil {
+		s.reply(w, env.MachineKey, &MapResponse{Error: err.Error()})
+		return
 	}
 
 	deadline := time.After(pollTimeout)
@@ -205,6 +209,35 @@ func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// handleUpdate is a node asking for every node to move to a release.
+//
+// Any node may ask. An order names a release and nothing more; each node
+// checks that release against the project's own published checksums and
+// refuses to go backwards, so the worst a node can do by asking is move the
+// network forward to a release the project published.
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.registers.allow(r.RemoteAddr, time.Now()) {
+		tooMany(w, registerEvery)
+		return
+	}
+	env, req, ok := decode[UpdateRequest](s, w, r)
+	if !ok {
+		return
+	}
+	by, known := s.store.NameOf(env.MachineKey)
+	if !known {
+		s.reply(w, env.MachineKey, &UpdateResponse{Error: "this machine is not in the network"})
+		return
+	}
+	order, err := s.store.RequestUpdate(by, req.Tag)
+	if err != nil {
+		s.reply(w, env.MachineKey, &UpdateResponse{Error: err.Error()})
+		return
+	}
+	s.log.Printf("update: %s asked every node to move to %s (order %d)", by, order.Tag, order.ID)
+	s.reply(w, env.MachineKey, &UpdateResponse{Order: order})
 }
 
 // decode reads and opens a sealed request.

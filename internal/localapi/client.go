@@ -116,6 +116,18 @@ func (c *Client) SetAdvertiseExit(on bool) error {
 	return c.call(http.MethodPost, "/api/advertise-exit", AdvertiseExitRequest{On: on}, nil)
 }
 
+// Update moves every machine in the network to a release, or with local only
+// this one. The daemon may be gone for a few seconds afterwards: it restarts
+// into the new version.
+func (c *Client) Update(tag string, local bool) (UpdateResult, error) {
+	var res UpdateResult
+	err := c.withTimeout(time.Minute).call(http.MethodPost, "/api/update", UpdateRequest{Tag: tag, Local: local}, &res)
+	if err != nil && err.Error() == ErrNoRemoteUpdates.Error() {
+		err = ErrNoRemoteUpdates
+	}
+	return res, err
+}
+
 // AllowFirewall asks the daemon to trust the tunnel interface.
 func (c *Client) AllowFirewall() (netcfg.Report, error) {
 	var r netcfg.Report

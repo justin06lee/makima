@@ -187,8 +187,11 @@ func (c *Client) Register(ctx context.Context, req *RegisterRequest) (*RegisterR
 // PollMap asks for a netmap newer than version, blocking until one exists or
 // the server's heartbeat fires.
 func (c *Client) PollMap(ctx context.Context, version uint64, endpoints []netip.AddrPort) (*MapResponse, error) {
-	req := &MapRequest{Version: version, Endpoints: endpoints}
+	return c.Poll(ctx, &MapRequest{Version: version, Endpoints: endpoints})
+}
 
+// Poll is PollMap with everything a node reports about itself.
+func (c *Client) Poll(ctx context.Context, req *MapRequest) (*MapResponse, error) {
 	var resp MapResponse
 	if err := c.roundTrip(ctx, "machine/map", req, &resp); err != nil {
 		return nil, err
@@ -200,6 +203,28 @@ func (c *Client) PollMap(ctx context.Context, version uint64, endpoints []netip.
 	resp.stripServerSuppliedSecrets()
 
 	return &resp, nil
+}
+
+// errNoSuchEndpoint is a control plane that answered, and does not know the
+// request: one older than the request is.
+var errNoSuchEndpoint = errors.New("the control plane does not know this request")
+
+// ErrNoRemoteUpdates is a control plane too old to pass an update order on.
+var ErrNoRemoteUpdates = errors.New("the control plane runs a makima from before remote updates")
+
+// RequestUpdate asks the control plane to move every node to a release.
+func (c *Client) RequestUpdate(ctx context.Context, tag string) (UpdateOrder, error) {
+	var resp UpdateResponse
+	if err := c.roundTrip(ctx, "machine/update", &UpdateRequest{Tag: tag}, &resp); err != nil {
+		if errors.Is(err, errNoSuchEndpoint) {
+			return UpdateOrder{}, ErrNoRemoteUpdates
+		}
+		return UpdateOrder{}, err
+	}
+	if resp.Error != "" {
+		return UpdateOrder{}, errors.New(resp.Error)
+	}
+	return resp.Order, nil
 }
 
 // roundTrip seals req, posts it, and opens the reply into resp — at the
@@ -227,6 +252,7 @@ func (c *Client) roundTrip(ctx context.Context, path string, req, resp any) erro
 	c.mu.Unlock()
 
 	var errs []string
+	missing := true
 	for i := range urls {
 		idx := (start + i) % len(urls)
 		err := c.post(ctx, urls[idx], path, body, resp)
@@ -243,7 +269,16 @@ func (c *Client) roundTrip(ctx context.Context, path string, req, resp any) erro
 		if len(urls) == 1 || ctx.Err() != nil {
 			return err
 		}
+		// A 404 proves nothing on its own — it is also what a stranger's web
+		// server at the LAN address says — so the other addresses are still
+		// tried. Only if every one of them says it is it the server's answer.
+		if !errors.Is(err, errNoSuchEndpoint) {
+			missing = false
+		}
 		errs = append(errs, fmt.Sprintf("%s: %v", urls[idx], err))
+	}
+	if missing {
+		return fmt.Errorf("%w: %s", errNoSuchEndpoint, path)
 	}
 	return fmt.Errorf("no address of the control server answered — %s", strings.Join(errs, "; "))
 }
@@ -269,6 +304,9 @@ func (c *Client) post(ctx context.Context, base, path string, body []byte, resp 
 
 	if httpResp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("control server rejected our machine key (is this node registered?)")
+	}
+	if httpResp.StatusCode == http.StatusNotFound || httpResp.StatusCode == http.StatusMethodNotAllowed {
+		return fmt.Errorf("%w: %s", errNoSuchEndpoint, path)
 	}
 	if httpResp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(httpResp.Body, 512))

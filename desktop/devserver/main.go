@@ -174,6 +174,9 @@ func (f *fake) AllowFirewall() (netcfg.Report, error) { return netcfg.Report{}, 
 func (f *fake) SetInbox(string, bool) error           { return errReadOnly }
 func (f *fake) SetSSH(bool, []string, string) error   { return errReadOnly }
 func (f *fake) SetOwner(string) error                 { return errReadOnly }
+func (f *fake) RequestUpdate(context.Context, string, bool) (localapi.UpdateResult, error) {
+	return localapi.UpdateResult{}, errReadOnly
+}
 func (f *fake) OpenPairing(int) (localapi.PairingState, error) {
 	return localapi.PairingState{}, errReadOnly
 }

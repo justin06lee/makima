@@ -76,6 +76,8 @@ func main() {
 		err = linkCmd(os.Args[2:])
 	case "migrate":
 		err = migrateCmd(os.Args[2:])
+	case "update", "upgrade":
+		err = updateCmd(os.Args[2:])
 
 	case "genkey":
 		err = genkey(os.Args[2:])
@@ -162,6 +164,8 @@ using it:
                                    whose commands reach it without sudo
   makima allow 11434               publish a local port on purpose
   makima deny 11434                stop publishing one
+  makima update                    move every machine to the latest release,
+                                   all at once, and check they still connect
 
 Services listening on 127.0.0.1 are published to your mesh as they appear, so
 starting Ollama or a dev server is the whole procedure. Your mesh is trusted

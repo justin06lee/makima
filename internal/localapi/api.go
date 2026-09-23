@@ -97,6 +97,13 @@ type Status struct {
 	Filtering bool      `json:"filtering"`
 	Dropped   uint64    `json:"dropped"`
 	Since     time.Time `json:"since"`
+
+	// Update is how this machine's move to another release is going, nil
+	// when none is under way and the last one did not fail.
+	Update *netmap.UpdateStatus `json:"update,omitempty"`
+
+	// ServerVersion is the release the control plane runs, as it last said.
+	ServerVersion string `json:"server_version,omitempty"`
 }
 
 // NodeInfo is this machine's own entry.
@@ -133,6 +140,11 @@ type PeerInfo struct {
 	Services []netmap.Service `json:"services,omitempty"`
 	Routes   []netip.Prefix   `json:"routes,omitempty"`
 	ExitNode bool             `json:"exit_node"`
+
+	// Version is the release the peer runs, empty for one from before peers
+	// said, and Update how its move to another is going.
+	Version string               `json:"version,omitempty"`
+	Update  *netmap.UpdateStatus `json:"update,omitempty"`
 }
 
 // SSHInfo is the built-in SSH server's state.
@@ -203,6 +215,25 @@ type PairRequest struct {
 	// Seconds is how long to hold a window open. Zero means the default.
 	Seconds int `json:"seconds,omitempty"`
 }
+
+// UpdateRequest moves every machine in the network to a release, or with
+// Local only this one.
+type UpdateRequest struct {
+	Tag   string `json:"tag"`
+	Local bool   `json:"local,omitempty"`
+}
+
+// UpdateResult is what an update request became: the network's order, or an
+// update of this machine alone.
+type UpdateResult struct {
+	Tag   string `json:"tag"`
+	Order uint64 `json:"order,omitempty"`
+	Local bool   `json:"local,omitempty"`
+}
+
+// ErrNoRemoteUpdates is a control plane too old to pass an update on to the
+// other machines; this one can still be updated by itself.
+var ErrNoRemoteUpdates = errors.New("the control plane runs a makima from before remote updates, so it cannot pass an update on")
 
 // PairedResult is the machine on the other end of a completed pairing.
 type PairedResult struct {
@@ -307,6 +338,10 @@ type Backend interface {
 	SetAdvertiseExit(on bool) error
 
 	AllowFirewall() (netcfg.Report, error)
+
+	// RequestUpdate moves every machine in the network to a release, or
+	// only this one when local is set or there is no control plane.
+	RequestUpdate(ctx context.Context, tag string, local bool) (UpdateResult, error)
 }
 
 // Server exposes a Backend over HTTP.
@@ -484,6 +519,22 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, okBody())
+	})
+
+	// Moving the network to another release. Behind the write gate like the
+	// rest: it is the socket's owner deciding what every machine runs.
+	mux.HandleFunc("POST /api/update", func(w http.ResponseWriter, r *http.Request) {
+		var req UpdateRequest
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		res, err := s.backend.RequestUpdate(r.Context(), req.Tag, req.Local)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
 	})
 
 	mux.HandleFunc("POST /api/firewall/allow", func(w http.ResponseWriter, r *http.Request) {

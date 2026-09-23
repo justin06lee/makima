@@ -71,10 +71,13 @@ func (b *liveBackend) AllowFirewall() (netcfg.Report, error) { return netcfg.Rep
 // Pairing has no part in this test — it exercises the publish-and-reach chain
 // — but the interface is what the daemon has to satisfy, so it is stubbed
 // rather than narrowed.
-func (b *liveBackend) Ping(string) (Ping, error)             { return Ping{}, nil }
-func (b *liveBackend) SetInbox(string, bool) error           { return nil }
-func (b *liveBackend) SetSSH(bool, []string, string) error   { return nil }
-func (b *liveBackend) SetOwner(string) error                 { return nil }
+func (b *liveBackend) Ping(string) (Ping, error)           { return Ping{}, nil }
+func (b *liveBackend) SetInbox(string, bool) error         { return nil }
+func (b *liveBackend) SetSSH(bool, []string, string) error { return nil }
+func (b *liveBackend) SetOwner(string) error               { return nil }
+func (b *liveBackend) RequestUpdate(context.Context, string, bool) (UpdateResult, error) {
+	return UpdateResult{}, nil
+}
 func (b *liveBackend) OpenPairing(int) (PairingState, error) { return PairingState{}, nil }
 func (b *liveBackend) ClosePairing()                         {}
 func (b *liveBackend) Pair(context.Context, string) (PairedResult, error) {

@@ -6,6 +6,9 @@ on:
 
 permissions:
   contents: write
+  # The relay's container image goes to ghcr.io, which the default token
+  # cannot write to without this.
+  packages: write
 
 jobs:
   release:

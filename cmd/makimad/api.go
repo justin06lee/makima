@@ -53,6 +53,9 @@ func (n *node) Status() localapi.Status {
 	if o := n.ownerLocked(); o != nil {
 		st.Owner = o.Name
 	}
+	if v, ok := n.serverVersion.Load().(string); ok {
+		st.ServerVersion = v
+	}
 
 	// The approved half comes back in our own netmap entry rather than from
 	// anything local, which is the point: what this node asked for and what
@@ -76,6 +79,8 @@ func (n *node) Status() localapi.Status {
 			Services: p.Services,
 			ExitNode: p.OffersExit(),
 			Path:     "no path",
+			Version:  p.Version,
+			Update:   p.Update,
 		}
 		for _, r := range p.AllowedIPs {
 			if !netmap.IsDefaultHalf(r) {
@@ -85,6 +90,10 @@ func (n *node) Status() localapi.Status {
 		peers = append(peers, info)
 	}
 	n.mu.Unlock()
+
+	// Taken outside n.mu: setUpdateStatus holds updMu and then kicks the
+	// poll, and the two locks are never held together.
+	st.Update = n.updateStatus()
 
 	// Path state lives in the socket, not the config, and is keyed by node key
 	// rather than name.

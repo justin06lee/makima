@@ -139,6 +139,29 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, s.store.Relays())
 	})
 
+	mux.HandleFunc("GET /admin/update", func(w http.ResponseWriter, r *http.Request) {
+		o, ok := s.store.UpdateOrdered()
+		if !ok {
+			writeJSON(w, http.StatusOK, nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, o)
+	})
+
+	post("/admin/update", func(w http.ResponseWriter, body []byte) error {
+		var req UpdateRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return err
+		}
+		o, err := s.store.RequestUpdate("admin", req.Tag)
+		if err != nil {
+			return err
+		}
+		s.log.Printf("update: every node asked to move to %s (order %d)", o.Tag, o.ID)
+		writeJSON(w, http.StatusOK, o)
+		return nil
+	})
+
 	mux.HandleFunc("GET /admin/ddns", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.store.DDNSState())
 	})

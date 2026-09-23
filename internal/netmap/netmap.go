@@ -93,7 +93,37 @@ type Node struct {
 	// config file. Keeping it off the wire is therefore enforced in
 	// control.Client.PollMap, not by the absence of a field.
 	PresharedKey key.Shared `json:"psk,omitzero"`
+
+	// Version is the makima release this node runs, as it last reported it.
+	// Empty for a node running a makima from before nodes said.
+	Version string `json:"version,omitempty"`
+
+	// Update is how this node's move to another version is going, while one
+	// is under way or after one failed. Nil the rest of the time.
+	Update *UpdateStatus `json:"update,omitempty"`
 }
+
+// UpdateStatus is one node's progress towards a version it was asked to run.
+type UpdateStatus struct {
+	// Tag is the release being moved to.
+	Tag string `json:"tag"`
+
+	// State is one of the Update* constants.
+	State string `json:"state"`
+
+	// Error says why, when State is UpdateFailed.
+	Error string `json:"error,omitempty"`
+}
+
+// The states an update passes through. Installing covers the download, the
+// checksum and the dry run of the new daemon; restarting is the moment it
+// has been swapped in and the node is about to come back as the new version,
+// which it then reports through Version rather than through a state.
+const (
+	UpdateInstalling = "installing"
+	UpdateRestarting = "restarting"
+	UpdateFailed     = "failed"
+)
 
 // Service is one port a node publishes on the mesh.
 type Service struct {
