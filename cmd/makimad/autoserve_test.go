@@ -236,3 +236,21 @@ func TestSettlerIgnoresPortsThatBlink(t *testing.T) {
 		}
 	}
 }
+
+// The pattern from the Mac's log the night the mesh kept stalling: firefox on
+// :2828 and opencode on :4096 present on one scan and gone the next, over and
+// over. Each flip used to be a netmap for every node. Now neither is ever
+// published, and ollama, which stays up, is published throughout.
+func TestSettlerNeverPublishesAPortThatFlipsEveryScan(t *testing.T) {
+	s := newSettler()
+	s.observe(listening(11434))
+	for i := range 20 {
+		found := []uint16{11434}
+		if i%2 == 0 {
+			found = append(found, 2828, 4096)
+		}
+		if got := ports(s.observe(listening(found...))); !slices.Equal(got, []uint16{11434}) {
+			t.Fatalf("scan %d published %v", i, got)
+		}
+	}
+}

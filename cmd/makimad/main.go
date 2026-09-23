@@ -391,7 +391,7 @@ func run(opts options, upd *update.Installer) error {
 	// The inbox and the SSH server both bind the mesh address, so they can
 	// start as soon as there is one — the same moment published ports can.
 	n.applyInbox()
-	n.applySSH(ctx)
+	n.applySSH(ctx, true)
 
 	if n.autoServe {
 		log.Print("auto-serve: on — services on 127.0.0.1 are published to your mesh as they appear")
