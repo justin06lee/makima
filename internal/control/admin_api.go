@@ -21,6 +21,19 @@ type RelayRequest struct {
 	Key key.Public `json:"key,omitzero"`
 }
 
+// DDNSRequest starts keeping a DuckDNS name pointed at this server. Port zero
+// means the port the server listens on.
+type DDNSRequest struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
+	Port  int    `json:"port,omitempty"`
+}
+
+// DDNSSetResponse is the address every node is now told about.
+type DDNSSetResponse struct {
+	URL string `json:"url"`
+}
+
 // ControlURLRequest adds or removes one of the server's other addresses.
 type ControlURLRequest struct {
 	URL string `json:"url"`
@@ -124,6 +137,35 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /admin/relay", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.store.Relays())
+	})
+
+	mux.HandleFunc("GET /admin/ddns", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.store.DDNSState())
+	})
+
+	post("/admin/ddns", func(w http.ResponseWriter, body []byte) error {
+		var req DDNSRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return err
+		}
+		port := req.Port
+		if port == 0 {
+			port = s.listenPort
+		}
+		u, err := s.store.SetDDNS(DDNS{Name: req.Name, Token: req.Token, Port: port})
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, DDNSSetResponse{URL: u})
+		return nil
+	})
+
+	post("/admin/ddns/off", func(w http.ResponseWriter, body []byte) error {
+		if err := s.store.ClearDDNS(); err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, okResponse())
+		return nil
 	})
 
 	mux.HandleFunc("GET /admin/urls", func(w http.ResponseWriter, r *http.Request) {

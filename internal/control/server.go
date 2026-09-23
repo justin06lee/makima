@@ -33,7 +33,14 @@ type Server struct {
 	// relay is the relay carried on this server's own port, nil when it
 	// carries none.
 	relay http.Handler
+
+	// listenPort is the port this server answers on, which a DuckDNS name is
+	// assumed to be forwarded to unless told otherwise.
+	listenPort int
 }
+
+// SetListenPort records the port this server answers on.
+func (s *Server) SetListenPort(port int) { s.listenPort = port }
 
 // NewServer wires handlers onto a store.
 func NewServer(store *Store, logger *log.Logger) *Server {

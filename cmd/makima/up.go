@@ -591,32 +591,31 @@ func guessReachableAddr() string {
 }
 
 // warnIfUnreachable says so when the mesh is being held somewhere the rest of
-// the world cannot get to.
+// the world cannot get to, and what makes it reachable.
 //
-// The one thing about self-hosting that cannot be automated away. A machine
-// behind a home NAT can hold a mesh perfectly well for machines inside the
-// house, and a laptop that leaves will keep its tunnel but stop learning about
-// changes. Better said now than discovered in a hotel.
+// The one thing about self-hosting that cannot be automated away: a router
+// has to let the traffic in. Everything else — a name that follows the home
+// address, every node learning it, the relay riding along — makima does once
+// asked. Better said now than discovered in a hotel.
 func warnIfUnreachable(addr string) {
 	ip, err := netip.ParseAddr(addr)
 	if err != nil || !ip.IsPrivate() {
 		return
 	}
 	fmt.Println()
-	fmt.Printf("  ⚠ This network only works from inside this building's network.\n\n")
-	fmt.Printf("    %s is a private address. A machine somewhere else cannot reach it, so\n", addr)
-	fmt.Println("    'makima join' will fail from anywhere but here — a laptop has to be on this")
-	fmt.Println("    network to be added, and once added it can only find its way back home")
-	fmt.Println("    through a relay.")
+	fmt.Printf("  ⚠ For now, this network only works inside this building.\n\n")
+	fmt.Printf("    %s is a private address, so a machine somewhere else cannot reach it.\n", addr)
+	fmt.Println("    Machines added here keep working when they leave, but lose track of the")
+	fmt.Println("    others until they are back.")
 	fmt.Println()
-	fmt.Println("    Two ways out. Run 'makima up' on a machine with a public address instead —")
-	fmt.Println("    any cheap VPS — and join this one to that; it becomes the relay too.")
+	fmt.Println("    To reach it from anywhere, give it a name and let the traffic in:")
 	fmt.Println()
-	fmt.Println("    Or, if something already carries traffic into this network for you — a")
-	fmt.Printf("    reverse proxy, a Cloudflare tunnel, a port forward — point it at port %d\n", serverPort())
-	fmt.Printf("    here and re-run with the name it answers on:\n")
+	fmt.Println("      1. get a free name at https://www.duckdns.org, then run here:")
+	fmt.Println("           sudo makima-server ddns set -name NAME")
+	fmt.Printf("      2. forward TCP %d on your router to this machine — the command above\n", serverPort())
+	fmt.Println("         prints exactly what to forward.")
 	fmt.Println()
-	fmt.Println("      makima up -advertise https://makima.example.dev")
+	fmt.Println("    Every machine learns the name on its own, and the relay rides the same port.")
 }
 
 // waitForPeers gives the first netmap a moment to land.

@@ -54,6 +54,11 @@ type State struct {
 	// to every node so it can fall back to them. See MapResponse.ControlURLs.
 	ControlURLs []string `json:"control_urls,omitempty"`
 
+	// DDNS is a DuckDNS name kept pointed at this server. Its URL is one of
+	// ControlURLs. The token lives here, in a file only root can read, beside
+	// the server's own private key.
+	DDNS *DDNS `json:"ddns,omitempty"`
+
 	// Domain is the DNS suffix mesh names live under.
 	Domain string `json:"domain,omitempty"`
 
@@ -191,6 +196,11 @@ type Store struct {
 	// out when no other relay is registered. Not persisted: it exists exactly
 	// as long as the process serving it does.
 	builtinRelay netmap.Relay
+
+	// ddnsKick asks RunDDNS to refresh now, and ddnsStatus is what its last
+	// refresh found. Neither is persisted.
+	ddnsKick   chan struct{}
+	ddnsStatus DDNSStatus
 }
 
 // DefaultPrefix is where a new network's addresses come from: makima's own
@@ -202,7 +212,7 @@ var DefaultPrefix = netip.MustParsePrefix("10.77.0.0/16")
 // OpenStore loads state from path, creating it — and the control plane's
 // identity — on first run.
 func OpenStore(path string) (*Store, error) {
-	s := &Store{path: path, changed: make(chan struct{})}
+	s := &Store{path: path, changed: make(chan struct{}), ddnsKick: make(chan struct{}, 1)}
 
 	b, err := os.ReadFile(path)
 	switch {

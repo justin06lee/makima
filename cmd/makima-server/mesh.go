@@ -181,8 +181,8 @@ func listRelays(args []string) error {
 // way in — a public name, a tunnel — and this is how every node learns it,
 // without being re-invited.
 func urlsCmd(args []string) error {
-	if len(args) == 0 {
-		return listURLs(nil)
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return listURLs(args)
 	}
 	switch args[0] {
 	case "add":

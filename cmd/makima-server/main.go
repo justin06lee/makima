@@ -18,10 +18,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -63,6 +65,8 @@ func main() {
 		err = relayCmd(os.Args[2:])
 	case "urls":
 		err = urlsCmd(os.Args[2:])
+	case "ddns":
+		err = ddnsCmd(os.Args[2:])
 	case "routes":
 		err = routesCmd(os.Args[2:])
 	case "acl":
@@ -107,6 +111,9 @@ admitting machines:
   makima-server tags    -name N -tags t1,t2
 
 reaching this server from anywhere:
+  makima-server ddns set     -name NAME [-token T]   a free NAME.duckdns.org, kept pointed here
+  makima-server ddns                                 how that is going
+  makima-server ddns off
   makima-server urls add     -url http://NAME:8080   another address nodes can use
   makima-server urls ls
   makima-server urls rm      -url http://NAME:8080
@@ -147,6 +154,11 @@ func serve(args []string) error {
 		return err
 	}
 	handlers := control.NewServer(store, log.Default())
+	if _, p, err := net.SplitHostPort(*addr); err == nil {
+		if port, err := strconv.Atoi(p); err == nil {
+			handlers.SetListenPort(port)
+		}
+	}
 
 	// On by default, because a relay is what lets two machines that cannot
 	// reach each other directly still connect — and this is the one machine
@@ -192,6 +204,8 @@ func serve(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	go control.RunDDNS(ctx, store, log.Default())
 
 	go func() {
 		<-ctx.Done()

@@ -33,6 +33,26 @@ func (c *AdminClient) Relays() ([]netmap.Relay, error) {
 	return out, nil
 }
 
+// DDNS reports the DuckDNS name and how keeping it current is going.
+func (c *AdminClient) DDNS() (DDNSStatus, error) {
+	var st DDNSStatus
+	err := c.call(http.MethodGet, "/admin/ddns", nil, &st)
+	return st, err
+}
+
+// SetDDNS starts keeping a DuckDNS name pointed at the server, returning the
+// address every node is now told about.
+func (c *AdminClient) SetDDNS(name, token string, port int) (string, error) {
+	var resp DDNSSetResponse
+	err := c.call(http.MethodPost, "/admin/ddns", DDNSRequest{Name: name, Token: token, Port: port}, &resp)
+	return resp.URL, err
+}
+
+// ClearDDNS stops it.
+func (c *AdminClient) ClearDDNS() error {
+	return c.call(http.MethodPost, "/admin/ddns/off", struct{}{}, nil)
+}
+
 // ControlURLs lists the server's other addresses.
 func (c *AdminClient) ControlURLs() ([]string, error) {
 	var out []string
