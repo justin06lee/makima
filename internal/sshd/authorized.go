@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/netip"
+	"slices"
 	"os"
 	"strings"
 	"sync"
@@ -115,6 +116,24 @@ func (k *Keys) Set(ctx context.Context, sources []Source) error {
 		go k.loop(bg)
 	})
 	return err
+}
+
+// Ensure is Set for callers that run often: it reads the sources only when
+// they differ from the ones in force, and otherwise leaves re-reading to the
+// background refresh.
+//
+// The daemon applies its SSH settings on every netmap. With Set there, a
+// github: source was fetched from GitHub, synchronously, every time anything
+// in the mesh changed — holding up the netmap behind a web request, and
+// asking GitHub for the same keys every few seconds.
+func (k *Keys) Ensure(ctx context.Context, sources []Source) error {
+	k.mu.RLock()
+	same := !k.updated.IsZero() && slices.Equal(k.sources, sources)
+	k.mu.RUnlock()
+	if same {
+		return nil
+	}
+	return k.Set(ctx, sources)
 }
 
 // Close stops refreshing.

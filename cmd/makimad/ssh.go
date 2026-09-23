@@ -21,7 +21,9 @@ import (
 // one should never be something somebody discovers they had.
 
 // applySSH starts, restarts or stops the SSH server to match the config.
-func (n *node) applySSH(ctx context.Context) {
+// reread says to read the key sources again even if they have not changed,
+// which somebody who just ran `makima sshd` expects and a netmap does not.
+func (n *node) applySSH(ctx context.Context, reread bool) {
 	if n.ssh == nil {
 		return
 	}
@@ -57,7 +59,11 @@ func (n *node) applySSH(ctx context.Context) {
 	for _, s := range sources {
 		srcs = append(srcs, sshd.Source(s))
 	}
-	if err := n.sshKeys.Set(ctx, srcs); err != nil {
+	set := n.sshKeys.Ensure
+	if reread {
+		set = n.sshKeys.Set
+	}
+	if err := set(ctx, srcs); err != nil {
 		log.Printf("ssh: %v", err)
 	}
 
@@ -114,7 +120,7 @@ func (n *node) SetSSH(on bool, keys []string, userName string) error {
 		return err
 	}
 
-	n.applySSH(context.Background())
+	n.applySSH(context.Background(), true)
 
 	if on {
 		if _, active, _, _ := n.ssh.Status(); !active {

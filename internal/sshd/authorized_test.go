@@ -187,3 +187,48 @@ func TestParseAuthorizedKeysRejectsRubbish(t *testing.T) {
 		t.Error("a malformed key file parsed without error")
 	}
 }
+
+// Ensure runs on every netmap, so it must not read the sources again when
+// they are the same ones: for a github: source that is a web request each
+// time anything in the mesh changes. The background refresh picks changes up;
+// a different set of sources is read at once.
+func TestEnsureReadsOnlyWhenTheSourcesChange(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "authorized_keys")
+	other := filepath.Join(dir, "more_keys")
+	first, second, third := testKey(t), testKey(t), testKey(t)
+	if err := os.WriteFile(file, ssh.MarshalAuthorizedKey(first), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, ssh.MarshalAuthorizedKey(third), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	k := quietKeys()
+	defer k.Close()
+	if err := k.Ensure(context.Background(), []Source{Source(file)}); err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow(first) {
+		t.Fatal("the first read did not happen")
+	}
+
+	// The file changes, and another netmap arrives: not read again.
+	if err := os.WriteFile(file, ssh.MarshalAuthorizedKey(second), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Ensure(context.Background(), []Source{Source(file)}); err != nil {
+		t.Fatal(err)
+	}
+	if k.Allow(second) || !k.Allow(first) {
+		t.Fatal("an unchanged set of sources was read again")
+	}
+
+	// A different set is read straight away, and Set always reads.
+	if err := k.Ensure(context.Background(), []Source{Source(file), Source(other)}); err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow(second) || !k.Allow(third) {
+		t.Fatal("a changed set of sources was not read")
+	}
+}
