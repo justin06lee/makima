@@ -32,6 +32,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/update"
 )
@@ -113,7 +114,7 @@ running it:
 admitting machines:
   makima-server authkey [-reusable] [-expiry 24h] [-tags tag1,tag2]
   makima-server nodes
-  makima-server forget  -name N     remove a machine entirely
+  makima-server forget  -name N     remove a machine entirely (or -id N, when names repeat)
   makima-server expire  -name N     make it re-authenticate, keeping its address
   makima-server tags    -name N -tags t1,t2
 
@@ -382,15 +383,16 @@ func forget(args []string) error {
 	statePath := fs.String("state", DefaultStatePath, "path to control plane state")
 	socketPath := fs.String("socket", "", "admin socket path (default: beside the state file)")
 	name := fs.String("name", "", "node to remove")
+	id := fs.Uint64("id", 0, "node to remove, by the ID `makima-server nodes` shows")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *name == "" {
-		return fmt.Errorf("forget needs -name")
+	if *name == "" && *id == 0 {
+		return fmt.Errorf("forget needs -name or -id")
 	}
 
 	if admin, live := control.DialAdmin(sock(*socketPath, *statePath)); live {
-		if err := admin.Forget(*name); err != nil {
+		if err := admin.ForgetNode(*name, netmap.NodeID(*id)); err != nil {
 			return err
 		}
 	} else {
@@ -398,12 +400,16 @@ func forget(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := store.Forget(*name); err != nil {
+		if err := store.ForgetNode(*name, netmap.NodeID(*id)); err != nil {
 			return err
 		}
 	}
 
-	fmt.Printf("removed %s; every other node will drop it on its next netmap\n", *name)
+	what := *name
+	if *id != 0 {
+		what = fmt.Sprintf("node %d", *id)
+	}
+	fmt.Printf("removed %s; every other node will drop it on its next netmap\n", what)
 	return nil
 }
 

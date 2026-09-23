@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -895,20 +896,54 @@ func (s *Store) Nodes() []Node {
 
 // Forget removes a node by name.
 func (s *Store) Forget(name string) error {
+	return s.ForgetNode(name, 0)
+}
+
+// ForgetNode removes one node: by ID when id is non-zero, otherwise by name —
+// but only when exactly one node has that name.
+//
+// Names are not unique. A machine that joined again under a new identity, or
+// whose hostname changed and changed back, leaves an older entry of the same
+// name behind, and removing every match would take the live one with it: a
+// machine thrown out of its own network for tidying up. So an ambiguous name
+// is refused, with the IDs to choose from.
+func (s *Store) ForgetNode(name string, id netmap.NodeID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	kept := s.state.Nodes[:0]
-	found := false
+	var matches []*Node
 	for _, n := range s.state.Nodes {
-		if n.Name == name {
-			found = true
-			continue
+		if (id != 0 && n.ID == id) || (id == 0 && n.Name == name) {
+			matches = append(matches, n)
 		}
-		kept = append(kept, n)
 	}
-	if !found {
+	switch {
+	case len(matches) == 0 && id != 0:
+		return fmt.Errorf("no node with id %d", id)
+	case len(matches) == 0:
 		return fmt.Errorf("no node named %q", name)
+	case len(matches) > 1:
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d nodes are named %q — say which with -id:", len(matches), name)
+		for _, n := range matches {
+			seen := "never seen"
+			if !n.LastSeen.IsZero() {
+				seen = "last seen " + n.LastSeen.Local().Format("2006-01-02 15:04")
+			}
+			if n.Online() {
+				seen = "online now"
+			}
+			fmt.Fprintf(&b, "\n  -id %d  %s  %s", n.ID, n.Address.Addr(), seen)
+		}
+		return errors.New(b.String())
+	}
+
+	gone := matches[0]
+	kept := s.state.Nodes[:0]
+	for _, n := range s.state.Nodes {
+		if n != gone {
+			kept = append(kept, n)
+		}
 	}
 	s.state.Nodes = kept
 	if err := s.save(); err != nil {

@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-func aps(ss ...string) []netip.AddrPort {
-	out := make([]netip.AddrPort, 0, len(ss))
+func aps(ss ...string) []netip.Addr {
+	out := make([]netip.Addr, 0, len(ss))
 	for _, s := range ss {
-		out = append(out, netip.MustParseAddrPort(s))
+		out = append(out, netip.MustParseAddrPort(s).Addr())
 	}
 	return out
 }
