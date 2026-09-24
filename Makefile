@@ -21,7 +21,13 @@ VERSION := $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null
 # It exists so that the number is in one place. Two files used to hold it by
 # hand, and a hand-held version number is one that is right until the first
 # release nobody remembered to edit it for.
+#
+# It is handed to Tauri at build time rather than written into those files.
+# Writing it made every build after a release modify two tracked files, so the
+# next build — and every binary it stamped — called itself v0.3.0-dirty. The
+# number in the files is only what a bare `bun run tauri dev` falls back to.
 APP_VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//' || echo 0.0.0)
+APP_CONFIG  := --config '{"version":"$(APP_VERSION)"}'
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 # Platforms a release is built for. One line, so adding a platform is a
@@ -192,12 +198,8 @@ SIDECARS := desktop/src-tauri/binaries
 BUNDLE   := desktop/src-tauri/target/release/bundle
 APP      := /Applications/makima.app
 
-# The bundle's version, written from the last release tag into the two files
-# that carry it.
+# The versions a build is about to stamp. Nothing is written: see APP_CONFIG.
 app-version:
-	@for f in desktop/package.json desktop/src-tauri/tauri.conf.json; do \
-		sed -i.bak 's/^\(  "version": \)"[^"]*"/\1"$(APP_VERSION)"/' $$f && rm -f $$f.bak; \
-	done
 	@echo "  version $(APP_VERSION) (app bundle), $(VERSION) (binaries)"
 
 sidecars: kits
@@ -241,10 +243,10 @@ app: app-build stop app-place reset-permissions trusted-copy start app-open
 # dmg` produces one on purpose.
 app-build: app-version sidecars
 	@cd desktop && bun install --frozen-lockfile && \
-		if [ "$$(uname -s)" = Darwin ]; then bun run tauri build --bundles app; else bun run tauri build; fi
+		if [ "$$(uname -s)" = Darwin ]; then bun run tauri build $(APP_CONFIG) --bundles app; else bun run tauri build $(APP_CONFIG); fi
 
 dmg: app-version sidecars
-	@cd desktop && bun install --frozen-lockfile && bun run tauri build --bundles dmg
+	@cd desktop && bun install --frozen-lockfile && bun run tauri build $(APP_CONFIG) --bundles dmg
 
 app-install: stop app-place reset-permissions trusted-copy start app-open
 
@@ -281,7 +283,7 @@ app-skip:
 # root and without a tunnel. Two processes; this runs the second.
 app-dev: app-version sidecars
 	@echo "  run 'go run ./desktop/devserver' in another terminal first"
-	@cd desktop && MAKIMA_GUI_SOCKET=/tmp/makima-dev.sock bun run tauri dev
+	@cd desktop && MAKIMA_GUI_SOCKET=/tmp/makima-dev.sock bun run tauri dev $(APP_CONFIG)
 
 release-clean:
 	@rm -rf $(RELEASE)
