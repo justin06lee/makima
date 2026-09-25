@@ -194,6 +194,10 @@ type node struct {
 	exitMu      sync.Mutex
 	exitProblem string
 
+	// sshProblem is why the SSH server is not running although switched
+	// on. Guarded by mu.
+	sshProblem string
+
 	// dnsMu guards dns and resolver, which the poll loop starts and stops
 	// while status requests ask whether they are running.
 	dnsMu sync.Mutex

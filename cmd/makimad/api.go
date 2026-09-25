@@ -157,6 +157,9 @@ func (n *node) Status() localapi.Status {
 		st.SSH.Sources = append([]string(nil), n.file.SSHKeys...)
 		userName := n.file.SSHUser
 		own := n.ownerLocked()
+		if n.file.SSH && !active {
+			st.SSH.Error = n.sshProblem
+		}
 		n.mu.Unlock()
 
 		if u, err := resolveSSHUser(userName, own); err == nil {
@@ -410,7 +413,29 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		})
 	}
 
-	// 9. An exit node that was selected but is not usable.
+	// 9. The built-in SSH server, switched on and not running. It says why
+	// in the log and nowhere else, and it is exactly the thing somebody
+	// finds out about only when they are away and need it.
+	n.mu.Lock()
+	sshOn, sshWhy := n.file.SSH, n.sshProblem
+	n.mu.Unlock()
+	if sshOn && n.ssh != nil {
+		if _, active, _, _ := n.ssh.Status(); !active {
+			c := localapi.Check{Name: "SSH", Detail: "the built-in ssh server is switched on but not running"}
+			if sshWhy != "" {
+				c.Detail += ": " + sshWhy
+			}
+			switch {
+			case strings.Contains(sshWhy, "nobody owns"):
+				c.Fix = "sudo makima owner <user>   # or: sudo makima sshd -on -user <user>"
+			case strings.Contains(sshWhy, "authorized keys"):
+				c.Fix = "sudo makima sshd -on -keys github:<you>   # or a path to an authorized_keys file"
+			}
+			add(c)
+		}
+	}
+
+	// 10. An exit node that was selected but is not usable.
 	if exitNode != "" {
 		peer, found := findPeer(peers, exitNode)
 		switch {

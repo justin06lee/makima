@@ -24,7 +24,7 @@ func TestANewServerPicksAndRecordsItsPort(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "control.json")
 	occupy(t, DefaultPort) // tenet's case: 8080 already had a server on it
 
-	ln, port, err := ListenControl(state, "")
+	ln, port, err := ListenControl(state, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestANewServerPicksAndRecordsItsPort(t *testing.T) {
 	}
 
 	// The next start comes back to it, even with the default now free.
-	ln, again, err := ListenControl(state, "")
+	ln, again, err := ListenControl(state, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestARecordedPortIsNotAbandoned(t *testing.T) {
 	if err := RecordPort(state, taken); err != nil {
 		t.Fatal(err)
 	}
-	if ln, port, err := ListenControl(state, ""); err == nil {
+	if ln, port, err := ListenControl(state, "", false); err == nil {
 		ln.Close()
 		t.Errorf("moved to %d when its recorded port was taken", port)
 	}
@@ -70,12 +70,28 @@ func TestARecordedPortIsNotAbandoned(t *testing.T) {
 // other part of makima asking afterwards hears the same port.
 func TestAnExplicitAddressIsRecorded(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "control.json")
-	ln, port, err := ListenControl(state, "127.0.0.1:0")
+	ln, port, err := ListenControl(state, "127.0.0.1:0", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ln.Close()
 	if RecordedPort(state) != port {
 		t.Errorf("recorded %d, listened on %d", RecordedPort(state), port)
+	}
+}
+
+// A network from before the port was recorded listened on DefaultPort, and
+// its machines look for it there; it does not go looking for another.
+func TestAnOlderNetworkStaysOnTheDefault(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "control.json")
+	l, err := net.Listen("tcp", ":"+strconv.Itoa(DefaultPort))
+	if err != nil {
+		// Taken already, as on this machine: exactly the case.
+	} else {
+		defer l.Close()
+	}
+	if ln, port, err := ListenControl(state, "", true); err == nil {
+		ln.Close()
+		t.Errorf("an established network moved to %d when %d was busy", port, DefaultPort)
 	}
 }
