@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/justin06lee/makima/internal/bypass"
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/dnsserver"
@@ -172,14 +173,21 @@ type node struct {
 	client     *control.Client
 	dns        *dnsserver.Server
 	resolver   *netcfg.Resolver
-	advertiser *netcfg.Advertiser
-	exitClient *netcfg.ExitClient
+	advertiser forwarder
+	exitClient exitRouter
 	pm         *portmap.Client
 	serve      *serve.Manager
 	firewall   *netcfg.Firewall
 	inbox      *drop.Receiver
 	ssh        *sshd.Server
 	sshKeys    *sshd.Keys
+
+	// binder keeps the tunnel's own sockets out of the tunnel while an exit
+	// node is in use. exitMu serialises changes to the exit-node state, and
+	// exitProblem says why a chosen exit node is not in use (guarded by mu).
+	binder      *bypass.Binder
+	exitMu      sync.Mutex
+	exitProblem string
 
 	// guiMu guards the desktop socket, which is opened at startup and
 	// reopened whenever the owner changes.
@@ -283,6 +291,7 @@ func run(opts options, upd *update.Installer) error {
 		pollKick:  make(chan struct{}, 1),
 		updater:   upd,
 		stopRun:   stopRun,
+		binder:    &bypass.Binder{},
 	}
 	n.loadUpdateFailure()
 	defer n.serve.Close()
@@ -311,6 +320,7 @@ func run(opts options, upd *update.Installer) error {
 			NodeKey:  f.NodeKey,
 			DiscoKey: f.DiscoKey,
 			Logger:   log.Default(),
+			Binder:   n.binder,
 		})
 		if err != nil {
 			return err
@@ -331,6 +341,7 @@ func run(opts options, upd *update.Installer) error {
 	if f.Managed() {
 		n.client = control.NewClient(f.LoginServer, f.ServerKey, f.MachineKey)
 		n.client.SetAlternates(f.ControlURLs)
+		n.client.SetBinder(n.binder)
 
 		// A node with a cached netmap comes up on it at once and registers
 		// from the poll loop. Registering first held the tunnel down for as
@@ -360,6 +371,9 @@ func run(opts options, upd *update.Installer) error {
 	}
 	defer engine.Close()
 	n.engine = engine
+
+	n.advertiser = netcfg.NewAdvertiser(engine.Name())
+	n.exitClient = netcfg.NewExitClient(engine.Name())
 
 	n.router = netcfg.NewRouter(engine.Name())
 	if err := n.router.SetAddr(addr); err != nil {
@@ -835,6 +849,19 @@ func (n *node) refreshEndpoints(ctx context.Context) {
 }
 
 func (n *node) shutdown() {
+	// Normal routing first, while the tunnel it pointed into still exists,
+	// and forwarding off — its firewall rules outlive the process otherwise,
+	// and the next start would add them a second time.
+	if n.exitClient != nil {
+		if err := n.exitClient.Stop(); err != nil {
+			log.Printf("warning: could not restore normal routing: %v", err)
+		}
+	}
+	if n.advertiser != nil {
+		if err := n.advertiser.Disable(); err != nil {
+			log.Printf("warning: %v", err)
+		}
+	}
 	if n.serve != nil {
 		n.serve.Close()
 	}

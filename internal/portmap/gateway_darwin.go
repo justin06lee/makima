@@ -6,30 +6,44 @@ import (
 	"strings"
 )
 
-// Gateway finds the default router on macOS.
+// DefaultRoute finds the default router on macOS, and the interface it is
+// reached through.
 //
 // Parsing `route -n get default` rather than reading the routing socket
 // directly. The syscall route is not much harder, but it is a large amount of
 // platform-specific struct decoding for a value this package needs once a
 // minute, and the command's output format has been stable for decades.
-func Gateway() (netip.Addr, error) {
+//
+// It asks for the default route itself — destination and mask both zero —
+// not for the route to 0.0.0.0, so the two halves an exit node installs into
+// the tunnel do not answer in its place.
+func DefaultRoute() (Route, error) {
 	out, err := exec.Command("route", "-n", "get", "default").Output()
 	if err != nil {
-		return netip.Addr{}, ErrNoGateway
+		return Route{}, ErrNoGateway
 	}
+	return parseRouteGet(string(out))
+}
 
-	for _, line := range strings.Split(string(out), "\n") {
+func parseRouteGet(out string) (Route, error) {
+	var r Route
+	for _, line := range strings.Split(out, "\n") {
 		field, value, ok := strings.Cut(strings.TrimSpace(line), ":")
-		if !ok || strings.TrimSpace(field) != "gateway" {
+		if !ok {
 			continue
 		}
-		addr, err := netip.ParseAddr(strings.TrimSpace(value))
-		if err != nil {
-			continue
-		}
-		if addr.Is4() {
-			return addr, nil
+		value = strings.TrimSpace(value)
+		switch strings.TrimSpace(field) {
+		case "gateway":
+			if addr, err := netip.ParseAddr(value); err == nil && addr.Is4() {
+				r.Gateway = addr
+			}
+		case "interface":
+			r.Interface = value
 		}
 	}
-	return netip.Addr{}, ErrNoGateway
+	if !r.Gateway.IsValid() {
+		return Route{}, ErrNoGateway
+	}
+	return r, nil
 }

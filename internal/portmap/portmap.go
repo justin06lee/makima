@@ -394,3 +394,19 @@ func localAddrTowards(target netip.Addr) (netip.Addr, error) {
 	}
 	return addr.Unmap(), nil
 }
+
+// Route is the machine's default route: the router, and the interface it is
+// reached through.
+type Route struct {
+	Gateway   netip.Addr
+	Interface string
+}
+
+// Gateway is the default router.
+func Gateway() (netip.Addr, error) {
+	r, err := DefaultRoute()
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return r.Gateway, nil
+}

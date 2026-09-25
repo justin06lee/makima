@@ -3,6 +3,8 @@ package magicsock
 import (
 	"net/netip"
 	"time"
+
+	"github.com/justin06lee/makima/internal/key"
 )
 
 // NetworkChanged tells the socket the machine's own network moved: a laptop
@@ -44,15 +46,30 @@ func (c *Conn) NetworkChanged() {
 	c.selfMu.Unlock()
 
 	if url != "" {
-		// setRelay keeps a connection to the same URL; clearing the URL
-		// first is what makes it dial a fresh one.
-		c.mu.Lock()
-		c.relayURL = ""
-		c.mu.Unlock()
-		c.setRelay(url, relayKey)
+		c.redialRelay(url, relayKey)
 	}
 
 	for _, ps := range states {
 		go c.probePeer(ps, true)
 	}
+}
+
+// RedialRelay replaces the relay connection with a fresh one: after the
+// socket binding changed, the old connection is going out the wrong way.
+func (c *Conn) RedialRelay() {
+	c.mu.RLock()
+	url, relayKey := c.relayURL, c.relayKey
+	c.mu.RUnlock()
+	if url != "" {
+		c.redialRelay(url, relayKey)
+	}
+}
+
+// redialRelay dials url afresh. setRelay keeps a connection to the same URL;
+// clearing the URL first is what makes it dial a fresh one.
+func (c *Conn) redialRelay(url string, relayKey key.Public) {
+	c.mu.Lock()
+	c.relayURL = ""
+	c.mu.Unlock()
+	c.setRelay(url, relayKey)
 }

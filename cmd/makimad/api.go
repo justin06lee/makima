@@ -198,6 +198,7 @@ func (n *node) Diagnose() localapi.Diagnosis {
 	services := append([]serve.Service(nil), f.Services...)
 	peers := append([]netmap.Node(nil), f.Peers...)
 	exitNode := f.ExitNode
+	exitProblem := n.exitProblem
 	managed := f.Managed()
 	domain := f.Domain
 	n.mu.Unlock()
@@ -391,20 +392,29 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		case !found:
 			add(localapi.Check{
 				Name:   "Exit node",
-				Detail: fmt.Sprintf("%q is selected but is not on this network", exitNode),
+				Detail: fmt.Sprintf("%q is selected but is not on this network, so traffic is routed normally", exitNode),
 				Fix:    "makima set -exit-node \"\"   # or check the name",
 			})
 		case !peer.OffersExit():
 			add(localapi.Check{
 				Name:   "Exit node",
-				Detail: fmt.Sprintf("%s is selected but has not been approved as an exit node", exitNode),
+				Detail: fmt.Sprintf("%s is selected but has not been approved as an exit node, so traffic is routed normally", exitNode),
 				Fix:    fmt.Sprintf("makima-server routes approve -name %s -exit", exitNode),
 			})
+		case exitProblem != "":
+			add(localapi.Check{
+				Name:   "Exit node",
+				Detail: exitProblem + ", so traffic is routed normally",
+			})
 		default:
+			detail := "routing all traffic through " + exitNode
+			if ifc, ok := n.binder.Bound(); ok {
+				detail += ", with the tunnel's own traffic kept on " + ifc.Name
+			}
 			add(localapi.Check{
 				Name:   "Exit node",
 				OK:     true,
-				Detail: "routing all traffic through " + exitNode,
+				Detail: detail,
 			})
 		}
 	}

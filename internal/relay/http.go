@@ -94,8 +94,13 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 		return nil, err
 	}
 
-	d := net.Dialer{Timeout: dialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	d := &net.Dialer{Timeout: dialTimeout}
+	var conn net.Conn
+	if c.dialer != nil {
+		conn, err = c.dialer(ctx, d, "tcp", addr)
+	} else {
+		conn, err = d.DialContext(ctx, "tcp", addr)
+	}
 	if err != nil {
 		return nil, err
 	}

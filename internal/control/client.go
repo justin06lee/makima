@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/justin06lee/makima/internal/bypass"
 	"github.com/justin06lee/makima/internal/key"
 )
 
@@ -48,19 +49,42 @@ type Client struct {
 	mu   sync.Mutex
 	urls []string
 	cur  int
+
+	// binder keeps the connections to the control plane out of an exit
+	// node's tunnel. Nil for a client that never needs to. Guarded by mu.
+	binder *bypass.Binder
 }
 
 // NewClient builds a client for a known server key.
 func NewClient(baseURL string, serverKey key.Public, machineKey key.Private) *Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.DialContext = (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext
-	return &Client{
+	c := &Client{
 		urls:       []string{strings.TrimRight(baseURL, "/")},
 		serverKey:  serverKey,
 		machineKey: machineKey,
-		http:       &http.Client{Timeout: clientTimeout, Transport: t},
 	}
+	d := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		c.mu.Lock()
+		b := c.binder
+		c.mu.Unlock()
+		return b.DialContext(ctx, d, network, address)
+	}
+	c.http = &http.Client{Timeout: clientTimeout, Transport: t}
+	return c
 }
+
+// SetBinder keeps this client's connections out of an exit node's tunnel.
+func (c *Client) SetBinder(b *bypass.Binder) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.binder = b
+}
+
+// DropConnections closes the connections kept for reuse, so the next request
+// dials afresh — after the socket binding changed, the kept ones are going
+// out the wrong way.
+func (c *Client) DropConnections() { c.http.CloseIdleConnections() }
 
 // BaseURL is the address this client is currently reaching the control plane
 // at.

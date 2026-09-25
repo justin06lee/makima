@@ -63,6 +63,10 @@ type Client struct {
 	// notify fires whenever the connection state changes, so a caller can log
 	// it or re-evaluate path selection without polling.
 	notify func(connected bool)
+
+	// dialer opens the TCP connection. Replaceable so the connection can be
+	// kept out of an exit node's tunnel; see internal/bypass.
+	dialer func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)
 }
 
 // NewClient prepares a connection to a relay. It does not dial; call Run.
@@ -87,6 +91,12 @@ func (c *Client) SetLogger(l *log.Logger) {
 // OnStateChange registers a callback for connect and disconnect. It must be
 // set before Run.
 func (c *Client) OnStateChange(fn func(connected bool)) { c.notify = fn }
+
+// SetDialer replaces how the TCP connection is opened. It must be set before
+// Run.
+func (c *Client) SetDialer(dial func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)) {
+	c.dialer = dial
+}
 
 // URL is the relay this client talks to.
 func (c *Client) URL() string { return c.url }

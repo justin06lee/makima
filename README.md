@@ -875,6 +875,12 @@ device*; `makima-server routes revoke -name gateway -exit` withdraws one, and
 it stays withdrawn.
 
 To use an exit node: `makima set -exit-node gateway`, or pick it in the app.
+Everything then leaves through it except the tunnel's own traffic —
+WireGuard's packets, the relay and the control plane — which is kept on the
+machine's real network by binding its sockets to that interface, so the
+tunnel is never sent into itself. If the exit node leaves the network or its
+offer is withdrawn, the machine goes back to routing normally; `makima doctor`
+says so.
 
 ### Not trusting your own control server
 
@@ -1242,6 +1248,7 @@ internal/stun       asking a public server what address we appear to come from
 internal/ddns       keeping a DuckDNS name pointed at the holding machine
 internal/update     moving a machine to a release, and back if it will not run
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
+internal/bypass     keeping the tunnel's own sockets out of an exit node's tunnel
 internal/serve      publishing a local port on the mesh, and nowhere else
 internal/drop       sending a file to another machine, and receiving one
 internal/sshd       a shell server that only ever listens on the mesh

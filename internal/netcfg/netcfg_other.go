@@ -37,8 +37,8 @@ func addDefaultViaInterface(iface string) error {
 
 func delDefaultViaInterface(iface string) error { return nil }
 
-func enableForwarding(iface string) error {
+func enableForwarding(iface string, mesh netip.Prefix) error {
 	return fmt.Errorf("netcfg: subnet routing is not implemented on %s", runtime.GOOS)
 }
 
-func disableForwarding(iface string) error { return nil }
+func disableForwarding(iface string, mesh netip.Prefix) error { return nil }
