@@ -826,12 +826,29 @@ Tags come from the credential a machine joined with — `makima-server authkey
 -tags server` — never from anything the machine says about itself, because a
 node that could tag itself could grant itself whatever the tag confers.
 
+A destination of `*` includes the internet through any approved exit node.
+`autogroup:internet` grants that and nothing else — the right to use an exit
+node without the right to reach its own services:
+
+```json
+{ "action": "accept", "src": ["group:laptops"], "dst": ["autogroup:internet:*"] }
+```
+
+A destination that is an address or a range grants that address or range and
+no more: `192.168.7.5:22` on a subnet router reaches that one machine behind
+it, not the router and the rest of its subnet.
+
 The policy is enforced twice, in two places, for two reasons. The control plane
 applies it when building a netmap, so a node is never even *told* about a peer
 it may not reach: a key and an address it never receives are a key and an
 address it cannot misuse. The node applies the compiled filter to inbound
 packets, because visibility cannot express ports. Enforcement is on ingress —
 a compromised sender will not filter itself.
+
+Rules say who may *start* a conversation. The answer to one a machine started
+is always let back in — the server's reply to the laptop's ssh, a website's
+reply through an exit node — so a one-way rule is one-way about who may
+connect, not about who may speak once connected.
 
 ### Reaching things that are not on the mesh
 
@@ -858,6 +875,12 @@ device*; `makima-server routes revoke -name gateway -exit` withdraws one, and
 it stays withdrawn.
 
 To use an exit node: `makima set -exit-node gateway`, or pick it in the app.
+Everything then leaves through it except the tunnel's own traffic —
+WireGuard's packets, the relay and the control plane — which is kept on the
+machine's real network by binding its sockets to that interface, so the
+tunnel is never sent into itself. If the exit node leaves the network or its
+offer is withdrawn, the machine goes back to routing normally; `makima doctor`
+says so.
 
 ### Not trusting your own control server
 
@@ -1225,6 +1248,7 @@ internal/stun       asking a public server what address we appear to come from
 internal/ddns       keeping a DuckDNS name pointed at the holding machine
 internal/update     moving a machine to a release, and back if it will not run
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
+internal/bypass     keeping the tunnel's own sockets out of an exit node's tunnel
 internal/serve      publishing a local port on the mesh, and nowhere else
 internal/drop       sending a file to another machine, and receiving one
 internal/sshd       a shell server that only ever listens on the mesh

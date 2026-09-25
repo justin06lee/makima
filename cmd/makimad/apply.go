@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"runtime"
 
+	"github.com/justin06lee/makima/internal/bypass"
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/netcfg"
@@ -115,11 +118,33 @@ func (n *node) stopDNS() {
 	}
 }
 
+// exitRouter is the part of netcfg.ExitClient the daemon uses, and
+// forwarder the part of netcfg.Advertiser — so a test can stand in for the
+// machine's routing table rather than edit it.
+type exitRouter interface {
+	Use(exitAddr netip.Addr, pins []netip.Addr, gateway netip.Addr) error
+	Stop() error
+	Active() (netip.Addr, bool)
+}
+
+type forwarder interface {
+	Enable(self netip.Addr) error
+	Disable() error
+	Enabled() bool
+}
+
 // applyExitNode reconciles both halves of exit-node behaviour.
 //
 // Advertising and using are independent: a machine can be an exit node for
 // others, use one itself, both, or neither.
+//
+// Called from the poll loop on every netmap and from the local API when
+// somebody picks an exit node, so the two are serialised: each half checks
+// what is in force and then changes it, and two of those interleaved would
+// install a redirect twice or tear down one the other just made.
 func (n *node) applyExitNode(m *netmap.NetMap) {
+	n.exitMu.Lock()
+	defer n.exitMu.Unlock()
 	n.applyAdvertise(m)
 	n.applyUseExit(m)
 }
@@ -132,15 +157,16 @@ func (n *node) applyExitNode(m *netmap.NetMap) {
 // router, which is exactly what the approval step exists to prevent.
 func (n *node) applyAdvertise(m *netmap.NetMap) {
 	approved := len(m.Self.AllowedIPs) > 0
-	if n.advertiser == nil {
-		n.advertiser = netcfg.NewAdvertiser(n.engine.Name())
-	}
-
 	if approved == n.advertiser.Enabled() {
 		return
 	}
 	if approved {
-		if err := n.advertiser.Enable(); err != nil {
+		addr, err := m.Self.Addr()
+		if err != nil {
+			log.Printf("cannot route for the mesh: %v", err)
+			return
+		}
+		if err := n.advertiser.Enable(addr); err != nil {
 			log.Printf("cannot route for the mesh: %v", err)
 			return
 		}
@@ -155,52 +181,203 @@ func (n *node) applyAdvertise(m *netmap.NetMap) {
 }
 
 // applyUseExit redirects this node's own traffic through a peer, or stops.
+//
+// When the chosen exit node leaves the netmap or loses its approval, normal
+// routing comes back. Leaving the redirect in place would send every packet
+// into a tunnel that no longer has a peer holding the default route — the
+// machine would lose the internet for as long as the setting stayed, with
+// nothing on screen saying why.
 func (n *node) applyUseExit(m *netmap.NetMap) {
-	if n.exitClient == nil {
-		n.exitClient = netcfg.NewExitClient(n.engine.Name())
-	}
-
+	n.mu.Lock()
 	want := n.file.ExitNode
+	n.mu.Unlock()
+
+	current, active := n.exitClient.Active()
+
 	if want == "" {
-		if _, active := n.exitClient.Active(); active {
-			if err := n.exitClient.Stop(); err != nil {
-				log.Printf("warning: could not restore normal routing: %v", err)
-				return
-			}
-			log.Print("no longer using an exit node")
+		if active {
+			n.stopExit("no longer using an exit node")
 		}
+		n.noteExit("")
 		return
 	}
 
 	peer, ok := findPeer(m.Peers, want)
-	if !ok {
-		log.Printf("exit node %q is not in this node's netmap; routing normally", want)
-		return
+	var refused string
+	switch {
+	case !ok:
+		refused = fmt.Sprintf("exit node %q is not in this node's netmap", want)
+	case !peer.OffersExit():
+		refused = fmt.Sprintf("%s is not an approved exit node", want)
 	}
-	if !peer.OffersExit() {
-		log.Printf("%s is not an approved exit node; routing normally", want)
-		return
-	}
-
 	addr, err := peer.Addr()
-	if err != nil {
-		return
+	if refused == "" && err != nil {
+		refused = err.Error()
 	}
-	if current, active := n.exitClient.Active(); active && current == addr {
+	if refused != "" {
+		news := n.noteExit(refused)
+		if active {
+			n.stopExit(refused + "; routing normally again")
+		} else if news {
+			log.Printf("%s; routing normally", refused)
+		}
 		return
 	}
 
-	gw, err := portmap.Gateway()
-	if err != nil {
-		log.Printf("cannot use an exit node: %v", err)
+	if active && current == addr {
 		return
 	}
 
-	if err := n.exitClient.Use(addr, peer.Endpoints, gw); err != nil {
-		log.Printf("cannot use exit node %s: %v", want, err)
+	if !active {
+		if err := n.keepTunnelOutOfTunnel(); err != nil {
+			if n.noteExit("cannot use exit node " + want + ": " + err.Error()) {
+				log.Printf("cannot use exit node %s: %v", want, err)
+			}
+			return
+		}
+	}
+
+	// A static mesh has no socket of makima's own to bind, so the exit node's
+	// configured addresses are pinned over the old gateway instead.
+	var pins []netip.Addr
+	var gw netip.Addr
+	if n.sock == nil {
+		for _, e := range peer.Endpoints {
+			pins = append(pins, e.Addr())
+		}
+		if len(pins) == 0 {
+			n.noteExit(fmt.Sprintf("cannot use exit node %s: its real address is unknown", want))
+			log.Printf("cannot use exit node %s: its real address is unknown, and redirecting the default route without keeping one reachable would cut off the tunnel itself", want)
+			return
+		}
+		if r, err := portmap.DefaultRoute(); err == nil {
+			gw = r.Gateway
+		}
+		if !gw.IsValid() {
+			n.noteExit(fmt.Sprintf("cannot use exit node %s: no default gateway to keep it reachable over", want))
+			log.Printf("cannot use exit node %s: no default gateway was found to keep it reachable over", want)
+			return
+		}
+	}
+
+	if err := n.exitClient.Use(addr, pins, gw); err != nil {
+		if !active {
+			n.releaseTunnel()
+		}
+		if n.noteExit("cannot use exit node " + want + ": " + err.Error()) {
+			log.Printf("cannot use exit node %s: %v", want, err)
+		}
 		return
 	}
+	n.noteExit("")
 	log.Printf("routing all traffic through %s (%s)", peer.Name, addr)
+}
+
+// stopExit restores normal routing, then lets the tunnel's own sockets
+// follow the routing table again — in that order, so there is no moment when
+// the default route points into the tunnel and the tunnel's packets follow it.
+func (n *node) stopExit(why string) {
+	if err := n.exitClient.Stop(); err != nil {
+		// Some of the redirect may still be in place. Keeping the sockets
+		// bound keeps the tunnel's own traffic out of whatever is left.
+		log.Printf("warning: could not restore normal routing: %v", err)
+		return
+	}
+	n.releaseTunnel()
+	log.Print(why)
+}
+
+// keepTunnelOutOfTunnel binds the sockets carrying the tunnel — WireGuard's,
+// the relay's, the control plane's — to the interface the default route
+// leaves by, so that redirecting the default route into the tunnel does not
+// take them with it.
+func (n *node) keepTunnelOutOfTunnel() error {
+	if n.sock == nil {
+		return nil // a static mesh pins instead
+	}
+	ifc, err := defaultInterface()
+	if err != nil {
+		return err
+	}
+	if err := n.binder.Bind(ifc); err != nil {
+		_ = n.binder.Unbind()
+		return fmt.Errorf("keep the tunnel's own traffic on %s: %w", ifc, err)
+	}
+	n.tunnelMoved()
+	return nil
+}
+
+// releaseTunnel undoes keepTunnelOutOfTunnel.
+func (n *node) releaseTunnel() {
+	if _, bound := n.binder.Bound(); !bound {
+		return
+	}
+	if err := n.binder.Unbind(); err != nil {
+		log.Printf("warning: %v", err)
+	}
+	n.tunnelMoved()
+}
+
+// rebindExit follows the machine to its new default interface after a
+// network change, while an exit node is in use: the socket bound to the Wi-Fi
+// that is gone would send nothing.
+func (n *node) rebindExit() {
+	n.exitMu.Lock()
+	defer n.exitMu.Unlock()
+	was, bound := n.binder.Bound()
+	if !bound {
+		return
+	}
+	ifc, err := defaultInterface()
+	if err != nil {
+		log.Printf("exit node: %v; keeping the tunnel on %s", err, was)
+		return
+	}
+	if ifc == was {
+		return
+	}
+	if err := n.binder.Bind(ifc); err != nil {
+		log.Printf("exit node: could not move the tunnel to %s: %v", ifc, err)
+		return
+	}
+	log.Printf("exit node: the tunnel's own traffic now leaves by %s", ifc)
+}
+
+// tunnelMoved re-establishes the connections the tunnel depends on after the
+// socket binding changed: the ones already open were set up the other way.
+func (n *node) tunnelMoved() {
+	if n.sock != nil {
+		n.sock.RedialRelay()
+	}
+	if n.client != nil {
+		n.client.DropConnections()
+		n.kickPoll()
+	}
+}
+
+// defaultInterface is the interface the machine's default route leaves by.
+// A variable so a test can say where that is.
+var defaultInterface = func() (bypass.Interface, error) {
+	r, err := portmap.DefaultRoute()
+	if err != nil {
+		return bypass.Interface{}, fmt.Errorf("no default route to keep the tunnel's own traffic on")
+	}
+	ifc, err := net.InterfaceByName(r.Interface)
+	if err != nil {
+		return bypass.Interface{}, fmt.Errorf("the default route's interface %q: %w", r.Interface, err)
+	}
+	return bypass.Interface{Name: ifc.Name, Index: ifc.Index}, nil
+}
+
+// noteExit records why the chosen exit node is not in use, for the doctor,
+// and reports whether that is news — so a reason is logged once, not on every
+// netmap.
+func (n *node) noteExit(why string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	changed := n.exitProblem != why
+	n.exitProblem = why
+	return changed
 }
 
 func findPeer(peers []netmap.Node, name string) (netmap.Node, bool) {

@@ -69,48 +69,67 @@ const natComment = "makima-exit"
 // from 10.77.0.5, has no route back, and drops the reply — so the tunnel
 // looks like it works right up until nothing answers.
 //
-// Both ranges, because a network started by an older makima still hands out
-// 100.64.0.0/10 addresses.
-func enableForwarding(iface string) error {
+// Only the range this network uses. Masquerading 100.64.0.0/10 on a network
+// that lives in 10.77.0.0/16 would rewrite Tailscale's traffic on a machine
+// running both.
+func enableForwarding(iface string, mesh netip.Prefix) error {
 	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return fmt.Errorf("enable IP forwarding: %w", err)
 	}
 
-	for _, r := range []netip.Prefix{MeshRange, LegacyMeshRange} {
-		if err := run("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-s", r.String(), "!", "-o", iface,
-			"-m", "comment", "--comment", natComment,
-			"-j", "MASQUERADE"); err != nil {
-			return fmt.Errorf("install NAT rule (is iptables available?): %w", err)
-		}
+	if err := ensureRule("nat", "POSTROUTING", false,
+		"-s", mesh.String(), "!", "-o", iface,
+		"-m", "comment", "--comment", natComment, "-j", "MASQUERADE"); err != nil {
+		return fmt.Errorf("install NAT rule (is iptables available?): %w", err)
 	}
 
-	// Accept both directions explicitly. A default-DROP FORWARD chain is
-	// common on anything that has been hardened, and the masquerade rule alone
-	// would then be installed on a machine that still refuses to forward.
-	if err := run("iptables", "-A", "FORWARD", "-i", iface,
+	// Accept both directions explicitly, and first. A default-DROP FORWARD
+	// chain is common on anything that has been hardened, and so is a DROP
+	// rule at its end; appended after one, these would never be reached.
+	if err := ensureRule("filter", "FORWARD", true, "-i", iface,
 		"-m", "comment", "--comment", natComment, "-j", "ACCEPT"); err != nil {
 		return fmt.Errorf("allow forwarding from the tunnel: %w", err)
 	}
-	return run("iptables", "-A", "FORWARD", "-o", iface,
+	return ensureRule("filter", "FORWARD", true, "-o", iface,
 		"-m", "comment", "--comment", natComment, "-j", "ACCEPT")
 }
 
-func disableForwarding(iface string) error {
+// ensureRule adds an iptables rule unless it is already there — a daemon
+// killed before it could clean up leaves its rules behind, and adding them
+// again on every start would stack them up. first inserts at the top of the
+// chain rather than appending.
+func ensureRule(table, chain string, first bool, rule ...string) error {
+	check := append([]string{"-t", table, "-C", chain}, rule...)
+	if run("iptables", check...) == nil {
+		return nil
+	}
+	op := "-A"
+	if first {
+		op = "-I"
+	}
+	return run("iptables", append([]string{"-t", table, op, chain}, rule...)...)
+}
+
+func disableForwarding(iface string, mesh netip.Prefix) error {
 	var firstErr error
-	del := func(args ...string) {
-		if err := run("iptables", args...); err != nil && firstErr == nil {
-			firstErr = err
+	// Every copy, in case an earlier makima stacked several: -D removes one
+	// at a time, and succeeds until none is left.
+	del := func(table, chain string, rule ...string) {
+		args := append([]string{"-t", table, "-D", chain}, rule...)
+		for i := 0; i < 16; i++ {
+			if err := run("iptables", args...); err != nil {
+				if i == 0 && firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
 		}
 	}
 
-	for _, r := range []netip.Prefix{MeshRange, LegacyMeshRange} {
-		del("-t", "nat", "-D", "POSTROUTING",
-			"-s", r.String(), "!", "-o", iface,
-			"-m", "comment", "--comment", natComment, "-j", "MASQUERADE")
-	}
-	del("-D", "FORWARD", "-i", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
-	del("-D", "FORWARD", "-o", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
+	del("nat", "POSTROUTING", "-s", mesh.String(), "!", "-o", iface,
+		"-m", "comment", "--comment", natComment, "-j", "MASQUERADE")
+	del("filter", "FORWARD", "-i", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
+	del("filter", "FORWARD", "-o", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
 
 	// ip_forward is deliberately left on. It is a machine-wide setting that
 	// something else may depend on, and turning it off because makima happened

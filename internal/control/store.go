@@ -732,6 +732,7 @@ func (n *Node) policyNode() policy.Node {
 		Tags:      n.Tags,
 		Addresses: []netip.Prefix{n.Address},
 		Routes:    n.ApprovedRoutes,
+		Exit:      n.ExitApproved,
 	}
 }
 

@@ -15,10 +15,11 @@ import (
 //
 // On the node *using* one, the default route has to point into the tunnel.
 // That is the dangerous half: get it wrong and the machine loses the internet,
-// including the route to the exit node itself, which is a bootstrap problem
-// with no way out except a reboot. Client handles it by pinning a host route
-// to the exit node over the original gateway *before* redirecting everything
-// else, so the tunnel's own packets always have a way out.
+// including its way to the exit node itself, which is a bootstrap problem
+// with no way out except a reboot. So the tunnel's own traffic is given a way
+// out *before* everything else is redirected: its sockets are bound to the
+// physical interface, or on a static mesh, the exit node is pinned over the
+// original gateway. See ExitClient.
 
 // Advertiser makes this machine willing to route for others.
 type Advertiser struct {
@@ -26,23 +27,29 @@ type Advertiser struct {
 
 	mu      sync.Mutex
 	enabled bool
+	mesh    netip.Prefix
 }
 
 // NewAdvertiser builds one for the tunnel interface.
 func NewAdvertiser(iface string) *Advertiser { return &Advertiser{iface: iface} }
 
-// Enable turns on forwarding and masquerading.
-func (a *Advertiser) Enable() error {
+// Enable turns on forwarding and masquerading for the mesh self is on.
+func (a *Advertiser) Enable(self netip.Addr) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.enabled {
 		return nil
 	}
-	if err := enableForwarding(a.iface); err != nil {
+	mesh := MeshRange
+	if LegacyMeshRange.Contains(self) {
+		mesh = LegacyMeshRange
+	}
+	if err := enableForwarding(a.iface, mesh); err != nil {
 		return err
 	}
 	a.enabled = true
+	a.mesh = mesh
 	return nil
 }
 
@@ -54,7 +61,7 @@ func (a *Advertiser) Disable() error {
 	if !a.enabled {
 		return nil
 	}
-	err := disableForwarding(a.iface)
+	err := disableForwarding(a.iface, a.mesh)
 	a.enabled = false
 	return err
 }
@@ -67,6 +74,14 @@ func (a *Advertiser) Enabled() bool {
 }
 
 // ExitClient redirects this machine's traffic through a peer.
+//
+// Redirecting is only half of it. Once the default route points into the
+// tunnel, the tunnel's own packets have to be kept out of it, or they are
+// sent into themselves. On a node with makima's own socket that is done by
+// binding the sockets to the physical interface (internal/bypass), which the
+// caller does before Use and undoes after Stop. A hand-written static mesh has
+// no such socket — WireGuard opens its own — so there the exit node's known
+// addresses are pinned over the old gateway instead: Use's pins.
 type ExitClient struct {
 	iface string
 
@@ -74,10 +89,9 @@ type ExitClient struct {
 	active   bool
 	exitAddr netip.Addr
 
-	// pinned is the host route keeping the exit node itself reachable over the
-	// original gateway. Without it, redirecting the default route would send
-	// the tunnel's own packets into the tunnel.
-	pinned  netip.Prefix
+	// pinned are the host routes keeping a static mesh's exit node reachable
+	// over the original gateway, and gateway that gateway.
+	pinned  []netip.Prefix
 	gateway netip.Addr
 }
 
@@ -86,33 +100,46 @@ func NewExitClient(iface string) *ExitClient { return &ExitClient{iface: iface} 
 
 // Use routes all traffic through the exit node at exitAddr.
 //
-// endpoints are the exit node's real-world addresses — the ones outside the
-// tunnel — which is what has to stay routed over the physical gateway. Passing
-// none is refused rather than attempted: without a pinned route the redirect
-// would cut off the very path it depends on.
-func (c *ExitClient) Use(exitAddr netip.Addr, endpoints []netip.AddrPort, gateway netip.Addr) error {
+// Moving from one exit node to another changes no route: the default route
+// points into the tunnel either way, and which peer carries it is WireGuard's
+// business, decided by which peer holds the default-route halves. Only the
+// first Use installs anything.
+//
+// pins, with gateway, are addresses to keep routed over the original gateway
+// — for a node whose tunnel sockets cannot be bound, the exit node's own. A
+// node that binds its sockets passes none.
+func (c *ExitClient) Use(exitAddr netip.Addr, pins []netip.Addr, gateway netip.Addr) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.active && c.exitAddr == exitAddr {
+	if c.active {
+		c.exitAddr = exitAddr
 		return nil
 	}
-	if len(endpoints) == 0 {
-		return fmt.Errorf("refusing to route through %s: its real address is unknown, and redirecting the default route without pinning one would cut off the tunnel itself", exitAddr)
-	}
-	if !gateway.IsValid() {
-		return fmt.Errorf("refusing to route through %s: no default gateway was found to pin its route over", exitAddr)
+	if len(pins) > 0 && !gateway.IsValid() {
+		return fmt.Errorf("refusing to route through %s: no default gateway was found to keep it reachable over", exitAddr)
 	}
 
 	// Pin first, redirect second. The reverse order has a window in which the
 	// machine has no working route to the exit node.
-	pinned := netip.PrefixFrom(endpoints[0].Addr(), endpoints[0].Addr().BitLen())
-	if err := addRouteVia(pinned, gateway); err != nil {
-		return fmt.Errorf("pin route to exit node: %w", err)
+	var pinned []netip.Prefix
+	undo := func() {
+		for _, p := range pinned {
+			_ = delRouteVia(p, gateway)
+		}
+	}
+	for _, a := range pins {
+		p := netip.PrefixFrom(a, a.BitLen())
+		if err := addRouteVia(p, gateway); err != nil {
+			undo()
+			return fmt.Errorf("pin route to exit node: %w", err)
+		}
+		pinned = append(pinned, p)
 	}
 
 	if err := addDefaultViaInterface(c.iface); err != nil {
-		_ = delRouteVia(pinned, gateway)
+		_ = delDefaultViaInterface(c.iface)
+		undo()
 		return fmt.Errorf("redirect default route: %w", err)
 	}
 
@@ -132,15 +159,18 @@ func (c *ExitClient) Stop() error {
 		return nil
 	}
 
-	// Remove the redirect before the pin, mirroring Use. Removing the pin
+	// Remove the redirect before the pins, mirroring Use. Removing a pin
 	// first would briefly route the exit node's own address into the tunnel.
 	err := delDefaultViaInterface(c.iface)
-	if e := delRouteVia(c.pinned, c.gateway); e != nil && err == nil {
-		err = e
+	for _, p := range c.pinned {
+		if e := delRouteVia(p, c.gateway); e != nil && err == nil {
+			err = e
+		}
 	}
 
 	c.active = false
 	c.exitAddr = netip.Addr{}
+	c.pinned = nil
 	return err
 }
 

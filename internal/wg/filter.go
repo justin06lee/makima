@@ -7,6 +7,10 @@ import (
 // InboundFilter decides whether a decrypted packet may reach the host.
 type InboundFilter func(packet []byte) bool
 
+// OutboundObserver is shown every packet the host sends into the tunnel,
+// before it is encrypted. It may not change or keep the packet.
+type OutboundObserver func(packet []byte)
+
 // filteredTUN applies a policy to packets on their way out of the tunnel.
 //
 // Wrapping the TUN device rather than filtering inside WireGuard, because this
@@ -20,9 +24,27 @@ type InboundFilter func(packet []byte) bool
 // which is not what a policy about who may reach this machine has anything to
 // say about. Enforcing on ingress is also the only enforcement that means
 // anything: a compromised sender will not filter itself.
+//
+// Read is watched, though, not filtered: what this machine sends is how the
+// filter recognises the replies to it (see policy.Guard.NoteOutbound).
 type filteredTUN struct {
 	tun.Device
 	allow InboundFilter
+	saw   OutboundObserver
+}
+
+// Read passes through whatever the host sent, showing each packet to the
+// observer on the way.
+func (f *filteredTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+	n, err := f.Device.Read(bufs, sizes, offset)
+	if f.saw != nil {
+		for i := range n {
+			if end := offset + sizes[i]; end <= len(bufs[i]) {
+				f.saw(bufs[i][offset:end])
+			}
+		}
+	}
+	return n, err
 }
 
 // Write delivers the packets the filter permits and silently drops the rest.

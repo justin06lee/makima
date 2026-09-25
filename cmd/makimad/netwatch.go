@@ -53,6 +53,9 @@ func (n *node) watchNetwork(ctx context.Context) {
 
 // networkChanged drops everything learned on the old network.
 func (n *node) networkChanged(ctx context.Context) {
+	// Before the relay is redialled below, so it is redialled out of the
+	// interface the machine is on now.
+	n.rebindExit()
 	if n.sock != nil {
 		n.sock.NetworkChanged()
 		go n.refreshEndpoints(ctx)

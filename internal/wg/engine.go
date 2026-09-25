@@ -120,6 +120,10 @@ type Options struct {
 	// cheap and must not block — the policy guard swaps its rules through an
 	// atomic pointer for exactly this reason.
 	Filter InboundFilter
+
+	// Outbound is shown every packet the host sends into the tunnel, so the
+	// filter can recognise the replies to it. Same constraints as Filter.
+	Outbound OutboundObserver
 }
 
 // Up creates a TUN interface and starts WireGuard on it.
@@ -178,8 +182,12 @@ func UpOn(tunDev tun.Device, cfg Config, opts Options) (*Engine, error) {
 	// The filter wraps the device rather than the other way round, so the real
 	// TUN is still what gets closed and what reports its own name.
 	var devTUN tun.Device = tunDev
-	if opts.Filter != nil {
-		devTUN = &filteredTUN{Device: tunDev, allow: opts.Filter}
+	if opts.Filter != nil || opts.Outbound != nil {
+		allow := opts.Filter
+		if allow == nil {
+			allow = func([]byte) bool { return true }
+		}
+		devTUN = &filteredTUN{Device: tunDev, allow: allow, saw: opts.Outbound}
 	}
 
 	dev := device.NewDevice(devTUN, bind, logger)

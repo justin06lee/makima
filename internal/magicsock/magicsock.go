@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/justin06lee/makima/internal/bypass"
 	"github.com/justin06lee/makima/internal/disco"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/relay"
@@ -34,6 +35,10 @@ type Options struct {
 	DiscoKey key.Private
 
 	Logger *log.Logger
+
+	// Binder keeps the socket and the relay connection out of an exit
+	// node's tunnel. Nil for a node that never uses one.
+	Binder *bypass.Binder
 }
 
 // Conn is the socket WireGuard is given instead of a plain UDP one.
@@ -49,6 +54,12 @@ type Conn struct {
 	mu    sync.RWMutex
 	pconn *net.UDPConn
 	port  uint16
+
+	// binder binds pconn and the relay's connection to the physical
+	// interface while an exit node is in use; untrack stops it following
+	// pconn, when pconn is replaced or closed.
+	binder  *bypass.Binder
+	untrack func()
 
 	peers   map[key.Public]*peerState // by node key
 	byDisco map[key.Public]*peerState // by disco key, for probe attribution
@@ -133,6 +144,7 @@ func New(opts Options) (*Conn, error) {
 		relayIn:  make(chan relay.Packet, 256),
 		stunTx:   make(map[stun.TxID]time.Time),
 		closed:   make(chan struct{}),
+		binder:   opts.Binder,
 	}
 	c.ctx, c.ctxCancel = context.WithCancel(context.Background())
 
@@ -149,19 +161,26 @@ func New(opts Options) (*Conn, error) {
 // addresses arrive on it, and an IPv6-only network still has a path. Peers are
 // still advertised as IPv4 for now, but the socket does not need to care.
 func (c *Conn) bind(port uint16) error {
-	pc, err := net.ListenUDP("udp", &net.UDPAddr{Port: int(port)})
+	lc := net.ListenConfig{Control: c.binder.Control}
+	lp, err := lc.ListenPacket(context.Background(), "udp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("bind udp port %d: %w", port, err)
 	}
+	pc := lp.(*net.UDPConn)
 
 	actual := uint16(pc.LocalAddr().(*net.UDPAddr).Port)
+	untrack := c.binder.Track(pc)
 
 	c.mu.Lock()
-	old := c.pconn
+	old, oldUntrack := c.pconn, c.untrack
 	c.pconn = pc
 	c.port = actual
+	c.untrack = untrack
 	c.mu.Unlock()
 
+	if oldUntrack != nil {
+		oldUntrack()
+	}
 	if old != nil {
 		old.Close()
 	}
@@ -242,12 +261,16 @@ func (c *Conn) Close() error {
 	}
 
 	c.mu.Lock()
-	pconn := c.pconn
+	pconn, untrack := c.pconn, c.untrack
 	// The port is deliberately remembered. Open with zero rebinds to it, so a
 	// close-and-reopen does not silently move the node.
 	c.pconn = nil
+	c.untrack = nil
 	c.mu.Unlock()
 
+	if untrack != nil {
+		untrack()
+	}
 	if pconn != nil {
 		pconn.Close()
 	}
@@ -644,6 +667,7 @@ func (c *Conn) setRelay(url string, relayKey key.Public) {
 		ctx, newCancel = context.WithCancel(c.ctx)
 		newClient = relay.NewClient(url, relayKey, c.nodeKey)
 		newClient.SetLogger(c.log)
+		newClient.SetDialer(c.binder.DialContext)
 		newClient.OnStateChange(func(up bool) {
 			if up {
 				c.log.Printf("relay %s connected", url)

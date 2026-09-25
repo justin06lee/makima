@@ -61,11 +61,11 @@ func delDefaultViaInterface(iface string) error {
 // loading an anchor. Neither is safe to do behind an operator's back on a
 // desktop machine, so exit nodes and subnet routers are supported on Linux and
 // refused here, with an error that says so rather than a half-working setup.
-func enableForwarding(iface string) error {
+func enableForwarding(iface string, mesh netip.Prefix) error {
 	return fmt.Errorf(
 		"advertising routes or acting as an exit node needs NAT, which on macOS means editing the system pf configuration.\n" +
 			"makima will not do that to a machine behind your back. Run subnet routers and exit nodes on Linux, " +
 			"or configure pf yourself and the tunnel side will work.")
 }
 
-func disableForwarding(iface string) error { return nil }
+func disableForwarding(iface string, mesh netip.Prefix) error { return nil }

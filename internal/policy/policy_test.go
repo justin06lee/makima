@@ -311,14 +311,120 @@ func TestParseIPv6Packet(t *testing.T) {
 	copy(b[24:40], dst.AsSlice())
 	binary.BigEndian.PutUint16(b[42:44], 443)
 
-	gotSrc, gotDst, proto, port, ok := parsePacket(b)
+	p, ok := parsePacket(b)
 	if !ok {
 		t.Fatal("a well-formed IPv6 packet did not parse")
 	}
-	if gotSrc != src || gotDst != dst {
+	if p.src != src || p.dst != dst {
 		t.Error("addresses did not survive parsing")
 	}
-	if proto != protoTCP || port != 443 {
-		t.Errorf("proto %d port %d, want %d 443", proto, port, protoTCP)
+	if p.proto != protoTCP || p.dport != 443 {
+		t.Errorf("proto %d port %d, want %d 443", p.proto, p.dport, protoTCP)
+	}
+}
+
+var exitNode = Node{
+	Name:      "tenet",
+	Addresses: []netip.Prefix{netip.MustParsePrefix("10.77.0.1/32")},
+	Routes:    []netip.Prefix{netip.MustParsePrefix("192.168.7.0/24")},
+	Exit:      true,
+}
+
+var mac = node("mac", "10.77.0.5/32")
+
+// An exit node exists to forward traffic addressed to somewhere else. A
+// filter that only accepted packets addressed to the exit node itself
+// dropped every one of them, so no exit node ever carried anything.
+func TestExitNodeAcceptsWhatItForwards(t *testing.T) {
+	f := DefaultPolicy().CompileFor(exitNode, []Node{exitNode, mac})
+	from := mac.Addresses[0].Addr()
+
+	for _, to := range []string{"8.8.8.8", "1.1.1.1", "203.0.113.9", "10.78.0.1"} {
+		if !f.Allow(from, netip.MustParseAddr(to), 443) {
+			t.Errorf("the default policy refused %s through the exit node", to)
+		}
+	}
+	if !f.Allow(from, exitNode.Addresses[0].Addr(), 22) {
+		t.Error("the default policy refused the exit node itself")
+	}
+}
+
+// A node that is not an exit node must not start accepting the internet
+// just because the policy says "*".
+func TestOrdinaryNodeDoesNotForward(t *testing.T) {
+	f := DefaultPolicy().CompileFor(server, []Node{server, laptop})
+	if f.Allow(laptop.Addresses[0].Addr(), netip.MustParseAddr("8.8.8.8"), 443) {
+		t.Error("a node that is not an exit node accepted traffic for the internet")
+	}
+}
+
+// autogroup:internet grants the internet through an exit node, and nothing
+// about the exit node's own services or the mesh behind it.
+func TestInternetGrantsOnlyTheInternet(t *testing.T) {
+	p := &Policy{ACLs: []Rule{
+		{Action: "accept", Src: []string{"mac"}, Dst: []string{Internet + ":*"}},
+	}}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !p.CanSee(mac, exitNode) {
+		t.Fatal("mac cannot see the exit node it may use")
+	}
+	f := p.CompileFor(exitNode, []Node{exitNode, mac})
+	from := mac.Addresses[0].Addr()
+
+	if !f.Allow(from, netip.MustParseAddr("8.8.8.8"), 53) {
+		t.Error("the internet was refused through the exit node")
+	}
+	if f.Allow(from, exitNode.Addresses[0].Addr(), 22) {
+		t.Error("autogroup:internet granted the exit node's own ssh")
+	}
+	if f.Allow(from, netip.MustParseAddr("10.77.0.9"), 22) {
+		t.Error("autogroup:internet granted a mesh address")
+	}
+}
+
+func TestInternetIsNotASource(t *testing.T) {
+	for _, p := range []*Policy{
+		{ACLs: []Rule{{Action: "accept", Src: []string{Internet}, Dst: []string{"*:*"}}}},
+		{ACLs: []Rule{{Action: "accept", Src: []string{"*"}, Dst: []string{"autogroup:internt:*"}}}},
+	} {
+		if err := p.Validate(); err == nil {
+			t.Errorf("accepted %+v", p.ACLs[0])
+		}
+	}
+}
+
+// A rule naming one address behind a subnet router grants that address, not
+// the subnet and the router with it.
+func TestCIDRDestinationGrantsOnlyWhatItNames(t *testing.T) {
+	p := &Policy{ACLs: []Rule{
+		{Action: "accept", Src: []string{"mac"}, Dst: []string{"192.168.7.5:22"}},
+	}}
+	f := p.CompileFor(exitNode, []Node{exitNode, mac})
+	from := mac.Addresses[0].Addr()
+
+	if !f.Allow(from, netip.MustParseAddr("192.168.7.5"), 22) {
+		t.Error("the named address was refused")
+	}
+	if f.Allow(from, netip.MustParseAddr("192.168.7.6"), 22) {
+		t.Error("a neighbour of the named address was granted")
+	}
+	if f.Allow(from, exitNode.Addresses[0].Addr(), 22) {
+		t.Error("the router itself was granted by a rule naming an address behind it")
+	}
+}
+
+func TestInternetExcludesTheMesh(t *testing.T) {
+	in := func(a string) bool { return containsAddr(internet, netip.MustParseAddr(a)) }
+	for _, a := range []string{"0.0.0.1", "8.8.8.8", "10.76.255.255", "10.78.0.0", "100.63.255.255", "100.128.0.0", "192.168.1.1", "255.255.255.255"} {
+		if !in(a) {
+			t.Errorf("%s is missing from the internet", a)
+		}
+	}
+	for _, a := range []string{"10.77.0.0", "10.77.255.255", "100.64.0.1", "100.127.255.255"} {
+		if in(a) {
+			t.Errorf("%s, a mesh address, is on the internet", a)
+		}
 	}
 }

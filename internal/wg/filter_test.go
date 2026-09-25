@@ -120,3 +120,37 @@ func TestFilterDropsUninspectablePackets(t *testing.T) {
 		t.Error("a packet shorter than the offset was delivered")
 	}
 }
+
+// sendingTUN hands out a fixed batch as if the host had sent it.
+type sendingTUN struct {
+	tun.Device
+	out [][]byte
+}
+
+func (s *sendingTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+	for i, p := range s.out {
+		sizes[i] = copy(bufs[i][offset:], p)
+	}
+	return len(s.out), nil
+}
+
+// The observer sees exactly what the host sent — each packet, at its real
+// length, without the headroom wireguard-go leaves in front of it.
+func TestOutboundObserverSeesWhatTheHostSent(t *testing.T) {
+	var seen [][]byte
+	f := &filteredTUN{
+		Device: &sendingTUN{out: [][]byte{{1, 2, 3}, {4}}},
+		allow:  func([]byte) bool { return true },
+		saw:    func(p []byte) { seen = append(seen, append([]byte(nil), p...)) },
+	}
+	const offset = 16
+	bufs := [][]byte{make([]byte, 64), make([]byte, 64)}
+	sizes := make([]int, 2)
+	n, err := f.Read(bufs, sizes, offset)
+	if err != nil || n != 2 {
+		t.Fatalf("read %d, %v", n, err)
+	}
+	if len(seen) != 2 || string(seen[0]) != "\x01\x02\x03" || string(seen[1]) != "\x04" {
+		t.Errorf("observer saw %v", seen)
+	}
+}
