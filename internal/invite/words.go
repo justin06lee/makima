@@ -163,22 +163,26 @@ type WordInvite struct {
 // ok is false when the text does not look like words at all — so a caller
 // can try the other form — and err says what is wrong when it does.
 func DecodeWords(s string) (inv WordInvite, ok bool, err error) {
+	original := strings.Fields(strings.TrimSpace(s))
 	tokens := strings.Fields(strings.ToLower(strings.TrimSpace(s)))
 	// "makima join" typed or pasted in front is a habit, not a mistake.
 	if len(tokens) >= 2 && tokens[0] == "makima" && (tokens[1] == "join" || tokens[1] == "up") {
-		tokens = tokens[2:]
+		tokens, original = tokens[2:], original[2:]
 	}
 	if len(tokens) < 2 {
 		return WordInvite{}, false, nil
 	}
 
-	// Ten words after a typed server, or fifteen words.
-	if _, isWord := lookup(tokens[0]); !isWord && len(tokens) == secretWords+1 {
+	// Ten words after a typed server, or fifteen words. Eleven can only be
+	// the first — whatever the server is called: a machine named "home" or
+	// "desk" is a word, or the start of one, and was taken for one. The
+	// server keeps the case it was typed in, since a URL's path has one.
+	if len(tokens) == secretWords+1 {
 		sec, err := fromWords(tokens[1:])
 		if err != nil {
 			return WordInvite{}, true, err
 		}
-		return WordInvite{Server: serverURL(tokens[0]), Secret: sec.FillBytes(make([]byte, secretBytes))}, true, nil
+		return WordInvite{Server: serverURL(original[0]), Secret: sec.FillBytes(make([]byte, secretBytes))}, true, nil
 	}
 
 	if len(tokens) != Words {
@@ -230,7 +234,9 @@ func ipv4Server(server string) (netip.Addr, uint16, bool) {
 	if err != nil || !ip.Is4() {
 		return netip.Addr{}, 0, false
 	}
-	port := 8080
+	// A URL without a port means port 80, as it does to everything else
+	// that reads it — the pasted form of the same invite included.
+	port := 80
 	if p := u.Port(); p != "" {
 		port, err = strconv.Atoi(p)
 		if err != nil || port <= 0 || port > 65535 {
@@ -249,8 +255,15 @@ func serverURL(s string) string {
 	if _, _, err := net.SplitHostPort(s); err == nil {
 		return "http://" + s
 	}
-	return "http://" + net.JoinHostPort(s, "8080")
+	return "http://" + net.JoinHostPort(s, strconv.Itoa(DefaultPort))
 }
+
+// DefaultPort is the port assumed for a server typed without one: where a
+// network's server listens unless something else had the port first
+// (control.DefaultPort, which it must equal). Invites are printed with the
+// port the server really uses, so only a server typed from memory relies on
+// this.
+const DefaultPort = 8080
 
 // addrValue packs an address, a port and a checksum into 55 bits.
 func addrValue(ip netip.Addr, port uint16) uint64 {

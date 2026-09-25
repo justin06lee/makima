@@ -65,6 +65,11 @@ type DNSResponse struct {
 	Domain  string `json:"domain"`
 }
 
+// PortResponse is the port the server answers on.
+type PortResponse struct {
+	Port int `json:"port"`
+}
+
 // LockStatementRequest is the lock's next version, signed where the signing
 // key lives, with names for any key it trusts for the first time.
 type LockStatementRequest struct {
@@ -155,6 +160,10 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		s.log.Printf("update: every node asked to move to %s (order %d)", o.Tag, o.ID)
 		writeJSON(w, http.StatusOK, o)
 		return nil
+	})
+
+	mux.HandleFunc("GET /admin/port", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, PortResponse{Port: s.listenPort})
 	})
 
 	mux.HandleFunc("GET /admin/ddns", func(w http.ResponseWriter, r *http.Request) {

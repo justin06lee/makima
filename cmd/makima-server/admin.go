@@ -55,3 +55,23 @@ func (a *adminFlags) open(args []string) (*target, error) {
 	}
 	return &target{store: store}, nil
 }
+
+// port is the port this network's server answers on; see serverPort.
+func (t *target) port(statePath string) int { return serverPort(t.admin, statePath) }
+
+// serverPort is the port the network's server answers on: the running
+// server's own answer when there is one, what it last recorded beside its
+// state when there is not, and only failing both, the default a new server
+// would try first. Anything that prints an address for somebody to type or
+// forward goes through here, so it names the port in use rather than 8080.
+func serverPort(admin *control.AdminClient, statePath string) int {
+	if admin != nil {
+		if p, err := admin.ListenPort(); err == nil && p != 0 {
+			return p
+		}
+	}
+	if p := control.RecordedPort(statePath); p != 0 {
+		return p
+	}
+	return control.DefaultPort
+}

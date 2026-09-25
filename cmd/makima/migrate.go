@@ -561,7 +561,11 @@ func holdNetwork(ctx context.Context, path, name, advertise string) (string, err
 	if !holdsOwn(f) {
 		return "", fmt.Errorf("this machine is on the network held at %s, not the one its own server holds", f.LoginServer)
 	}
-	openServerPort(serverPort())
+	var admin *control.AdminClient
+	if a, ok := control.DialAdmin(serverSocket()); ok {
+		admin = a
+	}
+	openServerPort(livePort(admin))
 	if err := daemonFor(path).Stop(ctx, stopWait); err != nil {
 		return "", err
 	}
