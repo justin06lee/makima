@@ -311,15 +311,15 @@ func TestParseIPv6Packet(t *testing.T) {
 	copy(b[24:40], dst.AsSlice())
 	binary.BigEndian.PutUint16(b[42:44], 443)
 
-	gotSrc, gotDst, proto, port, ok := parsePacket(b)
+	p, ok := parsePacket(b)
 	if !ok {
 		t.Fatal("a well-formed IPv6 packet did not parse")
 	}
-	if gotSrc != src || gotDst != dst {
+	if p.src != src || p.dst != dst {
 		t.Error("addresses did not survive parsing")
 	}
-	if proto != protoTCP || port != 443 {
-		t.Errorf("proto %d port %d, want %d 443", proto, port, protoTCP)
+	if p.proto != protoTCP || p.dport != 443 {
+		t.Errorf("proto %d port %d, want %d 443", p.proto, p.dport, protoTCP)
 	}
 }
 

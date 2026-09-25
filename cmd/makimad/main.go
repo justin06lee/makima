@@ -303,6 +303,7 @@ func run(opts options, upd *update.Installer) error {
 	wgOpts.MTU = mtu
 	wgOpts.Verbose = verbose
 	wgOpts.Filter = n.filter.AllowInbound
+	wgOpts.Outbound = n.filter.NoteOutbound
 
 	if f.NeedsPathSelection() {
 		sock, err := magicsock.New(magicsock.Options{

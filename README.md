@@ -845,6 +845,11 @@ address it cannot misuse. The node applies the compiled filter to inbound
 packets, because visibility cannot express ports. Enforcement is on ingress —
 a compromised sender will not filter itself.
 
+Rules say who may *start* a conversation. The answer to one a machine started
+is always let back in — the server's reply to the laptop's ssh, a website's
+reply through an exit node — so a one-way rule is one-way about who may
+connect, not about who may speak once connected.
+
 ### Reaching things that are not on the mesh
 
 A machine can offer to route a subnet, or to carry general internet traffic:
