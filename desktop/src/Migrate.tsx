@@ -215,7 +215,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                           <Input value={advertise} onChange={setAdvertise} mono placeholder="an address, or https://a-name-you-own" />
                           <p className="text-[11.5px] leading-relaxed text-dimmer">
                             {m.public
-                              ? "Its public address — reachable from anywhere. makima opens its own ports in the device's firewall; a cloud provider's firewall still needs TCP 8080 and UDP 51820 open."
+                              ? "Its public address — reachable from anywhere. makima opens its own ports in the device's firewall; a cloud provider's firewall still needs the network server's TCP port — 8080, or the next free one, which makima reports — and UDP 51820 open."
                               : "Its address on your home network. If a reverse proxy or a Cloudflare tunnel reaches this device from outside, put that name here instead."}
                           </p>
                         </div>
