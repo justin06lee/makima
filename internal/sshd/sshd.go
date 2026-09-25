@@ -143,6 +143,11 @@ const ListAccountsUser = "makima:accounts"
 type Server struct {
 	log *log.Logger
 
+	// applyMu makes Apply and Close one at a time: Apply lets go of mu while
+	// it closes and relistens, and two of them interleaved could leave a
+	// listener nobody holds, or one that outlives Close.
+	applyMu sync.Mutex
+
 	mu      sync.Mutex
 	ln      net.Listener
 	cfg     Config
@@ -177,6 +182,9 @@ func (s *Server) Apply(cfg Config) error {
 	}
 
 	want := netip.AddrPortFrom(cfg.Addr, cfg.Port)
+
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
 
 	s.mu.Lock()
 	// The callbacks and the user can be swapped underneath a live listener:
@@ -226,6 +234,9 @@ func (s *Server) Apply(cfg Config) error {
 
 // Close stops the server.
 func (s *Server) Close() {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	s.mu.Lock()
 	ln := s.ln
 	s.ln = nil

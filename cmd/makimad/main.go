@@ -176,7 +176,7 @@ type node struct {
 	router     *netcfg.Router
 	sock       *magicsock.Conn
 	client     *control.Client
-	dns        *dnsserver.Server
+	dns        *dnsserver.Server // guarded by dnsMu, with resolver
 	resolver   *netcfg.Resolver
 	advertiser forwarder
 	exitClient exitRouter
@@ -193,6 +193,10 @@ type node struct {
 	binder      *bypass.Binder
 	exitMu      sync.Mutex
 	exitProblem string
+
+	// dnsMu guards dns and resolver, which the poll loop starts and stops
+	// while status requests ask whether they are running.
+	dnsMu sync.Mutex
 
 	// guiMu guards the desktop socket, which is opened at startup and
 	// reopened whenever the owner changes.
@@ -901,9 +905,7 @@ func (n *node) shutdown() {
 	if n.sshKeys != nil {
 		n.sshKeys.Close()
 	}
-	if n.dns != nil {
-		n.dns.Close()
-	}
+	n.stopDNS()
 	if n.pm != nil {
 		n.pm.Close()
 	}

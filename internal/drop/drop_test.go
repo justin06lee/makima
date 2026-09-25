@@ -483,3 +483,40 @@ func TestPlantedLinkInTheInboxIsNotFollowed(t *testing.T) {
 		t.Errorf("landed as %s", filepath.Base(landed))
 	}
 }
+
+// Apply is called from the poll loop, the port scanner and the local API at
+// once. However they interleave, the receiver ends up writing where it says
+// it is writing.
+func TestConcurrentAppliesAgree(t *testing.T) {
+	addr := netip.MustParseAddr("127.0.0.1")
+	a, b := t.TempDir(), t.TempDir()
+	r := New(quiet())
+	t.Cleanup(r.Close)
+
+	done := make(chan struct{})
+	for i := range 16 {
+		go func() {
+			dir := a
+			if i%2 == 1 {
+				dir = b
+			}
+			r.Apply(addr, Config{Dir: dir})
+			done <- struct{}{}
+		}()
+	}
+	for range 16 {
+		<-done
+	}
+
+	dir, active, _ := r.Status()
+	if !active {
+		t.Skip("could not bind the inbox port on this machine")
+	}
+	landed, err := Send(addr, writeFile(t, "x.txt", "x"), "laptop", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(landed) != dir {
+		t.Errorf("the receiver says %s and wrote to %s", dir, filepath.Dir(landed))
+	}
+}
