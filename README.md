@@ -430,8 +430,11 @@ forwarding through it is refused, because makima already forwards ports as a
 first-class thing that shows up in status and obeys the mesh's access control.
 `makima ssh` finds the port on its own.
 
-A session runs as **whoever ran `makima up`** unless the client asks for
-somebody else, and asking is granted only by that account's own
+A session runs as **the machine's owner** — whoever ran `makima up`, see
+[Whose machine this is](#whose-machine-this-is) — unless the client asks for
+somebody else; on a machine with no owner the server will not start until an
+account is named (`-user`), since the only other candidate is root. Asking for
+another account is granted only by that account's own
 `~/.ssh/authorized_keys` — the same file the system's sshd honours, curated by
 the same person. So root over the mesh works exactly where root over ordinary
 ssh already works, and nowhere else. The username is never taken at face

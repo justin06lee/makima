@@ -139,14 +139,22 @@ func (n *node) SetSSH(on bool, keys []string, userName string) error {
 	return nil
 }
 
+// currentUser is the account the daemon runs as; a variable so a test can
+// be root without being root.
+var currentUser = user.Current
+
 // resolveSSHUser turns a name into the default account sessions run as.
 //
-// Empty means whoever this machine belongs to, and falls back to the daemon's
-// own user when nobody does. That is almost always the right answer and never
-// needs to be typed — and it matters that it is the owner rather than the
-// account the daemon runs as, because the daemon runs as root: a machine set
-// up over SSH as root would otherwise hand every incoming session a root shell
-// by default.
+// Empty means whoever this machine belongs to. That is almost always the
+// right answer and never needs to be typed — and it matters that it is the
+// owner rather than the account the daemon runs as, because the daemon runs
+// as root: a machine set up over SSH as root would otherwise hand every
+// incoming session a root shell by default.
+//
+// Which is exactly what the fallback for a machine with no owner used to do:
+// "the daemon's own user", which is root. Now a machine with nobody to run
+// sessions as says so, and root is only ever the default when somebody named
+// it.
 //
 // It is the *default*, not the only one: a client may ask for another local
 // account by SSH username, and gets it only if that account's own
@@ -157,9 +165,9 @@ func resolveSSHUser(name string, own *owner) (*sshd.SessionUser, error) {
 		name = own.Name
 	}
 	if name == "" {
-		u, err := user.Current()
-		if err != nil {
-			return nil, fmt.Errorf("no account to run sessions as: %w", err)
+		u, err := currentUser()
+		if err != nil || u.Uid == "0" {
+			return nil, errors.New("nobody owns this machine, so there is no account to run sessions as, and a root shell is not a default — name one with 'makima sshd -on -user NAME', or say whose machine this is with 'makima owner NAME'")
 		}
 		name = u.Username
 	}
