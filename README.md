@@ -729,7 +729,9 @@ settled on, because it is the right shape.
 
 **The menu bar.** A switch, this device's address, every other device with a
 green or grey dot beside it — click one to copy its address — and the exit
-node, as a radio group. The window is one click further.
+node, as a radio group. The window is one click further. A device goes grey
+about two minutes after it stops talking to the network server, and green
+again within seconds of coming back.
 
 **The window.** Devices down the left, with a search box. Pick one and the
 right-hand pane shows its name and address to copy, the services it publishes

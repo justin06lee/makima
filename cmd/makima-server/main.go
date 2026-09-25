@@ -223,6 +223,7 @@ func serve(args []string) error {
 	defer stopForUpdate()
 
 	go control.RunDDNS(ctx, store, log.Default())
+	go control.RunPresence(ctx, store)
 
 	// An update swaps this binary on disk; the node daemon on this machine
 	// does that, and restarts itself, but this is a separate process. So it
