@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/netip"
 	"testing"
 
@@ -126,5 +127,33 @@ func TestClearingTheExitNodeStops(t *testing.T) {
 	n.applyUseExit(m)
 	if routes.active || routes.stops != 1 {
 		t.Errorf("active=%v stops=%d after clearing the exit node", routes.active, routes.stops)
+	}
+}
+
+// stuckRoutes cannot be taken down: the redirect stays.
+type stuckRoutes struct{ fakeRoutes }
+
+func (s *stuckRoutes) Stop() error { return errors.New("route: not permitted") }
+
+// A stop that fails leaves the redirect in place, and the tunnel's sockets
+// must stay out of it until a later netmap manages the stop — not be let go
+// on the spot, with nothing ever retrying.
+func TestAFailedStopIsRetriedAndKeepsTheBinding(t *testing.T) {
+	withGateway(t)
+	routes := &stuckRoutes{}
+	n := &node{file: &conf.File{ExitNode: "tenet"}, exitClient: routes, binder: &bypass.Binder{}}
+	m := &netmap.NetMap{Peers: []netmap.Node{exitPeer("tenet", "10.77.0.1", true)}}
+	n.applyUseExit(m)
+	if err := n.binder.Bind(bypass.Interface{Name: "en0", Index: 4}); err != nil {
+		t.Fatal(err)
+	}
+
+	n.file.ExitNode = ""
+	n.applyUseExit(m)
+	if _, bound := n.binder.Bound(); !bound {
+		t.Error("the sockets were let go while the redirect is still in place")
+	}
+	if _, active := routes.Active(); !active {
+		t.Error("the stuck redirect was forgotten, so nothing will retry it")
 	}
 }

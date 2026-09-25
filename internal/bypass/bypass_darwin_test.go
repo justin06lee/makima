@@ -118,3 +118,38 @@ func TestBoundDualStackSocketIgnoresTheDefaultRoute(t *testing.T) {
 		t.Error("a socket bound to loopback still sent an IPv4 packet out by the default route")
 	}
 }
+
+// Loopback is not out of the tunnel's way or into it — it is this machine —
+// and a socket bound to the Wi-Fi cannot reach it. With a local DNS stub
+// (systemd-resolved's 127.0.0.53, or a DNS proxy on a Mac), binding every
+// dial made every name lookup fail while an exit node was in use.
+func TestLoopbackDialsAreNotBound(t *testing.T) {
+	var phys *net.Interface
+	ifaces, _ := net.Interfaces()
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp != 0 && ifc.Flags&net.FlagLoopback == 0 && ifc.Flags&net.FlagPointToPoint == 0 {
+			if addrs, _ := ifc.Addrs(); len(addrs) > 0 {
+				phys = &ifc
+				break
+			}
+		}
+	}
+	if phys == nil {
+		t.Skip("no physical interface here")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var b Binder
+	if err := b.Bind(Interface{Name: phys.Name, Index: phys.Index}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := b.DialContext(t.Context(), &net.Dialer{}, "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("a dial to loopback while bound to %s: %v", phys.Name, err)
+	}
+	c.Close()
+}

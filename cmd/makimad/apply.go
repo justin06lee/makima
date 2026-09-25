@@ -311,10 +311,15 @@ func (n *node) applyUseExit(m *netmap.NetMap) {
 // the default route points into the tunnel and the tunnel's packets follow it.
 func (n *node) stopExit(why string) {
 	if err := n.exitClient.Stop(); err != nil {
-		// Some of the redirect may still be in place. Keeping the sockets
-		// bound keeps the tunnel's own traffic out of whatever is left.
-		log.Printf("warning: could not restore normal routing: %v", err)
-		return
+		if _, active := n.exitClient.Active(); active {
+			// The redirect is still in place, and the next netmap tries
+			// again. Keeping the sockets bound meanwhile keeps the tunnel's
+			// own traffic out of it.
+			log.Printf("warning: could not restore normal routing, will try again: %v", err)
+			return
+		}
+		// Normal routing is back; only a pin could not be removed.
+		log.Printf("warning: %v", err)
 	}
 	n.releaseTunnel()
 	log.Print(why)
