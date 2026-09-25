@@ -231,9 +231,19 @@ func (m *Manager) Status() []Status {
 	}
 	m.mu.Unlock()
 
+	// Every target at once. One after another, with a second's patience
+	// each, a handful of unreachable targets made status take longer than
+	// the desktop waits for it.
+	up := make([]bool, len(desired))
+	var wg sync.WaitGroup
+	for i, s := range desired {
+		wg.Go(func() { up[i] = targetReachable(s.Target, statusDial) })
+	}
+	wg.Wait()
+
 	out := make([]Status, 0, len(desired))
-	for _, s := range desired {
-		st := Status{Service: s, TargetUp: TargetReachable(s.Target)}
+	for i, s := range desired {
+		st := Status{Service: s, TargetUp: up[i]}
 		if l, ok := running[s.Port]; ok {
 			st.Listening = l.ln != nil
 			st.Address = l.address
@@ -265,8 +275,15 @@ func (m *Manager) Close() {
 // service whose target is not running behaves exactly like a broken network
 // from the other end — the connection is accepted by the tunnel and then dies
 // — and this is what tells the two apart.
-func TargetReachable(target string) bool {
-	c, err := net.DialTimeout("tcp", target, time.Second)
+func TargetReachable(target string) bool { return targetReachable(target, time.Second) }
+
+// statusDial is how long Status waits on one target. A target on this
+// machine answers in well under a millisecond, and one on the LAN in a few;
+// one that takes longer is, for a status line, not up.
+const statusDial = 500 * time.Millisecond
+
+func targetReachable(target string, timeout time.Duration) bool {
+	c, err := net.DialTimeout("tcp", target, timeout)
 	if err != nil {
 		return false
 	}
