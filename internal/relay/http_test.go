@@ -124,7 +124,7 @@ func TestWebRelayKeyIsPinned(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := c.session(ctx); err == nil || !strings.Contains(err.Error(), "relay key mismatch") {
+	if _, err := c.session(ctx); err == nil || !strings.Contains(err.Error(), "relay key mismatch") {
 		t.Errorf("session = %v, want a key mismatch", err)
 	}
 }
