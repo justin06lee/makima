@@ -45,7 +45,7 @@ devserver up, `bun run dev` in `desktop/` and open http://localhost:5183. The
 devserver answers over TCP too and vite proxies to it; anything the CLI would
 do is pretended. The query string picks what to look at — `?state=setup`,
 `?state=off`, `?page=services|exit|settings`, `?select=tenet` (or `self`),
-`?dark=1`, `?tailscale=0`, `?holds=0`.
+`?exit=tenet`, `?dark=1`, `?tailscale=0`, `?holds=0`.
 
 ## What it shows
 
