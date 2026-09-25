@@ -40,10 +40,48 @@ func unitPath(d Daemon) string {
 
 func (systemd) registered(d Daemon) bool {
 	_, err := os.Stat(unitPath(d))
-	return err == nil
+	return err == nil || foreignUnit(d) != ""
+}
+
+// packageUnitDirs are where a distribution's packages put their units, below
+// /etc/systemd/system in systemd's order of precedence.
+var packageUnitDirs = []string{"/usr/lib/systemd/system", "/lib/systemd/system"}
+
+// foreignUnit is the path of a unit for d that makima did not write, or "".
+//
+// One installed by hand from dist/, or by a package — the Arch package ships
+// dist's units — is somebody's decision about how this daemon should run.
+// makima used to overwrite it on the next `makima up` and delete it on the
+// next `makima down`; now it only starts and stops it.
+func foreignUnit(d Daemon) string {
+	path := unitPath(d)
+	if b, err := os.ReadFile(path); err == nil {
+		if ownUnit(b) {
+			return ""
+		}
+		return path
+	}
+	for _, dir := range packageUnitDirs {
+		p := filepath.Join(dir, d.Service.Unit+".service")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 func (systemd) register(d Daemon, bin string) error {
+	if foreign := foreignUnit(d); foreign != "" {
+		// Started as it is. restart rather than start, as below.
+		if out, err := systemctl("enable", d.Service.Unit); err != nil {
+			return fmt.Errorf("systemctl enable %s: %s", foreign, out)
+		}
+		if out, err := systemctl("restart", d.Service.Unit); err != nil {
+			return fmt.Errorf("systemctl restart %s: %s", foreign, out)
+		}
+		return nil
+	}
+
 	path := unitPath(d)
 	if err := os.MkdirAll(systemdUnits, 0o755); err != nil {
 		return err
@@ -74,6 +112,10 @@ func (systemd) unregister(d Daemon) error {
 	// A unit that is not loaded makes this complain; that is the state being
 	// asked for, so the complaint is not interesting.
 	_, _ = systemctl("disable", "--now", d.Service.Unit)
+	if foreignUnit(d) != "" {
+		// Stopped, and off at boot; the unit itself is not makima's to delete.
+		return nil
+	}
 	if err := os.Remove(unitPath(d)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

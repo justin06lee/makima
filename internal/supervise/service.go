@@ -137,17 +137,32 @@ func launchdPlist(d Daemon, bin string) string {
 	return b.String()
 }
 
+// unitMarker opens every unit makima writes, so it can tell its own from one
+// somebody installed in the same place — from dist/, or by a package — which
+// it starts and stops but never rewrites or removes (see ownUnit).
+const unitMarker = "# Written by makima. A unit installed by hand in its place is left alone.\n"
+
+// ownUnit reports whether makima wrote a unit: it carries the marker, or —
+// written before there was one — it has no Documentation line, which every
+// unit in dist/ has and no unit makima writes ever did.
+func ownUnit(b []byte) bool {
+	return strings.HasPrefix(string(b), unitMarker) || !strings.Contains(string(b), "\nDocumentation=")
+}
+
 // systemdUnit renders a unit file.
 //
-// Plain root, deliberately. The units shipped in dist/ are hardened — narrowed
-// capabilities, ProtectHome — and are right for a server somebody administers
-// by hand. This one is written for a machine somebody clicked Connect on,
-// where the daemon has to be able to put a file in their Downloads and talk
-// to whatever firewall and resolver the distribution ships. Hardening that
-// silently breaks the inbox is not a feature anybody asked for.
+// Plain root, deliberately, and the same is true of the node daemon's unit in
+// dist/: the daemon binds port 53 for mesh names, changes to the owner's
+// account for a shell session, hands the inbox and the desktop socket to its
+// owner, reads authorized_keys in their home, drives the distribution's
+// firewall tools, and replaces its own binaries when the network moves to a
+// new release. Every narrowing tried so far broke one of those without saying
+// so. The control plane and the relay need none of it, and their units in
+// dist/ are confined.
 func systemdUnit(d Daemon, bin string) string {
 	var b strings.Builder
 
+	b.WriteString(unitMarker)
 	b.WriteString("[Unit]\n")
 	fmt.Fprintf(&b, "Description=%s\n", d.Service.Description)
 	b.WriteString("After=network-online.target\nWants=network-online.target\n\n")

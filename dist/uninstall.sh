@@ -164,7 +164,10 @@ else
 	fi
 fi
 
-for p in /etc/makima /var/lib/makima /var/log/makima \
+# /var/lib/private/makima is the state of a control plane or relay run from
+# dist's units, under their dynamic user; /var/log/makimad.log is where dist's
+# launchd definition used to log.
+for p in /etc/makima /var/lib/makima /var/lib/private/makima /var/log/makima /var/log/makimad.log \
 	/Library/PrivilegedHelperTools/makima /usr/local/share/makima /usr/lib/makima \
 	/usr/local/bin/makima /usr/local/bin/makimad /usr/local/bin/makima-server \
 	/usr/local/bin/makima-relay /usr/local/bin/makima-desktop \
