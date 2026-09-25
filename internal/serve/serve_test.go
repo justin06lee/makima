@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -333,4 +334,25 @@ func otherLocalAddrs(t *testing.T) []string {
 		}
 	}
 	return out
+}
+
+// Status used to dial each target in turn with a second's patience, so five
+// published ports whose targets had gone quiet made a status request take
+// five seconds — and the desktop gives up after three.
+func TestStatusDoesNotWaitOnTargetsOneByOne(t *testing.T) {
+	m := New(log.New(io.Discard, "", 0))
+	for i := range 5 {
+		// TEST-NET-1: nothing answers, and on most networks nothing says so.
+		m.desired = append(m.desired, Service{Port: uint16(20000 + i), Target: fmt.Sprintf("192.0.2.1:%d", 9+i)})
+	}
+	start := time.Now()
+	st := m.Status()
+	if took := time.Since(start); took > 2*statusDial {
+		t.Errorf("status took %s for %d unreachable targets", took, len(st))
+	}
+	for _, s := range st {
+		if s.TargetUp {
+			t.Errorf("%s reported up", s.Target)
+		}
+	}
 }

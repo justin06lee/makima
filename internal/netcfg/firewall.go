@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Firewall makes the host willing to accept traffic that arrives through the
@@ -24,7 +25,23 @@ type Firewall struct {
 
 	mu      sync.Mutex
 	applied Backend
+
+	// report is the last Status, and reportAt when it was taken. Guarded by
+	// cacheMu, which is not mu: a status request must not wait behind Allow.
+	cacheMu  sync.Mutex
+	report   Report
+	reportAt time.Time
 }
+
+// statusFresh is how long a firewall report is reused.
+//
+// Finding out means running the firewall's own tools — firewall-cmd,
+// socketfilterfw — which take a noticeable fraction of a second each, and
+// status is asked for every few seconds by the app and the tray. The desktop
+// gives up on a status that takes three, and was doing so. The firewall
+// changes rarely, and when makima changes it itself the report is refreshed
+// at once.
+const statusFresh = 15 * time.Second
 
 // Backend is the host firewall in use.
 type Backend string
@@ -87,8 +104,24 @@ func (r Report) OK() bool { return !r.Active || r.Trusted }
 // NewFirewall builds one for a tunnel interface.
 func NewFirewall(iface string) *Firewall { return &Firewall{iface: iface} }
 
-// Status inspects the host firewall without changing anything.
-func (f *Firewall) Status() Report { return firewallStatus(f.iface) }
+// Status inspects the host firewall without changing anything, at most once
+// every statusFresh.
+func (f *Firewall) Status() Report {
+	f.cacheMu.Lock()
+	defer f.cacheMu.Unlock()
+	if !f.reportAt.IsZero() && time.Since(f.reportAt) < statusFresh {
+		return f.report
+	}
+	f.report, f.reportAt = firewallStatus(f.iface), time.Now()
+	return f.report
+}
+
+// forget drops the cached report after makima changed the firewall.
+func (f *Firewall) forget() {
+	f.cacheMu.Lock()
+	f.reportAt = time.Time{}
+	f.cacheMu.Unlock()
+}
 
 // Allow makes the firewall accept traffic on the tunnel interface.
 //
@@ -108,6 +141,7 @@ func (f *Firewall) Allow() (Report, error) {
 			r.Backend, r.Manual)
 	}
 
+	defer f.forget()
 	if err := firewallAllow(f.iface, r.Backend); err != nil {
 		return r, err
 	}
@@ -129,6 +163,7 @@ func (f *Firewall) Reset() error {
 	if f.applied == "" {
 		return nil
 	}
+	defer f.forget()
 	err := firewallReset(f.iface, f.applied)
 	f.applied = ""
 	return err
