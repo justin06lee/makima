@@ -739,7 +739,17 @@ func (n *Node) policyNode() policy.Node {
 		Addresses: []netip.Prefix{n.Address},
 		Routes:    n.ApprovedRoutes,
 		Exit:      n.ExitApproved,
+		Own:       endpointAddrs(n.Endpoints),
 	}
+}
+
+// endpointAddrs is the addresses of a node's endpoints.
+func endpointAddrs(eps []netip.AddrPort) []netip.Addr {
+	out := make([]netip.Addr, 0, len(eps))
+	for _, e := range eps {
+		out = append(out, e.Addr().Unmap())
+	}
+	return out
 }
 
 // activeRelayLocked is the relay every node is currently assigned.
