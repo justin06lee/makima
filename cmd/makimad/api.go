@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -71,6 +72,13 @@ func (n *node) Status() localapi.Status {
 	}
 
 	peers := make([]localapi.PeerInfo, 0, len(f.Peers))
+	// Keyed from the same list the peers are built from, under the same
+	// lock: a netmap landing between two readings would otherwise attach one
+	// peer's path to another.
+	byKey := make(map[key.Public]int, len(f.Peers))
+	for i, p := range f.Peers {
+		byKey[p.Key] = i
+	}
 	for _, p := range f.Peers {
 		pa, _ := p.Addr()
 		info := localapi.PeerInfo{
@@ -103,15 +111,8 @@ func (n *node) Status() localapi.Status {
 	// Path state lives in the socket, not the config, and is keyed by node key
 	// rather than name.
 	if n.sock != nil {
-		byKey := make(map[string]int, len(peers))
-		n.mu.Lock()
-		for i, p := range n.file.Peers {
-			byKey[p.Key.String()] = i
-		}
-		n.mu.Unlock()
-
 		for _, s := range n.sock.Status() {
-			i, ok := byKey[s.NodeKey.String()]
+			i, ok := byKey[s.NodeKey]
 			if !ok || i >= len(peers) {
 				continue
 			}
@@ -138,7 +139,7 @@ func (n *node) Status() localapi.Status {
 		st.Filtering = n.filter.Active()
 		st.Dropped = n.filter.Dropped()
 	}
-	st.DNSActive = n.dns != nil
+	st.DNSActive = n.dnsActive()
 
 	if n.inbox != nil {
 		dir, active, received := n.inbox.Status()
@@ -361,14 +362,15 @@ func (n *node) Diagnose() localapi.Diagnosis {
 
 	// 7. Names.
 	if domain != "" {
+		dnsOn := n.dnsActive()
 		add(localapi.Check{
 			Name:    "Names",
-			OK:      n.dns != nil,
-			Warning: n.dns == nil,
+			OK:      dnsOn,
+			Warning: !dnsOn,
 			Detail: map[bool]string{
 				true:  fmt.Sprintf("*.%s resolves on this machine", domain),
 				false: fmt.Sprintf("*.%s is on for the network but this device's resolver is not running", domain),
-			}[n.dns != nil],
+			}[dnsOn],
 			Fix: "check nothing else holds port 53 on this device's makima address",
 		})
 	}

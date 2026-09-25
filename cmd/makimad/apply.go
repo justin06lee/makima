@@ -76,8 +76,11 @@ func verifyPeers(resp *control.MapResponse, pin *netmap.LockPin) ([]netmap.Node,
 // the interface has one — which is why this is driven by netmap application
 // rather than by startup.
 func (n *node) applyDNS(ctx context.Context, m *netmap.NetMap) {
+	n.dnsMu.Lock()
+	defer n.dnsMu.Unlock()
+
 	if !m.DNS.Enabled || m.Domain == "" {
-		n.stopDNS()
+		n.stopDNSLocked()
 		return
 	}
 
@@ -123,6 +126,19 @@ func (n *node) applyDNS(ctx context.Context, m *netmap.NetMap) {
 }
 
 func (n *node) stopDNS() {
+	n.dnsMu.Lock()
+	defer n.dnsMu.Unlock()
+	n.stopDNSLocked()
+}
+
+// dnsActive reports whether the mesh resolver is running.
+func (n *node) dnsActive() bool {
+	n.dnsMu.Lock()
+	defer n.dnsMu.Unlock()
+	return n.dns != nil
+}
+
+func (n *node) stopDNSLocked() {
 	if n.resolver != nil {
 		if err := n.resolver.Close(); err != nil {
 			log.Printf("warning: could not remove the mesh resolver entry: %v", err)

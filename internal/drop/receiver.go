@@ -25,6 +25,12 @@ import (
 type Receiver struct {
 	log *log.Logger
 
+	// applyMu makes Apply and Close one at a time. Apply lets go of mu
+	// while it closes, creates and listens, and two of them interleaved —
+	// the poll loop, the port scanner and the local API all call it — left
+	// the receiver writing into one directory while reporting another.
+	applyMu sync.Mutex
+
 	mu      sync.Mutex
 	ln      net.Listener
 	addr    netip.Addr
@@ -90,6 +96,9 @@ type Config struct {
 // in-flight transfers — so it happens only when the address or the directory
 // genuinely differs.
 func (r *Receiver) Apply(addr netip.Addr, cfg Config) {
+	r.applyMu.Lock()
+	defer r.applyMu.Unlock()
+
 	r.mu.Lock()
 
 	maxSize := cfg.MaxSize
@@ -146,6 +155,9 @@ func (r *Receiver) Apply(addr netip.Addr, cfg Config) {
 
 // Close stops receiving.
 func (r *Receiver) Close() {
+	r.applyMu.Lock()
+	defer r.applyMu.Unlock()
+
 	r.mu.Lock()
 	ln, root := r.ln, r.root
 	r.ln = nil
