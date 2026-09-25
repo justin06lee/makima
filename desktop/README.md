@@ -40,6 +40,13 @@ steer the app while developing: `MAKIMA_GUI_SOCKET` points it at the pretend
 socket, and `MAKIMA_DEV_MEMBER=1` makes it believe this machine is already on
 a network, which is how to see the "off" screen without an `/etc/makima`.
 
+The interface also runs in a plain browser, with no Tauri at all: with the
+devserver up, `bun run dev` in `desktop/` and open http://localhost:5183. The
+devserver answers over TCP too and vite proxies to it; anything the CLI would
+do is pretended. The query string picks what to look at — `?state=setup`,
+`?state=off`, `?exit=tenet`, `?dark=1`, `?tailscale=0`, `?holds=0`,
+`?linked=0`, `?platform=linux`.
+
 ## What it shows
 
 **The menu bar** is most of the app: connected or not, this device's address,

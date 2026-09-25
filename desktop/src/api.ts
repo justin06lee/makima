@@ -219,7 +219,11 @@ export const api = {
       return { running: false, error: "makima is not running" };
     }
     try {
-      return { running: true, status: await browser.get<Status>("/api/status") };
+      const status = await browser.get<Status>("/api/status");
+      // ?exit=NAME pretends this device already sends its traffic through NAME.
+      const exit = browser.params().get("exit");
+      if (exit !== null) status.exit_node = exit || undefined;
+      return { running: true, status };
     } catch (e) {
       return { running: false, error: String(e) };
     }
