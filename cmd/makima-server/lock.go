@@ -62,8 +62,12 @@ func lockCmd(args []string) error {
 		return lockEnable(args[1:], true)
 	case "disable":
 		return lockEnable(args[1:], false)
+	case "seal":
+		return lockSeal(args[1:])
+	case "forget":
+		return lockForget(args[1:])
 	default:
-		return fmt.Errorf("unknown lock subcommand %q (try: status, init, sign, enable, disable, add-key, rm-key)", args[0])
+		return fmt.Errorf("unknown lock subcommand %q (try: status, init, sign, enable, disable, add-key, rm-key, seal, forget)", args[0])
 	}
 }
 
@@ -96,7 +100,12 @@ func lockStatus(args []string) error {
 	if st.Enabled {
 		state = "enabled and enforced by every node"
 	}
-	fmt.Printf("network lock: %s\n\n", state)
+	fmt.Printf("network lock: %s (version %d)\n\n", state, st.Epoch)
+	if st.Epoch == 0 {
+		fmt.Print("this lock was set up before its versions were signed, so nodes cannot hold\n")
+		fmt.Print("this server to it: a compromised server could still switch it off. seal it with\n")
+		fmt.Print("  makima-server lock seal\n\n")
+	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprint(w, "ID\tNAME\tADDED\n")
@@ -135,6 +144,11 @@ func lockInit(args []string) error {
 	if _, err := os.Stat(*keyPath); err == nil && !*force {
 		return fmt.Errorf("%s already exists; pass -force to replace it, which invalidates every signature it made", *keyPath)
 	}
+	if st, err := t.lockStatus(); err != nil {
+		return err
+	} else if len(st.TrustedKeys) > 0 {
+		return fmt.Errorf("this network already has a lock. trusting another key is a change to it, signed by a key it already trusts:\n  makima-server lock add-key -public <key> -name <label>")
+	}
 
 	if *name == "" {
 		if h, err := os.Hostname(); err == nil {
@@ -153,12 +167,9 @@ func lockInit(args []string) error {
 		return err
 	}
 
-	if t.live() {
-		err = t.admin.AddSigningKey(*name, pub)
-	} else {
-		err = t.store.AddSigningKey(*name, pub)
-	}
-	if err != nil {
+	// The lock's first version, signed by the key it trusts.
+	first := control.SignLockStatement(priv, 1, false, [][]byte{pub})
+	if err := t.applyLock(first, map[string]string{(control.SigningKey{Public: pub}).ID(): *name}); err != nil {
 		return err
 	}
 
@@ -175,6 +186,7 @@ func lockAddKey(args []string) error {
 	af := newAdminFlags("lock add-key")
 	pubkey := af.fs.String("public", "", "base64url public key to trust")
 	name := af.fs.String("name", "", "a label for it")
+	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "a signing key the lock already trusts, to sign the change")
 
 	t, err := af.open(args)
 	if err != nil {
@@ -188,12 +200,17 @@ func lockAddKey(args []string) error {
 	if err != nil {
 		return fmt.Errorf("parse -public: %w", err)
 	}
-
-	if t.live() {
-		err = t.admin.AddSigningKey(*name, pub)
-	} else {
-		err = t.store.AddSigningKey(*name, pub)
+	if len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("signing key is %d bytes, want %d", len(pub), ed25519.PublicKeySize)
 	}
+
+	names := map[string]string{(control.SigningKey{Public: pub}).ID(): *name}
+	err = t.changeLock(*keyPath, names, func(keys [][]byte, enabled bool) ([][]byte, bool, error) {
+		if containsKey(keys, pub) {
+			return nil, false, fmt.Errorf("that signing key is already trusted")
+		}
+		return append(keys, pub), enabled, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -204,6 +221,7 @@ func lockAddKey(args []string) error {
 func lockRemoveKey(args []string) error {
 	af := newAdminFlags("lock rm-key")
 	id := af.fs.String("id", "", "the key's id, from 'lock status'")
+	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "a signing key the lock trusts now, to sign the change")
 
 	t, err := af.open(args)
 	if err != nil {
@@ -213,16 +231,129 @@ func lockRemoveKey(args []string) error {
 		return fmt.Errorf("lock rm-key needs -id")
 	}
 
-	if t.live() {
-		err = t.admin.RemoveSigningKey(*id)
-	} else {
-		err = t.store.RemoveSigningKey(*id)
-	}
+	err = t.changeLock(*keyPath, nil, func(keys [][]byte, enabled bool) ([][]byte, bool, error) {
+		kept := keys[:0:0]
+		for _, k := range keys {
+			if (control.SigningKey{Public: k}).ID() != *id {
+				kept = append(kept, k)
+			}
+		}
+		if len(kept) == len(keys) {
+			return nil, false, fmt.Errorf("no trusted signing key with id %q", *id)
+		}
+		if len(kept) == 0 && enabled {
+			return nil, false, fmt.Errorf("that is the only trusted key and the lock is enabled; disable the lock first, or the mesh would reject every node")
+		}
+		return kept, enabled, nil
+	})
 	if err != nil {
 		return err
 	}
 	fmt.Print("removed\n")
 	return nil
+}
+
+// lockSeal signs a lock set up before versions were signed, as it stands, so
+// nodes can hold the server to it from here on.
+func lockSeal(args []string) error {
+	af := newAdminFlags("lock seal")
+	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "a signing key the lock trusts")
+
+	t, err := af.open(args)
+	if err != nil {
+		return err
+	}
+	st, err := t.lockStatus()
+	if err != nil {
+		return err
+	}
+	if st.Epoch > 0 {
+		fmt.Printf("the lock is already signed, at version %d\n", st.Epoch)
+		return nil
+	}
+	if err := t.changeLock(*keyPath, nil, func(keys [][]byte, enabled bool) ([][]byte, bool, error) {
+		return keys, enabled, nil
+	}); err != nil {
+		return err
+	}
+	fmt.Print("sealed: every node now holds this server to the lock as it stands\n")
+	return nil
+}
+
+// lockForget throws the lock away, for when every key that could sign a
+// change to it is lost.
+func lockForget(args []string) error {
+	af := newAdminFlags("lock forget")
+	t, err := af.open(args)
+	if err != nil {
+		return err
+	}
+	if t.live() {
+		err = t.admin.ForgetLock()
+	} else {
+		err = t.store.ForgetLock()
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Print("the lock is gone from this server, and every node signature with it.\n\n")
+	fmt.Print("every machine that held the lock still enforces it — the server cannot tell it\n")
+	fmt.Print("otherwise, which is what the lock is for. on each one, as root:\n")
+	fmt.Print("  makima lock reset\n")
+	return nil
+}
+
+// changeLock signs and applies the lock's next version: the current one,
+// changed by edit, signed with the key at keyPath — which the current
+// version has to trust, since that is what every node will check.
+func (t *target) changeLock(keyPath string, names map[string]string, edit func(keys [][]byte, enabled bool) ([][]byte, bool, error)) error {
+	sk, err := readSigningKey(keyPath)
+	if err != nil {
+		return err
+	}
+	st, err := t.lockStatus()
+	if err != nil {
+		return err
+	}
+	if len(st.TrustedKeys) == 0 {
+		return fmt.Errorf("network lock is not set up; start one with 'makima-server lock init'")
+	}
+	var keys [][]byte
+	for _, k := range st.TrustedKeys {
+		keys = append(keys, k.Public)
+	}
+	if !containsKey(keys, sk.Public) {
+		return fmt.Errorf("the signing key in %s is not one the lock trusts, so no node would accept a change signed with it", keyPath)
+	}
+	keys, enabled, err := edit(keys, st.Enabled)
+	if err != nil {
+		return err
+	}
+	next := control.SignLockStatement(ed25519.PrivateKey(sk.Private), st.Epoch+1, enabled, keys)
+	return t.applyLock(next, names)
+}
+
+func (t *target) lockStatus() (control.LockStatus, error) {
+	if t.live() {
+		return t.admin.LockStatus()
+	}
+	return t.store.LockStatus(), nil
+}
+
+func (t *target) applyLock(st control.LockStatement, names map[string]string) error {
+	if t.live() {
+		return t.admin.ApplyLockStatement(st, names)
+	}
+	return t.store.ApplyLockStatement(st, names)
+}
+
+func containsKey(keys [][]byte, k []byte) bool {
+	for _, x := range keys {
+		if string(x) == string(k) {
+			return true
+		}
+	}
+	return false
 }
 
 // lockSign signs every node that needs it.
@@ -280,16 +411,15 @@ func lockSign(args []string) error {
 
 func lockEnable(args []string, on bool) error {
 	af := newAdminFlags("lock enable")
+	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "a signing key the lock trusts, to sign the change")
 	t, err := af.open(args)
 	if err != nil {
 		return err
 	}
 
-	if t.live() {
-		err = t.admin.SetLockEnabled(on)
-	} else {
-		err = t.store.SetLockEnabled(on)
-	}
+	err = t.changeLock(*keyPath, nil, func(keys [][]byte, enabled bool) ([][]byte, bool, error) {
+		return keys, on, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -301,6 +431,7 @@ func lockEnable(args []string, on bool) error {
 		return nil
 	}
 	fmt.Print("network lock disabled; nodes accept whatever peers the server sends\n")
+	fmt.Print("until a version signed by a trusted key enables it again\n")
 	return nil
 }
 

@@ -302,6 +302,11 @@ func (c *Client) SetOwner(name string) error {
 	return c.call("POST", "/api/owner", OwnerRequest{Name: name}, nil)
 }
 
+// ResetLock makes this machine forget its copy of the network lock.
+func (c *Client) ResetLock() error {
+	return c.call("POST", "/api/lock/reset", struct{}{}, nil)
+}
+
 // ListenUserSocket opens a socket a named user can read.
 //
 // The daemon runs as root, so a socket it creates is root's. A desktop app

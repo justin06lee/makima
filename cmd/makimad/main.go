@@ -465,6 +465,20 @@ func run(opts options, upd *update.Installer) error {
 	return nil
 }
 
+func pinEpoch(p *netmap.LockPin) uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.Epoch
+}
+
+func lockState(p *netmap.LockPin) string {
+	if p.Enabled {
+		return fmt.Sprintf("enforced, %d trusted key(s)", len(p.Keys))
+	}
+	return "not enforced"
+}
+
 // netMap renders the current configuration into the mesh view.
 func (n *node) netMap() *netmap.NetMap {
 	n.mu.Lock()
@@ -678,14 +692,22 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	// the whole point of the network lock: a control server that invents a
 	// peer has to forge a signature it holds no key for, and the invention is
 	// dropped here rather than admitted to the data plane.
-	peers, rejected := verifyPeers(resp)
-	if len(rejected) > 0 {
-		for _, r := range rejected {
-			log.Printf("REFUSING peer %s: %v", r.name, r.err)
-		}
+	n.mu.Lock()
+	pin := n.file.Lock
+	n.mu.Unlock()
+	peers, rejected, pin, lockErr := verifyPeers(resp, pin)
+	if lockErr != nil {
+		log.Printf("network lock: not following the control plane's lock past version %d: %v", pinEpoch(pin), lockErr)
+	}
+	for _, r := range rejected {
+		log.Printf("REFUSING peer %s: %v", r.name, r.err)
 	}
 
 	n.mu.Lock()
+	if pinEpoch(pin) != pinEpoch(n.file.Lock) {
+		log.Printf("network lock: now at version %d (%s)", pin.Epoch, lockState(pin))
+	}
+	n.file.Lock = pin
 	n.file.Self = resp.Self
 	n.file.Peers = peers
 	n.file.Domain = resp.Domain

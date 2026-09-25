@@ -311,3 +311,14 @@ func (n Node) OffersExit() bool {
 	}
 	return found == len(DefaultHalves)
 }
+
+// LockPin is the network lock as this node has accepted it: which signing
+// keys it trusts, whether it enforces them, and the version of the lock that
+// said so. Kept by the node itself, because the control plane is the thing
+// the lock defends against — it can offer a newer version, signed by a key
+// already trusted here, and nothing else.
+type LockPin struct {
+	Epoch   uint64   `json:"epoch"`
+	Enabled bool     `json:"enabled"`
+	Keys    [][]byte `json:"keys"`
+}

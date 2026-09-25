@@ -155,19 +155,23 @@ func (c *AdminClient) PendingSignatures() ([]UnsignedNode, error) {
 	return out, nil
 }
 
-// AddSigningKey trusts a new authority.
-func (c *AdminClient) AddSigningKey(name string, pub []byte) error {
-	return c.call(http.MethodPost, "/admin/lock/add-key", SigningKeyRequest{Name: name, Public: pub}, nil)
+// LockChain is the lock's signed versions.
+func (c *AdminClient) LockChain() ([]LockStatement, error) {
+	var out []LockStatement
+	if err := c.call(http.MethodGet, "/admin/lock/chain", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-// RemoveSigningKey stops trusting one.
-func (c *AdminClient) RemoveSigningKey(id string) error {
-	return c.call(http.MethodPost, "/admin/lock/rm-key", SigningKeyRequest{ID: id}, nil)
+// ForgetLock throws the lock away; see Store.ForgetLock.
+func (c *AdminClient) ForgetLock() error {
+	return c.call(http.MethodPost, "/admin/lock/forget", struct{}{}, nil)
 }
 
-// SetLockEnabled turns enforcement on or off.
-func (c *AdminClient) SetLockEnabled(on bool) error {
-	return c.call(http.MethodPost, "/admin/lock/enable", LockEnableRequest{Enabled: on}, nil)
+// ApplyLockStatement makes st the lock's next version.
+func (c *AdminClient) ApplyLockStatement(st LockStatement, names map[string]string) error {
+	return c.call(http.MethodPost, "/admin/lock/statement", LockStatementRequest{Statement: st, Names: names}, nil)
 }
 
 // ApplySignature records a signature for a node.

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"strings"
@@ -88,6 +90,9 @@ func (n *node) Status() localapi.Status {
 			}
 		}
 		peers = append(peers, info)
+	}
+	if pin := f.Lock; pin != nil {
+		st.Lock = &localapi.LockInfo{Version: pin.Epoch, Enforced: pin.Enabled, Keys: len(pin.Keys)}
 	}
 	n.mu.Unlock()
 
@@ -770,4 +775,26 @@ func (n *node) Ping(name string) (localapi.Ping, error) {
 		out.Path = "relay " + st.RelayURL
 	}
 	return out, nil
+}
+
+// ResetLock forgets this machine's copy of the network lock, so the next
+// netmap is taken as the first: the way out when every key that could sign a
+// change to the lock is lost. Only ever by somebody with root on this
+// machine — a control plane asking for it would be the attack the lock is
+// there to stop.
+func (n *node) ResetLock() error {
+	n.mu.Lock()
+	if n.file.Lock == nil {
+		n.mu.Unlock()
+		return errors.New("this machine holds no network lock")
+	}
+	n.file.Lock = nil
+	err := conf.Save(n.cfgPath, n.file)
+	n.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("save configuration: %w", err)
+	}
+	log.Print("network lock: forgotten on request; the next netmap's lock is taken as new")
+	n.kickPoll()
+	return nil
 }
