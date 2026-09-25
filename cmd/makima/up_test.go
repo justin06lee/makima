@@ -1,9 +1,15 @@
 package main
 
 import (
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/justin06lee/makima/internal/control"
+	"github.com/justin06lee/makima/internal/invite"
 )
 
 func TestControlURL(t *testing.T) {
@@ -73,5 +79,52 @@ func TestControlURLUsesTheServersPort(t *testing.T) {
 	}
 	if got := controlURLOn("https://makima.example.dev", 8081); got != "https://makima.example.dev" {
 		t.Fatal(got)
+	}
+}
+
+// The port an invite names is the one the running server answers on — asked,
+// not guessed. Re-running `makima up` after an interrupted start used to pick
+// a fresh port because the server it had started held the old one, and hand
+// out invites to a port nothing listened on.
+func TestTheRunningServerSaysWhichPort(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "mkport")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	store, err := control.OpenStore(filepath.Join(dir, "control.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := control.NewServer(store, log.New(io.Discard, "", 0))
+	srv.SetListenPort(8081)
+
+	ln, err := control.ListenAdmin(filepath.Join(dir, "admin.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := &http.Server{Handler: srv.AdminHandler()}
+	go hs.Serve(ln)
+	defer hs.Close()
+
+	admin, ok := control.DialAdmin(filepath.Join(dir, "admin.sock"))
+	if !ok {
+		t.Fatal("could not reach the admin socket")
+	}
+	if got := livePort(admin); got != 8081 {
+		t.Errorf("livePort = %d, want the server's own 8081", got)
+	}
+	if got := controlURLOn("192.168.1.253", livePort(admin)); got != "http://192.168.1.253:8081" {
+		t.Errorf("invite URL %s", got)
+	}
+}
+
+// A server typed from memory, without a port, is assumed to be on the port a
+// new server tries first. The two constants live in different packages and
+// have to agree.
+func TestTheInviteDefaultIsTheServerDefault(t *testing.T) {
+	if invite.DefaultPort != control.DefaultPort {
+		t.Errorf("invite assumes %d, a server starts at %d", invite.DefaultPort, control.DefaultPort)
 	}
 }

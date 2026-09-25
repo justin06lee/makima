@@ -242,6 +242,17 @@ func (c *AdminClient) ForgetNode(name string, id netmap.NodeID) error {
 	return c.call(http.MethodPost, "/admin/forget", ForgetRequest{Name: name, ID: id}, nil)
 }
 
+// ListenPort is the port the running server answers on — the one every
+// invite and every forwarded port has to name. Zero from a server too old to
+// say.
+func (c *AdminClient) ListenPort() (int, error) {
+	var pr PortResponse
+	if err := c.call(http.MethodGet, "/admin/port", nil, &pr); err != nil {
+		return 0, err
+	}
+	return pr.Port, nil
+}
+
 // ServerKey returns the control plane's public key.
 func (c *AdminClient) ServerKey() (key.Public, error) {
 	var kr keyResponse

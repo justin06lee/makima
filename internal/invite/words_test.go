@@ -1,6 +1,7 @@
 package invite
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -46,9 +47,11 @@ func TestWordsCarryThePort(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("%s: ok=%v err=%v", server, ok, err)
 		}
+		// No port in a URL is port 80 — what the pasted form of the same
+		// invite, and every HTTP client, reads it as.
 		want := server
 		if !strings.Contains(server[len("http://"):], ":") {
-			want = server + ":8080"
+			want = server + ":80"
 		}
 		if inv.Server != want {
 			t.Errorf("%s came back as %s", server, inv.Server)
@@ -188,5 +191,44 @@ func TestServerKeyMAC(t *testing.T) {
 	other, _ := NewSecret()
 	if VerifyServerKey(MACKey(other), priv.Public(), mac) {
 		t.Fatal("a MAC verified under somebody else's words")
+	}
+}
+
+// A server typed in front of the ten words is the server whatever it is
+// called — a machine named after a word ("home"), or a prefix of one
+// ("desk"), was taken for a word, and the invite for eleven words.
+func TestAServerNamedLikeAWordIsStillTheServer(t *testing.T) {
+	secret, _ := NewSecret()
+	for _, host := range []string{"home", "desk", "cloud", "tenet"} {
+		words, err := EncodeWords("http://"+host+":8081", secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		typed := host + words[strings.Index(words, " "):]
+		inv, ok, err := DecodeWords(typed)
+		if err != nil || !ok {
+			t.Errorf("%s: ok=%v err=%v", host, ok, err)
+			continue
+		}
+		if inv.Server != "http://"+host+":"+strconv.Itoa(DefaultPort) {
+			t.Errorf("%s: server %s", host, inv.Server)
+		}
+	}
+}
+
+// The server keeps the case it was typed in: a path behind a reverse proxy
+// has one.
+func TestTheServerKeepsItsCase(t *testing.T) {
+	secret, _ := NewSecret()
+	words, err := EncodeWords("https://example.com/Makima", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, _, err := DecodeWords(words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.Server != "https://example.com/Makima" {
+		t.Errorf("server came back as %s", inv.Server)
 	}
 }

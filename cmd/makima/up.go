@@ -100,74 +100,59 @@ func recordOwner(path string) {
 	_ = conf.Save(path, f)
 }
 
-// defaultServerPort is where the network's server listens unless something
-// else already does.
-const defaultServerPort = 8080
-
-// serverPortPath remembers the port the server was given when the network
-// was made, so every later start — `makima up` again, a reboot, `make
-// update` — puts it back on the same one. The invites already handed out
-// name it.
-const serverPortPath = "/var/lib/makima/server-port"
-
-// serverPort is the port this machine's server listens on.
-func serverPort() int {
-	if b, err := os.ReadFile(serverPortPath); err == nil {
-		if p, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && p > 0 && p < 65536 {
+// livePort is the port the network's server on this machine answers on:
+// the running server's own answer, else what it recorded beside its state,
+// else the port a new one would try first. The server decides it
+// (control.ListenControl) and everything here asks, so an invite, the
+// firewall and the forwarding advice always name the port in use — before,
+// `makima up` chose and wrote a port of its own, and running it again after
+// an interrupted start picked a new one while the server kept the old.
+func livePort(admin *control.AdminClient) int {
+	if admin != nil {
+		if p, err := admin.ListenPort(); err == nil && p != 0 {
 			return p
 		}
 	}
-	return defaultServerPort
+	if p := control.RecordedPort(serverStatePath); p != 0 {
+		return p
+	}
+	return control.DefaultPort
 }
 
-// choosePort picks the port a new network's server will listen on.
-//
-// The advertised port when one was given as host:port — that is a promise to
-// the other machines. Otherwise 8080, unless something already has it, which
-// on a machine that self-hosts is likely: then the next free one. Then it is
-// written down, before the server first starts, so it never moves again.
-func choosePort(advertise string) (int, error) {
-	want := 0
+// advertisedPort is the port in an -advertise given as host:port, or zero.
+func advertisedPort(advertise string) int {
 	s := strings.TrimSpace(advertise)
-	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
-		if _, p, err := net.SplitHostPort(s); err == nil {
-			if n, err := strconv.Atoi(p); err == nil {
-				want = n
-			}
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return 0
+	}
+	if _, p, err := net.SplitHostPort(s); err == nil {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n < 65536 {
+			return n
 		}
 	}
-	free := func(p int) bool {
-		l, err := net.Listen("tcp", ":"+strconv.Itoa(p))
-		if err != nil {
-			return false
+	return 0
+}
+
+// promisePort writes down the port an -advertise host:port promised the
+// other machines, before the new network's server first starts, so that is
+// where it listens.
+func promisePort(advertise string) error {
+	want := advertisedPort(advertise)
+	if want == 0 {
+		return nil
+	}
+	if got := control.RecordedPort(serverStatePath); got != 0 && got != want {
+		return fmt.Errorf("this machine's network server already listens on %d, not %d", got, want)
+	}
+	l, err := net.Listen("tcp", ":"+strconv.Itoa(want))
+	if err != nil {
+		if control.RecordedPort(serverStatePath) == want {
+			return nil // our own server, already there
 		}
-		l.Close()
-		return true
+		return fmt.Errorf("port %d is already in use on this machine, so the network cannot be reached at %s — pick another port, or give just the address", want, advertise)
 	}
-	port := 0
-	switch {
-	case want != 0 && free(want):
-		port = want
-	case want != 0:
-		return 0, fmt.Errorf("port %d is already in use on this machine, so the network cannot be reached at %s — pick another port, or give just the address", want, advertise)
-	default:
-		for p := defaultServerPort; p < defaultServerPort+100; p++ {
-			if free(p) {
-				port = p
-				break
-			}
-		}
-		if port == 0 {
-			return 0, errors.New("no free port from 8080 to 8179 for the network's server")
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(serverPortPath), 0o700); err != nil {
-		return 0, err
-	}
-	if err := os.WriteFile(serverPortPath, []byte(strconv.Itoa(port)+"\n"), 0o600); err != nil {
-		return 0, err
-	}
-	return port, nil
+	l.Close()
+	return control.RecordPort(serverStatePath, want)
 }
 
 // openServerPort lets the other machines through the host firewall to the
@@ -186,7 +171,7 @@ func openServerPort(port int) {
 func controlDaemon() supervise.Daemon {
 	return supervise.Daemon{
 		Name:    "makima-server",
-		Args:    []string{"serve", "-state", serverStatePath, "-addr", ":" + strconv.Itoa(serverPort())},
+		Args:    []string{"serve", "-state", serverStatePath},
 		Socket:  serverSocket(),
 		PIDFile: filepath.Join(runDir, "makima-server.pid"),
 		LogFile: filepath.Join(logDir, "makima-server.log"),
@@ -253,14 +238,9 @@ func upCmd(args []string) error {
 func bootstrap(ctx context.Context, path, name, advertise string) error {
 	fmt.Println("No network here yet — starting one. This machine holds it; the others join through it.")
 
-	port, err := choosePort(advertise)
-	if err != nil {
+	if err := promisePort(advertise); err != nil {
 		return err
 	}
-	if port != defaultServerPort {
-		fmt.Printf("Port %d is taken here, so the network's server listens on %d.\n", defaultServerPort, port)
-	}
-	openServerPort(port)
 
 	server := controlDaemon()
 	if err := server.Start(ctx, startWait); err != nil {
@@ -272,6 +252,14 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 		return fmt.Errorf("the network's server started but is not answering on %s", serverSocket())
 	}
 
+	// The port the server took, not one decided here: a server already
+	// running from an interrupted start keeps the one it has.
+	port := livePort(admin)
+	if port != control.DefaultPort && advertisedPort(advertise) == 0 {
+		fmt.Printf("Port %d is taken here, so the network's server listens on %d.\n", control.DefaultPort, port)
+	}
+	openServerPort(port)
+
 	serverKey, err := admin.ServerKey()
 	if err != nil {
 		return fmt.Errorf("read the mesh's public key: %w", err)
@@ -281,7 +269,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 	if reachable == "" {
 		reachable = guessReachableAddr()
 	}
-	serverURL := controlURL(reachable)
+	serverURL := controlURLOn(reachable, port)
 
 	// Names on by default. There is no reason to make somebody turn on the
 	// ability to type a name instead of an address, and every reason not to
@@ -309,7 +297,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 
 	fmt.Println()
 	printInvite(words, inv)
-	warnIfUnreachable(reachable)
+	warnIfUnreachable(reachable, port)
 	linkCLIQuietly()
 	offerAlias()
 	return nil
@@ -396,11 +384,12 @@ func inviteCmd(args []string) error {
 		reachable = guessReachableAddr()
 	}
 
-	inv, err := mintInvite(admin, controlURL(reachable), serverKey)
+	port := livePort(admin)
+	inv, err := mintInvite(admin, controlURLOn(reachable, port), serverKey)
 	if err != nil {
 		return err
 	}
-	words, err := mintWords(admin, controlURL(reachable))
+	words, err := mintWords(admin, controlURLOn(reachable, port))
 	if err != nil {
 		return err
 	}
@@ -415,7 +404,7 @@ func inviteCmd(args []string) error {
 
 	printInvite(words, inv)
 	fmt.Printf("\nGood for one device, for %s.\n", inviteTTL)
-	warnIfUnreachable(reachable)
+	warnIfUnreachable(reachable, port)
 	return nil
 }
 
@@ -597,7 +586,7 @@ func guessReachableAddr() string {
 // has to let the traffic in. Everything else — a name that follows the home
 // address, every node learning it, the relay riding along — makima does once
 // asked. Better said now than discovered in a hotel.
-func warnIfUnreachable(addr string) {
+func warnIfUnreachable(addr string, port int) {
 	ip, err := netip.ParseAddr(addr)
 	if err != nil || !ip.IsPrivate() {
 		return
@@ -612,7 +601,7 @@ func warnIfUnreachable(addr string) {
 	fmt.Println()
 	fmt.Println("      1. get a free name at https://www.duckdns.org, then run here:")
 	fmt.Println("           sudo makima-server ddns set -name NAME")
-	fmt.Printf("      2. forward TCP %d on your router to this machine — the command above\n", serverPort())
+	fmt.Printf("      2. forward TCP %d on your router to this machine — the command above\n", port)
 	fmt.Println("         prints exactly what to forward.")
 	fmt.Println()
 	fmt.Println("    Every machine learns the name on its own, and the relay rides the same port.")
@@ -717,7 +706,11 @@ func relayDaemon() supervise.Daemon {
 // the house for some other service, the coordination plane can ride the same
 // path — and then it is on 443 behind a name, not on 8080 behind an address.
 func controlURL(advertise string) string {
-	return controlURLOn(advertise, serverPort())
+	var admin *control.AdminClient
+	if a, ok := control.DialAdmin(serverSocket()); ok {
+		admin = a
+	}
+	return controlURLOn(advertise, livePort(admin))
 }
 
 // controlURLOn is controlURL with the server's port given rather than read.

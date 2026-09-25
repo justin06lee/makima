@@ -18,12 +18,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -108,7 +106,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `makima-server — the coordination plane for a makima mesh
 
 running it:
-  makima-server serve   [-addr :8080] [-no-relay]
+  makima-server serve   [-addr :PORT] [-no-relay]
   makima-server key
 
 admitting machines:
@@ -125,9 +123,9 @@ reaching this server from anywhere:
   makima-server ddns set     -name NAME [-token T]   a free NAME.duckdns.org, kept pointed here
   makima-server ddns                                 how that is going
   makima-server ddns off
-  makima-server urls add     -url http://NAME:8080   another address nodes can use
+  makima-server urls add     -url http://NAME:PORT   another address nodes can use
   makima-server urls ls
-  makima-server urls rm      -url http://NAME:8080
+  makima-server urls rm      -url http://NAME:PORT
 
 reaching machines that cannot reach each other:
   makima-server relay add    -url HOST:3478 -key K
@@ -157,7 +155,7 @@ func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	statePath := fs.String("state", DefaultStatePath, "path to control plane state")
 	socketPath := fs.String("socket", "", "admin socket path (default: beside the state file)")
-	addr := fs.String("addr", ":8080", "address to listen on")
+	addr := fs.String("addr", "", "address to listen on (default: the port this network's server has always used, or for a new one :8080 or the next free port)")
 	noRelay := fs.Bool("no-relay", false, "do not carry a relay on this port")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -169,11 +167,6 @@ func serve(args []string) error {
 	}
 	store.SetServerVersion(version)
 	handlers := control.NewServer(store, log.Default())
-	if _, p, err := net.SplitHostPort(*addr); err == nil {
-		if port, err := strconv.Atoi(p); err == nil {
-			handlers.SetListenPort(port)
-		}
-	}
 
 	// On by default, because a relay is what lets two machines that cannot
 	// reach each other directly still connect — and this is the one machine
@@ -200,6 +193,15 @@ func serve(args []string) error {
 	}
 	defer adminLn.Close()
 
+	// The public port next, and written down beside the state, so it is the
+	// same after every restart and anything that asks — invites, the
+	// forwarding advice, the command line — gets the port actually in use.
+	ln, port, err := control.ListenControl(*statePath, *addr)
+	if err != nil {
+		return err
+	}
+	handlers.SetListenPort(port)
+
 	adminSrv := &http.Server{Handler: handlers.AdminHandler()}
 	go func() {
 		if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -208,7 +210,6 @@ func serve(args []string) error {
 	}()
 
 	srv := &http.Server{
-		Addr:    *addr,
 		Handler: handlers.Handler(),
 		// No WriteTimeout: a map request is *meant* to hang for up to a
 		// minute, and a write deadline would cut the long poll off at the
@@ -252,7 +253,7 @@ func serve(args []string) error {
 		_ = adminSrv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("listening on %s", *addr)
+	log.Printf("listening on :%d", port)
 	if rs != nil {
 		log.Printf("relay    %s on the same port, key %s", relay.Path, rs.PublicKey())
 	}
@@ -262,7 +263,7 @@ func serve(args []string) error {
 	log.Printf("%d node(s) registered", len(store.Nodes()))
 	log.Print("mint a join credential with: makima-server authkey")
 
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	log.Print("stopped")
@@ -305,8 +306,10 @@ func authkey(args []string) error {
 		a      *control.AuthKey
 		srvKey key.Public
 		err    error
+		admin  *control.AdminClient
 	)
-	if admin, live := control.DialAdmin(sock(*socketPath, *statePath)); live {
+	if live, ok := control.DialAdmin(sock(*socketPath, *statePath)); ok {
+		admin = live
 		if a, err = admin.MintAuthKeyTagged(*reusable, *expiry, tagList); err != nil {
 			return err
 		}
@@ -335,8 +338,8 @@ func authkey(args []string) error {
 	} else {
 		fmt.Print(", single use\n")
 	}
-	fmt.Printf("\njoin a machine with:\n  sudo makima join -server http://<this-host>:8080 -authkey %s \\\n       -serverkey %s\n",
-		a.Secret, srvKey)
+	fmt.Printf("\njoin a machine with:\n  sudo makima join -server http://<this-host>:%d -authkey %s \\\n       -serverkey %s\n",
+		serverPort(admin, *statePath), a.Secret, srvKey)
 	return nil
 }
 

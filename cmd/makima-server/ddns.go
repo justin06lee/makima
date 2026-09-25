@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -88,7 +88,7 @@ func ddnsSet(args []string) error {
 	} else {
 		p := *port
 		if p == 0 {
-			p = listenPortOnDisk(*af.state)
+			p = t.port(*af.state)
 		}
 		u, err = t.store.SetDDNS(control.DDNS{Name: name, Token: *token, Port: p})
 	}
@@ -103,16 +103,28 @@ func ddnsSet(args []string) error {
 	}
 	fmt.Printf("Every machine on the network learns %s within a minute or so, and uses it\n", u)
 	fmt.Println("whenever it cannot reach this server at its usual address.")
-	printForwards(u)
+	printForwards(u, t.port(*af.state))
 	return nil
 }
 
 // printForwards says what the router has to let in, since that is the one
-// part no program on this machine can do on its own.
-func printForwards(controlURL string) {
-	serverPort := "8080"
-	if _, p, err := net.SplitHostPort(strings.TrimPrefix(controlURL, "http://")); err == nil {
-		serverPort = p
+// part no program on this machine can do on its own: the port the name is
+// reached at from outside, to the port this server actually listens on.
+func printForwards(controlURL string, local int) {
+	outside := local
+	if u, err := url.Parse(controlURL); err == nil {
+		switch p := u.Port(); {
+		case p != "":
+			outside, _ = strconv.Atoi(p)
+		case u.Scheme == "https":
+			outside = 443
+		case u.Scheme == "http":
+			outside = 80
+		}
+	}
+	server := strconv.Itoa(local)
+	if outside != local {
+		server = fmt.Sprintf("%d → %d", outside, local)
 	}
 
 	fmt.Println()
@@ -121,9 +133,9 @@ func printForwards(controlURL string) {
 	} else {
 		fmt.Println("One thing left, on your router: forward these to this machine:")
 	}
-	fmt.Printf("  TCP %-6s this server, and the relay that rides on it\n", serverPort)
+	fmt.Printf("  TCP %-11s this server, and the relay that rides on it\n", server)
 	if f, err := conf.Load(conf.DefaultPath); err == nil && f.ListenPort != 0 {
-		fmt.Printf("  UDP %-6d this machine's tunnel, so the others can connect to it directly\n", f.ListenPort)
+		fmt.Printf("  UDP %-11d this machine's tunnel, so the others can connect to it directly\n", f.ListenPort)
 	}
 	fmt.Println()
 	fmt.Println("Without them the name still leads to your house, and the router turns everything away.")
@@ -203,19 +215,6 @@ func askToken() (string, error) {
 		return "", errors.New("no token given")
 	}
 	return tok, nil
-}
-
-// listenPortOnDisk is the port this server was set up on, from the file
-// `makima up` writes beside the state, for when the server is not running to
-// be asked.
-func listenPortOnDisk(statePath string) int {
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(statePath), "server-port"))
-	if err == nil {
-		if p, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && p > 0 && p < 65536 {
-			return p
-		}
-	}
-	return 8080
 }
 
 // lanAddr is this machine's address on its local network — what a router's
