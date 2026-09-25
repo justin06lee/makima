@@ -27,10 +27,34 @@ import (
 // plane. The two are alternatives, not layers.
 var errNotServerless = errors.New("this machine belongs to a mesh with a control server; add machines with 'makima invite' instead")
 
+// errStaticMesh reports pairing attempted on a mesh written by hand, which has
+// no socket of makima's own to knock or be knocked on.
+var errStaticMesh = errors.New("this machine's mesh is a static one, written by hand; add a peer with 'makima peer add', or start a serverless mesh with 'makima pair'")
+
+// canPair says whether this node may pair, and why not.
+//
+// Only a serverless node. A managed one has the same path-selecting socket
+// and used to be let through, since that was all that was checked: the
+// "peer" it gained was overwritten by the next netmap, and the pairing
+// address it handed out carried a relay of "/relay" — a path on its own
+// control plane, which means nothing to the machine on the other end.
+func (n *node) canPair() error {
+	n.mu.Lock()
+	managed := n.file.Managed()
+	n.mu.Unlock()
+	switch {
+	case managed:
+		return errNotServerless
+	case n.sock == nil:
+		return errStaticMesh
+	}
+	return nil
+}
+
 // openPairing publishes a pairing address and starts accepting knocks on it.
 func (n *node) openPairing(ttl time.Duration) (string, time.Time, error) {
-	if n.sock == nil {
-		return "", time.Time{}, errNotServerless
+	if err := n.canPair(); err != nil {
+		return "", time.Time{}, err
 	}
 	if ttl <= 0 {
 		ttl = pair.DefaultWindow
@@ -126,8 +150,8 @@ func (n *node) pairAddress() (pair.Address, magicsock.PairingSelf, error) {
 
 // knock pairs with a machine that published an address.
 func (n *node) knock(ctx context.Context, encoded string) (netmap.Node, error) {
-	if n.sock == nil {
-		return netmap.Node{}, errNotServerless
+	if err := n.canPair(); err != nil {
+		return netmap.Node{}, err
 	}
 
 	a, err := pair.Decode(encoded)
@@ -222,7 +246,8 @@ func (n *node) acceptPaired(p magicsock.PairedPeer) error {
 		return errors.New("that is this machine's own key")
 	}
 
-	// An address collision is remote — 22 bits of derived host space — but it
+	// An address collision is unlikely — 16 bits of derived host space, about a
+	// one-in-a-hundred chance by three dozen machines — but it
 	// has to be caught rather than producing a mesh where two peers silently
 	// answer to the same address and cryptokey routing sends packets to
 	// whichever WireGuard matched first.

@@ -282,9 +282,10 @@ func (c *Conn) ackKnock(tx disco.TxID, discoKey, nodeKey key.Public, self Pairin
 		return
 	}
 
-	// Back the way it came, and — when that was the relay — also straight at
-	// the endpoints the knock advertised. The relay answer is the one that is
-	// certain to arrive; the direct ones are what start the hole punch.
+	// Back the way it came. Nothing is sent straight at the endpoints the
+	// knock advertised: once both sides hold each other as peers, ordinary
+	// probing tries those from both ends at once, which is what punches the
+	// hole.
 	if relayed {
 		_ = c.sendRelay([][]byte{pkt}, nodeKey)
 	} else if src.IsValid() {
