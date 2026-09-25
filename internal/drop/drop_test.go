@@ -396,3 +396,90 @@ func TestAStalledSenderIsCutOff(t *testing.T) {
 		t.Errorf("a sender that never sent a header created %v", entries)
 	}
 }
+
+// me is an Owner who is the user running the tests, so ownership changes
+// are real and harmless.
+func me(home string) *Owner {
+	return &Owner{UID: os.Getuid(), GID: os.Getgid(), Home: home}
+}
+
+// The daemon is root and the inbox is in somebody's home. Before, it made
+// the path and chowned it — following whatever was there — so a symlink from
+// ~/Downloads/makima to /etc gave the owner /etc, and every file a peer sent
+// was written into it as root.
+func TestInboxThatLeadsOutOfTheHomeIsRefused(t *testing.T) {
+	home := t.TempDir()
+	elsewhere := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(home, "Downloads", "makima")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(quiet())
+	t.Cleanup(r.Close)
+	r.Apply(netip.MustParseAddr("127.0.0.1"), Config{Dir: filepath.Join(home, "Downloads", "makima"), Owner: me(home)})
+
+	if _, active, _ := r.Status(); active {
+		t.Error("the inbox opened through a symlink that leaves the owner's home")
+	}
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+		t.Errorf("something was written outside the home: %v", entries)
+	}
+}
+
+// The same through an intermediate directory: ~/Downloads itself a link out.
+func TestInboxUnderALinkedParentIsRefused(t *testing.T) {
+	home := t.TempDir()
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(home, "Downloads")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openInbox(filepath.Join(home, "Downloads", "makima"), me(home)); err == nil {
+		t.Error("the inbox was made through a parent that leaves the owner's home")
+	}
+	if _, err := os.Stat(filepath.Join(elsewhere, "makima")); err == nil {
+		t.Error("a directory was created outside the home")
+	}
+}
+
+// A missing ~/Downloads is made on the way, and belongs to the owner.
+func TestInboxIsMadeInsideTheHome(t *testing.T) {
+	home := t.TempDir()
+	root, err := openInbox(filepath.Join(home, "Downloads", "makima"), me(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Close()
+	if fi, err := os.Stat(filepath.Join(home, "Downloads", "makima")); err != nil || !fi.IsDir() {
+		t.Errorf("the inbox was not made: %v", err)
+	}
+}
+
+// A symlink planted in the inbox under the name a peer is about to send is
+// not written through: the file is created beside it instead.
+func TestPlantedLinkInTheInboxIsNotFollowed(t *testing.T) {
+	home := t.TempDir()
+	inbox := filepath.Join(home, "Downloads", "makima")
+	addr, _, _ := receiver(t, Config{Dir: inbox, Owner: me(home)})
+
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(inbox, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	landed, err := Send(addr, writeFile(t, "notes.txt", "from a peer"), "laptop", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Errorf("the file a planted link pointed at now holds %q", got)
+	}
+	if filepath.Base(landed) != "notes (2).txt" {
+		t.Errorf("landed as %s", filepath.Base(landed))
+	}
+}

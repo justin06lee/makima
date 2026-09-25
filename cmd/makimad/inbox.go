@@ -28,7 +28,7 @@ func defaultInboxDir(o *owner) (string, *drop.Owner) {
 	if o == nil || o.Home == "" {
 		return "/var/lib/makima/inbox", nil
 	}
-	return filepath.Join(o.Home, "Downloads", "makima"), &drop.Owner{UID: o.UID, GID: o.GID}
+	return filepath.Join(o.Home, "Downloads", "makima"), &drop.Owner{UID: o.UID, GID: o.GID, Home: o.Home}
 }
 
 // inboxConfig resolves the flags and the stored settings into what the
@@ -57,7 +57,7 @@ func (n *node) inboxConfig(opts options) drop.Config {
 		// A directory chosen by hand may be anywhere, so the ownership guess
 		// no longer applies unless it is under the same user's home.
 		if own != nil && isUnder(dir, own.Home) {
-			owner = &drop.Owner{UID: own.UID, GID: own.GID}
+			owner = &drop.Owner{UID: own.UID, GID: own.GID, Home: own.Home}
 		} else {
 			owner = nil
 		}

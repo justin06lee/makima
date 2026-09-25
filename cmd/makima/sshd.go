@@ -32,7 +32,7 @@ func sshdCmd(args []string) error {
 	on := fs.Bool("on", false, "start accepting ssh from the mesh")
 	off := fs.Bool("off", false, "stop")
 	keys := fs.String("keys", "", "where authorized keys come from: a file path, or github:USER (comma-separated)")
-	asUser := fs.String("user", "", "the account sessions run as when none is asked for (default: whoever started makima)")
+	asUser := fs.String("user", "", "the account sessions run as when none is asked for (default: this machine's owner)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,6 +32,11 @@ type Receiver struct {
 	maxSize int64
 	owner   *Owner
 
+	// root is the inbox directory itself, opened once: files are created
+	// inside it, never by path, so nothing done to the path afterwards — a
+	// symlink put in its place — can redirect where they are written.
+	root *os.Root
+
 	// received counts completed transfers, for status.
 	received uint64
 }
@@ -44,6 +51,14 @@ type Receiver struct {
 type Owner struct {
 	UID int
 	GID int
+
+	// Home is a directory the owner controls and the inbox lives under — in
+	// their home, usually. Everything the daemon does on the way to the
+	// inbox stays inside it: the daemon is root, the directories are the
+	// owner's, and root following a symlink the owner put there would hand
+	// the owner whatever it points at. Empty when the inbox is somewhere
+	// the owner does not control.
+	Home string
 }
 
 // New builds a receiver. It does not listen until Apply.
@@ -90,8 +105,9 @@ func (r *Receiver) Apply(addr netip.Addr, cfg Config) {
 		return
 	}
 
-	old := r.ln
+	old, oldRoot := r.ln, r.root
 	r.ln = nil
+	r.root = nil
 	r.addr = addr
 	r.dir = cfg.Dir
 	r.mu.Unlock()
@@ -99,28 +115,29 @@ func (r *Receiver) Apply(addr netip.Addr, cfg Config) {
 	if old != nil {
 		old.Close()
 	}
+	if oldRoot != nil {
+		oldRoot.Close()
+	}
 	if cfg.Dir == "" || !addr.IsValid() {
 		return
 	}
 
-	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
+	root, err := openInbox(cfg.Dir, cfg.Owner)
+	if err != nil {
 		r.log.Printf("inbox %s: %v", cfg.Dir, err)
 		return
-	}
-	if o := cfg.Owner; o != nil {
-		// Best effort: an inbox the daemon cannot chown still works, it is
-		// just inconvenient, and refusing to receive over it would be worse.
-		_ = os.Chown(cfg.Dir, o.UID, o.GID)
 	}
 
 	ln, err := net.Listen("tcp", net.JoinHostPort(addr.String(), fmt.Sprint(Port)))
 	if err != nil {
+		root.Close()
 		r.log.Printf("inbox: %v", err)
 		return
 	}
 
 	r.mu.Lock()
 	r.ln = ln
+	r.root = root
 	r.mu.Unlock()
 
 	r.log.Printf("inbox %s — peers can send files here", cfg.Dir)
@@ -130,13 +147,61 @@ func (r *Receiver) Apply(addr netip.Addr, cfg Config) {
 // Close stops receiving.
 func (r *Receiver) Close() {
 	r.mu.Lock()
-	ln := r.ln
+	ln, root := r.ln, r.root
 	r.ln = nil
+	r.root = nil
 	r.mu.Unlock()
 
 	if ln != nil {
 		ln.Close()
 	}
+	if root != nil {
+		root.Close()
+	}
+}
+
+// openInbox makes sure the inbox exists and opens it.
+//
+// For an inbox under an owner's home, every step is taken inside that home
+// (os.Root), so a symlink anywhere on the way that points out of it is
+// refused rather than followed. Root used to MkdirAll and then Chown the
+// path, following whatever the owner had put there: a symlink from
+// ~/Downloads/makima to /etc handed the owner /etc, and had files from peers
+// written into it. Only directories created here are given to the owner,
+// and the inbox itself with Lchown, which never follows a link.
+func openInbox(dir string, o *Owner) (*os.Root, error) {
+	if o == nil || o.Home == "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+		return os.OpenRoot(dir)
+	}
+
+	rel, err := filepath.Rel(o.Home, dir)
+	if err != nil || !filepath.IsLocal(rel) {
+		return nil, fmt.Errorf("%s is not inside %s", dir, o.Home)
+	}
+	home, err := os.OpenRoot(o.Home)
+	if err != nil {
+		return nil, err
+	}
+	defer home.Close()
+
+	cur := ""
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		switch err := home.Mkdir(cur, 0o700); {
+		case err == nil:
+			// Best effort: an inbox the daemon cannot give away still works,
+			// it is just inconvenient, and refusing to receive would be worse.
+			_ = home.Lchown(cur, o.UID, o.GID)
+		case errors.Is(err, fs.ErrExist):
+		default:
+			return nil, err
+		}
+	}
+	_ = home.Lchown(rel, o.UID, o.GID)
+	return home.OpenRoot(rel)
 }
 
 // Status reports where files land and how many have arrived.
@@ -172,10 +237,10 @@ func (r *Receiver) handle(c net.Conn) {
 
 func (r *Receiver) receive(c net.Conn) (Result, error) {
 	r.mu.Lock()
-	dir, maxSize, owner := r.dir, r.maxSize, r.owner
+	dir, maxSize, owner, root := r.dir, r.maxSize, r.owner, r.root
 	r.mu.Unlock()
 
-	if dir == "" {
+	if dir == "" || root == nil {
 		return Result{}, errors.New("this machine is not accepting files")
 	}
 
@@ -213,20 +278,12 @@ func (r *Receiver) receive(c net.Conn) (Result, error) {
 		return Result{}, fmt.Errorf("%s is %s, over this machine's %s limit", name, humanSize(h.Size), humanSize(maxSize))
 	}
 
-	path, err := UniqueName(dir, name)
+	f, created, err := createUnique(root, name, fileMode(h.Mode))
 	if err != nil {
 		return Result{}, err
 	}
-
-	// O_EXCL because UniqueName's answer is a moment old, and the gap between
-	// looking and creating is exactly where a second transfer of the same name
-	// would land. Failing here is correct: it means the name was taken after
-	// all.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode(h.Mode))
-	if err != nil {
-		return Result{}, fmt.Errorf("create %s: %w", path, err)
-	}
 	defer f.Close()
+	path := filepath.Join(dir, created)
 
 	if owner != nil {
 		_ = f.Chown(owner.UID, owner.GID)
@@ -237,13 +294,13 @@ func (r *Receiver) receive(c net.Conn) (Result, error) {
 	// said was small. Bounded in time only by going quiet.
 	n, err := io.Copy(f, io.LimitReader(in, h.Size))
 	if err != nil {
-		os.Remove(path)
+		root.Remove(created)
 		return Result{}, fmt.Errorf("receive %s: %w", name, err)
 	}
 	if n != h.Size {
 		// A short transfer is a truncated file, and keeping it would be worse
 		// than losing it: it looks complete.
-		os.Remove(path)
+		root.Remove(created)
 		return Result{}, fmt.Errorf("%s arrived incomplete: %d of %d bytes", name, n, h.Size)
 	}
 	if err := f.Sync(); err != nil {

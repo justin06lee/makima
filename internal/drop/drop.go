@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,28 +163,33 @@ func SafeName(name string) (string, error) {
 	return name, nil
 }
 
-// UniqueName finds a name in dir that does not exist yet.
+// createUnique creates a file named name in root, or "name (2)", "name (3)"
+// and so on when that is taken, and returns it with the name it got.
 //
 // Never overwriting is the point. A peer sending "notes.txt" twice, or two
 // peers each sending their own, must not silently destroy the first — and the
 // alternative, refusing the second, turns a transfer into a negotiation.
 // Renaming is what both other tools people already use do.
-func UniqueName(dir, name string) (string, error) {
-	candidate := filepath.Join(dir, name)
-	if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-		return candidate, nil
-	}
-
+//
+// Each name is tried by creating it, O_EXCL, rather than by looking first:
+// there is no moment between the check and the create for a second transfer
+// of the same name to land in, and a symlink planted under the name is
+// refused rather than written through.
+func createUnique(root *os.Root, name string, mode os.FileMode) (*os.File, string, error) {
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-
+	candidate := name
 	for i := 2; i < 1000; i++ {
-		candidate = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
-		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate, nil
+		f, err := root.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if err == nil {
+			return f, candidate, nil
 		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, "", fmt.Errorf("create %s: %w", candidate, err)
+		}
+		candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
 	}
-	return "", fmt.Errorf("drop: too many files already named like %q", name)
+	return nil, "", fmt.Errorf("drop: too many files already named like %q", name)
 }
 
 // dialTimeout bounds reaching a peer. Short: the address is on the mesh, so
