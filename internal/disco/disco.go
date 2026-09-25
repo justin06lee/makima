@@ -11,8 +11,9 @@
 // is the reason for a third keypair. A probe is sprayed at unverified
 // addresses, some of which belong to strangers; keying it separately means the
 // worst an observer can do with a captured probe is learn that two disco keys
-// are trying to meet. It cannot be replayed into the data path, and it proves
-// nothing about the WireGuard key — which is what keeps the control plane's
+// are trying to meet. Sending one again gets nowhere either: a ping moves no
+// path, and a pong only closes a fresh transaction, once, from the address
+// that was probed. It proves nothing about the WireGuard key — which is what keeps the control plane's
 // promise that only node-key signing can settle who is who.
 //
 // The wire format is fixed-size and unencrypted only in its header, so a
@@ -280,6 +281,13 @@ func decode(b []byte) (any, error) {
 		return p, nil
 
 	case TypePong:
+		// A pong to a ping that came through the relay has no address to
+		// report, and says so with an address length of zero. Refusing that,
+		// as parseAddrPort rightly does everywhere else, made every relayed
+		// pong undecodable.
+		if len(rest) >= 1 && rest[0] == 0 {
+			return &Pong{TxID: tx}, nil
+		}
 		addr, err := parseAddrPort(rest)
 		if err != nil {
 			return nil, err

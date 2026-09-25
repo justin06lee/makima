@@ -349,3 +349,25 @@ func TestKnockCapsEndpointsOnEncode(t *testing.T) {
 		t.Errorf("encoded %d endpoints, want the cap of %d", got, maxEndpoints)
 	}
 }
+
+// A pong to a ping that came through the relay has no source address to
+// report. It used to encode as an address of length zero, which the decoder
+// refused, so no relayed pong was ever read and the relay's latency was never
+// measured.
+func TestPongWithoutAnAddressRoundTrips(t *testing.T) {
+	sender, recipient := keys(t)
+	tx := TxID{9, 8, 7}
+
+	pkt, err := Seal(&Pong{TxID: tx}, recipient.Public(), sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, msg, err := Open(pkt, recipient)
+	if err != nil {
+		t.Fatalf("a pong with no address does not open: %v", err)
+	}
+	p, ok := msg.(*Pong)
+	if !ok || p.TxID != tx || p.Src.IsValid() {
+		t.Errorf("got %#v", msg)
+	}
+}

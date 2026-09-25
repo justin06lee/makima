@@ -427,7 +427,7 @@ func (c *Conn) receiveUDP(done <-chan struct{}, packets [][]byte, sizes []int, e
 			continue
 		}
 
-		ps.noteDirectRecv(src)
+		ps.noteDataRecv(src)
 		sizes[0] = n
 		eps[0] = ps.ep
 		return 1, nil

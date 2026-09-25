@@ -126,9 +126,11 @@ func (c *Conn) probePeer(ps *peerState, force bool) {
 	}
 
 	// A peer we have no candidate addresses for is not hopeless: a ping over
-	// the relay reaches it wherever it is, and its pong reports the address our
-	// probe appeared to come from — which is how two nodes that have never met
-	// learn each other's public addresses without a STUN server in the middle.
+	// the relay reaches it wherever it is, and prompts it to probe every
+	// address it has for us at the same moment we probe it — the
+	// simultaneous open that gets two NATs to let each other through. Its
+	// pong also times the relayed path, which is the number a direct one has
+	// to beat.
 	if relayed {
 		c.sendPingRelayed(ps, discoKey)
 	}
@@ -314,12 +316,44 @@ func (c *Conn) handlePing(ps *peerState, p *disco.Ping, src netip.AddrPort, rela
 		_ = c.sendRelay([][]byte{pong}, ps.nodeKey)
 	} else {
 		_ = c.sendUDP([][]byte{pong}, src)
-		// The ping proved this address reaches us. That is half the evidence
-		// needed; the pong we get back for our own probe is the other half.
-		ps.noteDirectRecv(src)
+		// The address the ping came from may be one the netmap never
+		// mentioned — the far side's NAT mapping towards us — so probe it
+		// too. That probe's pong is what may promote it.
+		//
+		// The ping itself promotes nothing. It carries no proof of when it
+		// was sent, so anybody who has seen one — on the path, or a relay
+		// operator — can send it again from an address of their choosing,
+		// and a ping that promoted its source address would steer this
+		// peer's traffic there. A pong answers a transaction we opened
+		// moments ago with twelve random bytes, and cannot be replayed.
+		if c.shouldProbeBack(ps, src) {
+			c.sendPing(ps, discoKey, src)
+		}
 	}
 
 	c.maybeProbe(ps)
+}
+
+// shouldProbeBack rate-limits probing an address a ping came from, so a
+// stream of replayed pings cannot make this node spray probes at whoever
+// sends them. Callers must not hold ps.mu.
+func (c *Conn) shouldProbeBack(ps *peerState, src netip.AddrPort) bool {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	now := time.Now()
+	if last, ok := ps.probedBack[src]; ok && now.Sub(last) < probeInterval {
+		return false
+	}
+	for a, at := range ps.probedBack {
+		if now.Sub(at) >= probeInterval {
+			delete(ps.probedBack, a)
+		}
+	}
+	if len(ps.probedBack) >= probeBurst {
+		return false
+	}
+	ps.probedBack[src] = now
+	return true
 }
 
 // handlePong closes a transaction, promoting the path it validates.
@@ -331,6 +365,16 @@ func (c *Conn) handlePong(ps *peerState, p *disco.Pong, src netip.AddrPort) {
 		// Unknown transaction: either it timed out, or someone is guessing.
 		// Twelve random bytes make guessing hopeless, which is exactly why the
 		// transaction ID is checked before anything is believed.
+		ps.mu.Unlock()
+		return
+	}
+	if src.IsValid() != pr.addr.IsValid() || (src.IsValid() && normalise(src) != normalise(pr.addr)) {
+		// A pong proves the address its ping was sent to, and arrives from
+		// there. One arriving from anywhere else is a copy somebody on the
+		// path sent on — whose address it would otherwise promote — or the
+		// answer to a relayed probe arriving directly, which proves nothing
+		// about the address it came from. Leave the transaction open for
+		// the real answer.
 		ps.mu.Unlock()
 		return
 	}

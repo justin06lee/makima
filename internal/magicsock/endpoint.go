@@ -126,6 +126,10 @@ type peerState struct {
 	// matched to the address it validates and to the moment it was sent.
 	probes map[[12]byte]*probe
 
+	// probedBack is when each address a ping arrived from was last probed
+	// in return, so replayed pings cannot turn this node into a sprayer.
+	probedBack map[netip.AddrPort]time.Time
+
 	// lastProbeAt rate-limits probing, and lastRelayAt records when the relay
 	// last carried traffic for this peer, both for diagnostics.
 	lastProbeAt time.Time
@@ -156,6 +160,7 @@ func newPeerState(nodeKey key.Public) *peerState {
 		nodeKey:     nodeKey,
 		syntheticIP: syntheticIPFor(nodeKey),
 		probes:      make(map[[12]byte]*probe),
+		probedBack:  make(map[netip.AddrPort]time.Time),
 	}
 	ps.ep = &peerEndpoint{state: ps}
 	return ps
@@ -178,11 +183,14 @@ func (ps *peerState) directPathLocked() (netip.AddrPort, bool) {
 	return ps.best, true
 }
 
-// noteDirectRecv records that a packet genuinely arrived from addr.
+// noteDirectRecv makes addr the direct path in use: a pong for a probe
+// sent there has just come back from it.
 //
-// This is the only thing that promotes a path, and it is deliberately the only
-// thing: receipt is proof that the peer can reach us *and* that our reply has
-// somewhere to go. An address we merely sent to has proven nothing.
+// This is the only thing that promotes a path, and it is deliberately the
+// only thing: a pong is proof that the peer can reach us *and* that our
+// probe reached it, and it answers a transaction too fresh and too random to
+// be replayed. An address we merely sent to has proven nothing, and neither
+// has a packet that merely arrived from one (see noteDataRecv).
 func (ps *peerState) noteDirectRecv(addr netip.AddrPort) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -195,6 +203,20 @@ func (ps *peerState) noteDirectRecv(addr netip.AddrPort) {
 		ps.latency = 0
 	}
 	ps.bestAt = now
+}
+
+// noteDataRecv records that a WireGuard packet arrived from addr. It keeps
+// the path in use trusted when that is where it came from, and does nothing
+// else: the packet has not been authenticated yet — WireGuard does that after
+// this returns — so letting it move the path would let anyone at a stale
+// candidate address, or anyone replaying captured packets from one, steer
+// this peer's traffic to themselves.
+func (ps *peerState) noteDataRecv(addr netip.AddrPort) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if ps.best == addr {
+		ps.bestAt = time.Now()
+	}
 }
 
 // pathDescription renders the current path for logs and status output.
