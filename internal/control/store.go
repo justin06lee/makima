@@ -703,6 +703,7 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 		resp.Lock = &LockConfig{
 			Enabled:     s.state.Lock.Enabled,
 			TrustedKeys: s.state.Lock.TrustedKeys,
+			Chain:       s.state.Lock.Chain,
 		}
 	}
 	if s.state.Update != nil {

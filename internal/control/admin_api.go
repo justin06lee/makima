@@ -65,16 +65,11 @@ type DNSResponse struct {
 	Domain  string `json:"domain"`
 }
 
-// SigningKeyRequest adds or removes a trusted signing key.
-type SigningKeyRequest struct {
-	Name   string `json:"name,omitempty"`
-	Public []byte `json:"public,omitempty"`
-	ID     string `json:"id,omitempty"`
-}
-
-// LockEnableRequest turns enforcement on or off.
-type LockEnableRequest struct {
-	Enabled bool `json:"enabled"`
+// LockStatementRequest is the lock's next version, signed where the signing
+// key lives, with names for any key it trusts for the first time.
+type LockStatementRequest struct {
+	Statement LockStatement     `json:"statement"`
+	Names     map[string]string `json:"names,omitempty"`
 }
 
 // SignatureRequest records a signature for a node.
@@ -317,36 +312,24 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, s.store.PendingSignatures())
 	})
 
-	post("/admin/lock/add-key", func(w http.ResponseWriter, body []byte) error {
-		var req SigningKeyRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			return err
-		}
-		if err := s.store.AddSigningKey(req.Name, req.Public); err != nil {
+	mux.HandleFunc("GET /admin/lock/chain", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.store.LockChain())
+	})
+
+	post("/admin/lock/forget", func(w http.ResponseWriter, body []byte) error {
+		if err := s.store.ForgetLock(); err != nil {
 			return err
 		}
 		writeJSON(w, http.StatusOK, okResponse())
 		return nil
 	})
 
-	post("/admin/lock/rm-key", func(w http.ResponseWriter, body []byte) error {
-		var req SigningKeyRequest
+	post("/admin/lock/statement", func(w http.ResponseWriter, body []byte) error {
+		var req LockStatementRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			return err
 		}
-		if err := s.store.RemoveSigningKey(req.ID); err != nil {
-			return err
-		}
-		writeJSON(w, http.StatusOK, okResponse())
-		return nil
-	})
-
-	post("/admin/lock/enable", func(w http.ResponseWriter, body []byte) error {
-		var req LockEnableRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			return err
-		}
-		if err := s.store.SetLockEnabled(req.Enabled); err != nil {
+		if err := s.store.ApplyLockStatement(req.Statement, req.Names); err != nil {
 			return err
 		}
 		writeJSON(w, http.StatusOK, okResponse())

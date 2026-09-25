@@ -195,6 +195,11 @@ func (m *MapResponse) stripServerSuppliedSecrets() {
 type LockConfig struct {
 	Enabled     bool         `json:"enabled"`
 	TrustedKeys []SigningKey `json:"trusted_keys"`
+
+	// Chain is every signed version of the lock. A node moves its own pinned
+	// copy along it (AdvanceLock) and believes Enabled and TrustedKeys only
+	// from a server whose lock predates signed versions.
+	Chain []LockStatement `json:"chain,omitempty"`
 }
 
 // seal encrypts v to the recipient, authenticated as the sender.

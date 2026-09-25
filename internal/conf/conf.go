@@ -157,6 +157,13 @@ type File struct {
 	Domain    string       `json:"domain,omitempty"`
 	HomeRelay netmap.Relay `json:"home_relay,omitzero"`
 
+	// Lock is the network lock as this node has accepted it. Not a cache of
+	// what the control plane said: the control plane is what the lock
+	// defends against, so this only moves forward along versions signed by a
+	// key it already trusts (control.AdvanceLock), and survives whatever the
+	// server says next.
+	Lock *netmap.LockPin `json:"lock,omitempty"`
+
 	Self  netmap.Node   `json:"self"`
 	Peers []netmap.Node `json:"peers,omitempty"`
 

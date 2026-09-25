@@ -64,6 +64,8 @@ func main() {
 		err = inboxCmd(os.Args[2:])
 	case "owner":
 		err = ownerCmd(os.Args[2:])
+	case "lock":
+		err = lockCmd(os.Args[2:])
 	case "sshd":
 		err = sshdCmd(os.Args[2:])
 	case "allow":
@@ -177,6 +179,7 @@ everything else:
   makima set           routes and exit nodes
   makima doctor        the long-form diagnosis
   makima firewall      status | allow
+  makima lock          this machine's copy of the network lock | reset
   makima sshd          let other machines ssh in, without an sshd
   makima ui            open the web interface
   makima alias         add 'die' to your shell as a shortcut for 'makima down'

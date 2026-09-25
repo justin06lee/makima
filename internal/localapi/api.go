@@ -104,6 +104,24 @@ type Status struct {
 
 	// ServerVersion is the release the control plane runs, as it last said.
 	ServerVersion string `json:"server_version,omitempty"`
+
+	// Lock is the network lock as this machine holds it, nil when it has
+	// never been shown one.
+	Lock *LockInfo `json:"lock,omitempty"`
+}
+
+// LockInfo is this machine's copy of the network lock.
+type LockInfo struct {
+	Version  uint64 `json:"version"`
+	Enforced bool   `json:"enforced"`
+	Keys     int    `json:"keys"`
+}
+
+// LockResetter is a backend that holds a network lock of its own, and can be
+// told to forget it — the way out of a lock whose every signing key is lost.
+// Optional, so a backend without a lock does not have to say so.
+type LockResetter interface {
+	ResetLock() error
 }
 
 // NodeInfo is this machine's own entry.
@@ -535,6 +553,19 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, res)
+	})
+
+	mux.HandleFunc("POST /api/lock/reset", func(w http.ResponseWriter, r *http.Request) {
+		lr, ok := s.backend.(LockResetter)
+		if !ok {
+			writeErr(w, http.StatusNotFound, errors.New("this daemon holds no network lock"))
+			return
+		}
+		if err := lr.ResetLock(); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, okBody())
 	})
 
 	mux.HandleFunc("POST /api/firewall/allow", func(w http.ResponseWriter, r *http.Request) {

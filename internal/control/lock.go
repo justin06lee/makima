@@ -1,10 +1,13 @@
 package control
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
@@ -25,6 +28,14 @@ import (
 // against the trusted keys before admitting them to the data plane. A server
 // that invents a peer now has to forge a signature it has no key for, and the
 // invented peer is rejected by every node in the mesh.
+//
+// Which keys are trusted, and whether the lock is enforced at all, cannot be
+// the server's to say either, or the server could simply switch the lock off
+// or trust a key of its own. So every change to the lock is a statement —
+// "version n: these keys, enforced or not" — signed by a key that version n-1
+// trusted, and each node keeps the latest version it has accepted and moves
+// forward only along that chain. The server carries the chain; it cannot
+// write a link of it.
 
 // SignatureVersion prefixes signed material so a signature can never be
 // replayed into a different scheme.
@@ -45,6 +56,141 @@ type Lock struct {
 	Enabled bool `json:"enabled"`
 
 	Created time.Time `json:"created"`
+
+	// Chain is every version of the lock, oldest first, each signed by a key
+	// the one before it trusted. The last is what Enabled and TrustedKeys
+	// say. Empty for a lock set up before versions were signed.
+	Chain []LockStatement `json:"chain,omitempty"`
+}
+
+// LockStatement is one version of the lock.
+type LockStatement struct {
+	Epoch   uint64   `json:"epoch"`
+	Enabled bool     `json:"enabled"`
+	Keys    [][]byte `json:"keys"`
+
+	// Signer is the key that signed this version, and Sig its signature
+	// over lockMaterial. For the first version the signer is one of its own
+	// keys; after that, one of the previous version's.
+	Signer []byte `json:"signer"`
+	Sig    []byte `json:"sig"`
+}
+
+// lockMaterial is the exact bytes a lock statement's signature covers: a
+// label no other signature in makima uses, the version, whether it is
+// enforced, and the trusted keys in a fixed order. Names and dates are for
+// people and are not covered.
+func lockMaterial(epoch uint64, enabled bool, keys [][]byte) []byte {
+	sorted := sortedKeys(keys)
+	b := []byte("makima lock statement v1\x00")
+	b = binary.BigEndian.AppendUint64(b, epoch)
+	if enabled {
+		b = append(b, 1)
+	} else {
+		b = append(b, 0)
+	}
+	b = binary.BigEndian.AppendUint16(b, uint16(len(sorted)))
+	for _, k := range sorted {
+		b = append(b, k...)
+	}
+	return b
+}
+
+func sortedKeys(keys [][]byte) [][]byte {
+	out := make([][]byte, len(keys))
+	copy(out, keys)
+	slices.SortFunc(out, bytes.Compare)
+	return out
+}
+
+// SignLockStatement makes the next version of the lock. Run wherever the
+// signing key lives, which is not the control server.
+func SignLockStatement(priv ed25519.PrivateKey, epoch uint64, enabled bool, keys [][]byte) LockStatement {
+	keys = sortedKeys(keys)
+	return LockStatement{
+		Epoch:   epoch,
+		Enabled: enabled,
+		Keys:    keys,
+		Signer:  priv.Public().(ed25519.PublicKey),
+		Sig:     ed25519.Sign(priv, lockMaterial(epoch, enabled, keys)),
+	}
+}
+
+// signedBy checks that st is signed by one of trusted.
+func (st LockStatement) signedBy(trusted [][]byte) error {
+	if len(st.Signer) != ed25519.PublicKeySize {
+		return fmt.Errorf("lock version %d has no signer", st.Epoch)
+	}
+	if !containsKey(trusted, st.Signer) {
+		return fmt.Errorf("lock version %d is signed by a key the version before it did not trust", st.Epoch)
+	}
+	for _, k := range st.Keys {
+		if len(k) != ed25519.PublicKeySize {
+			return fmt.Errorf("lock version %d names a key of %d bytes", st.Epoch, len(k))
+		}
+	}
+	if !ed25519.Verify(ed25519.PublicKey(st.Signer), lockMaterial(st.Epoch, st.Enabled, st.Keys), st.Sig) {
+		return fmt.Errorf("lock version %d's signature does not verify", st.Epoch)
+	}
+	return nil
+}
+
+func containsKey(keys [][]byte, k []byte) bool {
+	for _, x := range keys {
+		if bytes.Equal(x, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// AdvanceLock moves a node's pinned lock along the chain the control plane
+// sent, as far as the chain is signed, and returns where it got to.
+//
+// With no pin yet the node takes the first version on trust, provided it is
+// signed by one of its own keys — the same trust it placed in this control
+// plane when it joined, and no more. From then on each version has to be
+// signed by a key the previous one trusted, so a control plane that turns
+// against the network can offer nothing the node will take: not a lock
+// switched off, not a key of its own, not a chain it wrote from scratch.
+//
+// Versions the node already has are skipped; a chain that breaks is followed
+// up to the break, and the error says where.
+func AdvanceLock(pin *netmap.LockPin, chain []LockStatement) (*netmap.LockPin, error) {
+	cur := pin
+	for _, st := range chain {
+		if cur != nil && st.Epoch <= cur.Epoch {
+			continue
+		}
+		var trusted [][]byte
+		switch {
+		case cur != nil:
+			if st.Epoch != cur.Epoch+1 {
+				return cur, fmt.Errorf("lock version %d follows %d; the versions between are missing", st.Epoch, cur.Epoch)
+			}
+			trusted = cur.Keys
+		default:
+			trusted = st.Keys
+		}
+		if err := st.signedBy(trusted); err != nil {
+			return cur, err
+		}
+		cur = &netmap.LockPin{Epoch: st.Epoch, Enabled: st.Enabled, Keys: sortedKeys(st.Keys)}
+	}
+	return cur, nil
+}
+
+// VerifyPinned checks a node key's signature against a pinned lock. Nil when
+// the pin does not enforce.
+func VerifyPinned(pin *netmap.LockPin, id netmap.NodeID, nodeKey key.Public, sig []byte) error {
+	if pin == nil || !pin.Enabled {
+		return nil
+	}
+	l := &Lock{Enabled: true}
+	for _, k := range pin.Keys {
+		l.TrustedKeys = append(l.TrustedKeys, SigningKey{Public: k})
+	}
+	return l.VerifyNodeKey(id, nodeKey, sig)
 }
 
 // SigningKey is one trusted authority.
@@ -146,6 +292,10 @@ type LockStatus struct {
 	Signed      int          `json:"signed"`
 	Unsigned    int          `json:"unsigned"`
 	Created     time.Time    `json:"created,omitzero"`
+
+	// Epoch is the lock's current version, zero for a lock whose versions
+	// were never signed — which nodes cannot hold the server to.
+	Epoch uint64 `json:"epoch"`
 }
 
 // LockStatus reports the lock's state and how much of the mesh is signed.
@@ -158,6 +308,9 @@ func (s *Store) LockStatus() LockStatus {
 		st.Enabled = s.state.Lock.Enabled
 		st.TrustedKeys = s.state.Lock.TrustedKeys
 		st.Created = s.state.Lock.Created
+		if n := len(s.state.Lock.Chain); n > 0 {
+			st.Epoch = s.state.Lock.Chain[n-1].Epoch
+		}
 	}
 	for _, n := range s.state.Nodes {
 		if len(n.KeySignature) > 0 {
@@ -169,27 +322,89 @@ func (s *Store) LockStatus() LockStatus {
 	return st
 }
 
-// AddSigningKey trusts a new authority.
-func (s *Store) AddSigningKey(name string, pub []byte) error {
-	if len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("signing key is %d bytes, want %d", len(pub), ed25519.PublicKeySize)
-	}
-
+// ApplyLockStatement makes st the lock's next version.
+//
+// The server checks what every node will check — the version follows the
+// last, and is signed by a key the last one trusted, or for the first by one
+// of its own — so a mistake is an error here rather than a version every node
+// ignores. It also refuses a version that would partition the network: one
+// enforced while some node has no signature from a key it trusts, which the
+// whole mesh would then reject, including the machine somebody is sitting at.
+//
+// names labels keys that are new, by SigningKey.ID; keys already trusted keep
+// their names.
+func (s *Store) ApplyLockStatement(st LockStatement, names map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state.Lock == nil {
-		s.state.Lock = &Lock{Created: time.Now().UTC()}
+	l := s.state.Lock
+	var prev [][]byte
+	var want uint64 = 1
+	switch {
+	case l != nil && len(l.Chain) > 0:
+		last := l.Chain[len(l.Chain)-1]
+		prev, want = last.Keys, last.Epoch+1
+	case l != nil && len(l.TrustedKeys) > 0:
+		// A lock from before versions were signed. Its first signed version
+		// has to come from a key it already trusts, or sealing it would be
+		// a way to swap the keys unannounced.
+		for _, k := range l.TrustedKeys {
+			prev = append(prev, k.Public)
+		}
+		if !containsKey(prev, st.Signer) {
+			return fmt.Errorf("the first signed version of this lock has to be signed by a key it already trusts")
+		}
+		if !containsKey(st.Keys, st.Signer) {
+			return fmt.Errorf("the first version of a lock has to be signed by one of its own keys")
+		}
+		prev = st.Keys
+	default:
+		prev = st.Keys
 	}
-	if s.state.Lock.Trusts(pub) {
-		return fmt.Errorf("that signing key is already trusted")
+	if st.Epoch != want {
+		return fmt.Errorf("this is lock version %d, but the next version is %d — somebody else changed the lock; try again", st.Epoch, want)
+	}
+	if err := st.signedBy(prev); err != nil {
+		return err
+	}
+	if st.Enabled {
+		if len(st.Keys) == 0 {
+			return fmt.Errorf("a lock that trusts no key cannot be enforced")
+		}
+		pin := &netmap.LockPin{Epoch: st.Epoch, Enabled: true, Keys: st.Keys}
+		var rejected []string
+		for _, n := range s.state.Nodes {
+			if VerifyPinned(pin, n.ID, n.NodeKey, n.KeySignature) != nil {
+				rejected = append(rejected, n.Name)
+			}
+		}
+		if len(rejected) > 0 {
+			return fmt.Errorf("these nodes have no signature from a key this version trusts, and would be rejected by the whole mesh: %v\nsign them first with 'makima-server lock sign'", rejected)
+		}
 	}
 
-	s.state.Lock.TrustedKeys = append(s.state.Lock.TrustedKeys, SigningKey{
-		Public: pub,
-		Name:   name,
-		Added:  time.Now().UTC(),
-	})
+	now := time.Now().UTC()
+	if l == nil {
+		l = &Lock{Created: now}
+		s.state.Lock = l
+	}
+	var trusted []SigningKey
+	for _, k := range sortedKeys(st.Keys) {
+		sk := SigningKey{Public: k, Added: now}
+		for _, old := range l.TrustedKeys {
+			if bytes.Equal(old.Public, k) {
+				sk = old
+			}
+		}
+		if name, ok := names[sk.ID()]; ok && sk.Name == "" {
+			sk.Name = name
+		}
+		trusted = append(trusted, sk)
+	}
+	l.TrustedKeys = trusted
+	l.Enabled = st.Enabled
+	l.Chain = append(l.Chain, st)
+
 	if err := s.save(); err != nil {
 		return err
 	}
@@ -197,36 +412,20 @@ func (s *Store) AddSigningKey(name string, pub []byte) error {
 	return nil
 }
 
-// RemoveSigningKey stops trusting an authority.
-//
-// Refuses to remove the last one while the lock is enabled: doing so would
-// leave a mesh that enforces signatures with nothing able to produce a valid
-// one, and every node would reject every peer on its next netmap.
-func (s *Store) RemoveSigningKey(id string) error {
+// ForgetLock throws the lock away, for a network whose every signing key is
+// lost. It changes nothing on a node that holds the lock — that is the point
+// of nodes holding it — until somebody with root there runs
+// `makima lock reset`; after that the node sees no lock, and admits everyone.
+func (s *Store) ForgetLock() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if s.state.Lock == nil {
 		return ErrLockDisabled
 	}
-
-	kept := make([]SigningKey, 0, len(s.state.Lock.TrustedKeys))
-	found := false
-	for _, k := range s.state.Lock.TrustedKeys {
-		if k.ID() == id {
-			found = true
-			continue
-		}
-		kept = append(kept, k)
+	s.state.Lock = nil
+	for _, n := range s.state.Nodes {
+		n.KeySignature = nil
 	}
-	if !found {
-		return fmt.Errorf("no trusted signing key with id %q", id)
-	}
-	if len(kept) == 0 && s.state.Lock.Enabled {
-		return fmt.Errorf("that is the only trusted key and the lock is enabled; disable the lock first, or the mesh would reject every node")
-	}
-
-	s.state.Lock.TrustedKeys = kept
 	if err := s.save(); err != nil {
 		return err
 	}
@@ -234,40 +433,15 @@ func (s *Store) RemoveSigningKey(id string) error {
 	return nil
 }
 
-// SetLockEnabled turns enforcement on or off.
-//
-// Turning it on is refused while any node is unsigned. The alternative —
-// enabling and letting the unsigned nodes drop out — is a self-inflicted
-// partition that is hard to diagnose from inside, because the nodes that could
-// tell you what happened are the ones that just became unreachable.
-func (s *Store) SetLockEnabled(on bool) error {
+// LockChain is the lock's signed versions, for the command line to build the
+// next one on.
+func (s *Store) LockChain() []LockStatement {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if s.state.Lock == nil {
-		return fmt.Errorf("no signing key is trusted yet; add one with 'makima-server lock add-key'")
+		return nil
 	}
-	if on {
-		if len(s.state.Lock.TrustedKeys) == 0 {
-			return fmt.Errorf("no signing key is trusted yet; add one with 'makima-server lock add-key'")
-		}
-		var unsigned []string
-		for _, n := range s.state.Nodes {
-			if len(n.KeySignature) == 0 {
-				unsigned = append(unsigned, n.Name)
-			}
-		}
-		if len(unsigned) > 0 {
-			return fmt.Errorf("these nodes have no key signature and would be rejected by the whole mesh: %v\nsign them first with 'makima-server lock sign'", unsigned)
-		}
-	}
-
-	s.state.Lock.Enabled = on
-	if err := s.save(); err != nil {
-		return err
-	}
-	s.bump()
-	return nil
+	return append([]LockStatement(nil), s.state.Lock.Chain...)
 }
 
 // UnsignedNodes lists nodes that still need a signature, with the exact

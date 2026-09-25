@@ -22,7 +22,8 @@ type rejection struct {
 	err  error
 }
 
-// verifyPeers drops peers whose key signature does not check out.
+// verifyPeers drops peers whose key signature does not check out, against
+// the network lock as this node holds it.
 //
 // This is the whole point of the network lock, and the reason it is enforced
 // here rather than on the server. The control plane is the thing being
@@ -31,26 +32,42 @@ type rejection struct {
 // peer has to produce a signature over a key it does not hold, and the
 // invention is rejected by every node independently.
 //
-// With no lock configured every peer is admitted, which is what a mesh that
-// has not opted in has always done.
-func verifyPeers(resp *control.MapResponse) ([]netmap.Node, []rejection) {
-	if resp.Lock == nil || !resp.Lock.Enabled {
-		return resp.Peers, nil
+// Which keys to check against is not the server's to say either. The node
+// keeps its own copy of the lock (pin) and moves it only along versions
+// signed by a key it already trusts; a server that stops sending the lock,
+// sends it switched off, or sends a key of its own changes nothing here.
+// Returns the pin as it stands after this netmap.
+//
+// With no lock ever seen every peer is admitted, which is what a mesh that
+// has not opted in has always done. A server whose lock predates signed
+// versions is believed as it always was, since it offers nothing to pin.
+func verifyPeers(resp *control.MapResponse, pin *netmap.LockPin) ([]netmap.Node, []rejection, *netmap.LockPin, error) {
+	var chainErr error
+	if resp.Lock != nil && len(resp.Lock.Chain) > 0 {
+		pin, chainErr = control.AdvanceLock(pin, resp.Lock.Chain)
 	}
 
-	lock := &control.Lock{Enabled: true, TrustedKeys: resp.Lock.TrustedKeys}
+	var check func(p netmap.Node) error
+	switch {
+	case pin != nil:
+		check = func(p netmap.Node) error { return control.VerifyPinned(pin, p.ID, p.Key, p.KeySignature) }
+	case resp.Lock != nil && resp.Lock.Enabled:
+		legacy := &control.Lock{Enabled: true, TrustedKeys: resp.Lock.TrustedKeys}
+		check = func(p netmap.Node) error { return legacy.VerifyNodeKey(p.ID, p.Key, p.KeySignature) }
+	default:
+		return resp.Peers, nil, pin, chainErr
+	}
 
 	kept := make([]netmap.Node, 0, len(resp.Peers))
 	var rejected []rejection
-
 	for _, p := range resp.Peers {
-		if err := lock.VerifyNodeKey(p.ID, p.Key, p.KeySignature); err != nil {
+		if err := check(p); err != nil {
 			rejected = append(rejected, rejection{name: p.Name, err: err})
 			continue
 		}
 		kept = append(kept, p)
 	}
-	return kept, rejected
+	return kept, rejected, pin, chainErr
 }
 
 // applyDNS starts, updates, or stops the mesh resolver.

@@ -902,6 +902,24 @@ with the server, and every node verifies its peers itself before admitting them
 to the data plane. A server that invents a peer has to forge a signature it
 holds no key for, and the invention is rejected by the entire mesh.
 
+The lock itself is not the server's to change either. Every change to it —
+enforcing it, trusting another key, dropping one — is a numbered version signed
+on your machine by a key the lock already trusts, so those commands read your
+signing key (`-key`, default `~/.config/makima/signing.key`). Each node keeps
+the latest version it has accepted and moves forward only along signed ones: a
+server that stops sending the lock, sends it switched off, or adds a key of its
+own changes nothing on any node. `makima lock` shows a machine's copy.
+
+A node takes the first version it is shown on trust — the same trust it placed
+in the server when it joined. Rotating a key is two signed steps: `lock add-key`
+with the old key, then `lock rm-key` with the new one. A lock set up by an
+older makima was never signed and can still be switched off by the server
+until it is sealed: `makima-server lock seal`.
+
+Lose every signing key and nothing can change the lock again, by design. The
+way out has to be taken on both sides: `makima-server lock forget`, then
+`sudo makima lock reset` on each machine.
+
 This is why the node and machine keys were separated in the very first commit
 rather than retrofitted: signing the WireGuard key specifically is what makes
 the guarantee mean anything, and it only works if that key was never the same
