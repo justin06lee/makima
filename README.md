@@ -826,6 +826,18 @@ Tags come from the credential a machine joined with — `makima-server authkey
 -tags server` — never from anything the machine says about itself, because a
 node that could tag itself could grant itself whatever the tag confers.
 
+A destination of `*` includes the internet through any approved exit node.
+`autogroup:internet` grants that and nothing else — the right to use an exit
+node without the right to reach its own services:
+
+```json
+{ "action": "accept", "src": ["group:laptops"], "dst": ["autogroup:internet:*"] }
+```
+
+A destination that is an address or a range grants that address or range and
+no more: `192.168.7.5:22` on a subnet router reaches that one machine behind
+it, not the router and the rest of its subnet.
+
 The policy is enforced twice, in two places, for two reasons. The control plane
 applies it when building a netmap, so a node is never even *told* about a peer
 it may not reach: a key and an address it never receives are a key and an

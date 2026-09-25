@@ -39,7 +39,23 @@ type Node struct {
 	// Routes are the subnets this node has been approved to route, which are
 	// reachable *through* it and therefore addressable by policy.
 	Routes []netip.Prefix
+
+	// Exit is whether this node has been approved as an exit node, which puts
+	// the internet itself behind it: a destination of "*" or Internet then
+	// covers traffic it forwards, not only traffic addressed to it.
+	Exit bool
 }
+
+// Internet is the destination for traffic leaving the mesh through an exit
+// node. It matches every approved exit node, and grants what lies beyond one
+// rather than the exit node itself — "mac may use tenet as an exit node" is a
+// different permission from "mac may reach tenet's own services", and a rule
+// has to be able to say the first without the second.
+//
+// Only a destination. As a source it would mean "anything on the internet",
+// which reaches a node only as replies to traffic it started, and replies are
+// let back in without a rule (see Guard).
+const Internet = "autogroup:internet"
 
 // Policy is the access-control document.
 //
@@ -70,7 +86,8 @@ type Rule struct {
 	Src []string `json:"src"`
 
 	// Dst entities with an optional port suffix: "tag:server:22",
-	// "10.0.0.0/8:*", "*:*". A destination without a port means all ports.
+	// "10.0.0.0/8:*", "*:*", "autogroup:internet:*". A destination without a
+	// port means all ports.
 	Dst []string `json:"dst"`
 }
 
@@ -137,11 +154,33 @@ func (p *Policy) Validate() error {
 		if len(r.Dst) == 0 {
 			return fmt.Errorf("acl %d: no dst", i)
 		}
+		for _, src := range r.Src {
+			if src == Internet {
+				return fmt.Errorf("acl %d: %s is a destination — the internet through an exit node — and cannot be a source", i, Internet)
+			}
+			if err := knownAutogroup(src); err != nil {
+				return fmt.Errorf("acl %d: src %q: %w", i, src, err)
+			}
+		}
 		for _, d := range r.Dst {
-			if _, _, err := splitDstPort(d); err != nil {
+			entity, _, err := splitDstPort(d)
+			if err != nil {
+				return fmt.Errorf("acl %d: dst %q: %w", i, d, err)
+			}
+			if err := knownAutogroup(entity); err != nil {
 				return fmt.Errorf("acl %d: dst %q: %w", i, d, err)
 			}
 		}
+	}
+	return nil
+}
+
+// knownAutogroup refuses an autogroup this policy does not define. Without
+// it a typo like "autogroup:internt" would match nothing and silently grant
+// nothing, which is safe but costs somebody an evening.
+func knownAutogroup(entity string) error {
+	if strings.HasPrefix(entity, "autogroup:") && entity != Internet {
+		return fmt.Errorf("unknown autogroup; the only one is %s", Internet)
 	}
 	return nil
 }
@@ -200,10 +239,11 @@ func (p *Policy) CompileFor(self Node, all []Node) *Filter {
 			if err != nil {
 				continue
 			}
-			if !p.matchesEntityOne(entity, self) {
+			covered := p.dstPrefixes(entity, self)
+			if len(covered) == 0 {
 				continue
 			}
-			dsts = appendPrefixes(dsts, prefixesOf(self))
+			dsts = appendPrefixes(dsts, covered)
 			ports = appendPort(ports, pr)
 		}
 		if len(dsts) == 0 {
@@ -298,6 +338,9 @@ func (p *Policy) matchesEntityOne(entity string, n Node) bool {
 			}
 		}
 		return false
+
+	case entity == Internet:
+		return n.Exit
 	}
 
 	if entity == n.Name {
@@ -333,6 +376,10 @@ func (p *Policy) resolveToPrefixes(entity string, all []Node) []netip.Prefix {
 			out = appendPrefixes(out, p.resolveToPrefixes(member, all))
 		}
 		return out
+
+	case entity == Internet:
+		// Refused as a source by Validate; nothing, should one arrive anyway.
+		return nil
 	}
 
 	if pfx, err := parsePrefix(entity); err == nil {
@@ -346,6 +393,106 @@ func (p *Policy) resolveToPrefixes(entity string, all []Node) []netip.Prefix {
 		}
 	}
 	return out
+}
+
+// dstPrefixes is what a destination entity covers on self: the addresses a
+// packet arriving at self may be headed for, if the rule is to permit it.
+// Empty when the entity does not name self at all.
+//
+// Not simply every prefix self owns. A rule naming 10.0.0.5 on a node that
+// routes 10.0.0.0/24 grants 10.0.0.5, not the whole subnet and the node
+// besides; and a rule naming the internet grants what lies beyond an exit
+// node, not the exit node's own services.
+func (p *Policy) dstPrefixes(entity string, self Node) []netip.Prefix {
+	switch {
+	case entity == "*":
+		out := prefixesOf(self)
+		if self.Exit {
+			out = appendPrefixes(out, internet)
+		}
+		return out
+
+	case entity == Internet:
+		if self.Exit {
+			return internet
+		}
+		return nil
+
+	case strings.HasPrefix(entity, "group:"):
+		var out []netip.Prefix
+		for _, member := range p.Groups[entity] {
+			out = appendPrefixes(out, p.dstPrefixes(member, self))
+		}
+		return out
+	}
+
+	if pfx, err := parsePrefix(entity); err == nil {
+		var out []netip.Prefix
+		for _, own := range prefixesOf(self) {
+			if narrower, ok := overlap(pfx, own); ok {
+				out = appendPrefixes(out, []netip.Prefix{narrower})
+			}
+		}
+		return out
+	}
+
+	if p.matchesEntityOne(entity, self) {
+		return prefixesOf(self)
+	}
+	return nil
+}
+
+// overlap is the narrower of two overlapping prefixes, which for prefixes is
+// exactly their intersection.
+func overlap(a, b netip.Prefix) (netip.Prefix, bool) {
+	a, b = a.Masked(), b.Masked()
+	if !a.Overlaps(b) {
+		return netip.Prefix{}, false
+	}
+	if a.Bits() >= b.Bits() {
+		return a, true
+	}
+	return b, true
+}
+
+// internet is every IPv4 address outside the mesh's own ranges: where an exit
+// node forwards to. IPv4 only, like the tunnel.
+//
+// The mesh ranges are carved out so that a rule granting the internet
+// through an exit node does not also grant every mesh address that happens
+// to arrive at it — traffic between nodes is what the rest of the policy is
+// for.
+var internet = without(netip.MustParsePrefix("0.0.0.0/0"),
+	netip.MustParsePrefix("10.77.0.0/16"),
+	netip.MustParsePrefix("100.64.0.0/10"))
+
+// without is whole with the holes removed, as the fewest prefixes that cover
+// what is left.
+func without(whole netip.Prefix, holes ...netip.Prefix) []netip.Prefix {
+	whole = whole.Masked()
+	for _, h := range holes {
+		h = h.Masked()
+		if !whole.Overlaps(h) {
+			continue
+		}
+		if h.Bits() <= whole.Bits() {
+			return nil // the hole swallows it
+		}
+		lo, hi := halves(whole)
+		return append(without(lo, holes...), without(hi, holes...)...)
+	}
+	return []netip.Prefix{whole}
+}
+
+// halves splits a prefix into its two children.
+func halves(p netip.Prefix) (netip.Prefix, netip.Prefix) {
+	bits := p.Bits() + 1
+	lo := netip.PrefixFrom(p.Addr(), bits)
+	hiAddr := p.Addr().AsSlice()
+	i := (bits - 1) / 8
+	hiAddr[i] |= 0x80 >> ((bits - 1) % 8)
+	a, _ := netip.AddrFromSlice(hiAddr)
+	return lo, netip.PrefixFrom(a, bits)
 }
 
 // splitDstPort separates "entity:ports" into its halves.

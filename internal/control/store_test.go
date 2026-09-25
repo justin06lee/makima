@@ -381,3 +381,29 @@ func TestForgettingAnAmbiguousNameIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An exit node's own netmap has to carry a filter that lets through what it
+// forwards. Before this, the filter only named the exit node's own address,
+// and every packet a peer sent for the internet was dropped on arrival.
+func TestExitNodeFilterCarriesTheInternet(t *testing.T) {
+	s := newStore(t)
+	a, err := s.MintAuthKey(true, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwMachine := mustKey(t)
+	if _, err := s.Register(gwMachine, &RegisterRequest{
+		Name: "gateway", NodeKey: mustKey(t), DiscoKey: mustKey(t), AuthKey: a.Secret, AdvertiseExit: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	laptop := join(t, s, "laptop")
+
+	m, err := s.NetMapFor(gwMachine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Filter.Allow(laptop.Address.Addr(), netip.MustParseAddr("8.8.8.8"), 443) {
+		t.Error("the exit node's filter drops what a peer sends for the internet")
+	}
+}
