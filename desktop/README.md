@@ -40,6 +40,13 @@ steer the app while developing: `MAKIMA_GUI_SOCKET` points it at the pretend
 socket, and `MAKIMA_DEV_MEMBER=1` makes it believe this machine is already on
 a network, which is how to see the "off" screen without an `/etc/makima`.
 
+The interface also runs in a plain browser, with no Tauri at all: with the
+devserver up, `bun run dev` in `desktop/` and open http://localhost:5183. The
+devserver answers over TCP too and vite proxies to it; anything the CLI would
+do is pretended. The query string picks what to look at — `?state=setup`,
+`?state=off`, `?page=services|exit|settings`, `?select=tenet` (or `self`),
+`?dark=1`, `?tailscale=0`, `?holds=0`.
+
 ## What it shows
 
 **The menu bar** is most of the app: connected or not, this device's address,
@@ -47,11 +54,24 @@ every other device with a dot for whether it is reachable (click to copy the
 address), the exit node as a radio group, and Connect/Disconnect. It is a
 native menu, rebuilt only when what it shows changes.
 
-**The window** has three pages. *Devices* is a list on the left and a detail
-pane on the right — addresses to copy, services with Open buttons, SSH, and a
-drop zone that sends a file to that device's inbox. *Exit nodes* picks one.
-*Settings* has the login item, the command-line install, diagnostics, and the
-network's particulars.
+**The window** is drawn in makima's own colours — graphite and paper, and one
+vermilion for whatever is live — with Instrument Sans for the interface and
+JetBrains Mono for every address, bundled because the webview loads nothing
+from elsewhere. It has three pages and Settings:
+
+- *Mesh* is the network as rings round this device — direct, relayed, offline
+  — with the same devices as a list a click away. Selecting one opens a panel:
+  latency and its recent history, addresses to copy, SSH, Ping, services with
+  Open buttons, and a drop target. Files dropped on any device in the map or
+  the list go to that device's inbox.
+- *Services* is every service on the network as cards, and what this device
+  shares, with Share and Remove.
+- *Exit node* draws this device → the exit → the internet, and picks one.
+- *Settings* has the login item, the terminal, the command-line install,
+  diagnostics, the keyboard shortcuts, and the network's particulars.
+
+⌘K opens a palette over all of it — devices, services, actions and pages.
+⌘1–⌘3 switch pages, ⌘N adds a device, ↑/↓ walk the map, Escape closes a panel.
 
 **The first run** has no daemon and no configuration, so it asks the one
 question that matters: start a network, or join one by typing the fifteen
@@ -132,10 +152,17 @@ the app still runs; it just has nowhere to live when its window is closed.
 ```
 src/              the interface — React, Tailwind, no router and no state library
 src/api.ts        the daemon's types, mirrored, and the invoke wrappers
-src/App.tsx       the title bar, the sidebar, and which screen is showing
+src/App.tsx       the title bar, the pages, the shortcuts, and which screen is showing
+src/style.css     the palette, light and dark, the fonts, and the motion
+src/ui.tsx        the pieces every screen is built from
+src/Iris.tsx      the ringed iris: the status light, the splash, the empty screens
 src/Setup.tsx     the first run: start a network, or join one
-src/Devices.tsx   the list and the detail pane, including the drop zone
-src/ExitNodes.tsx pick an exit node
+src/Mesh.tsx      the map and the list of devices, and where dropped files go
+src/Device.tsx    the panel for one device, or for this one
+src/Services.tsx  every service on the network, and what this device shares
+src/ExitNodes.tsx pick an exit node, with the route drawn
+src/Palette.tsx   ⌘K
+src/toast.tsx     the small confirmations at the foot of the window
 src/Settings.tsx  login item, CLI install, diagnostics
 src/AddDevice.tsx the invite sheet
 src/Migrate.tsx   moving from Tailscale: look, choose the Control Devil, move

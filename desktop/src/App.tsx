@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, inTauri, type Action, type Environment, type Snapshot, type Status, type Tailscale } from "./api";
-import { Button, Empty, IconButton, Notice, Toggle } from "./ui";
+import { Button, Kbd, Notice, Segmented, Toggle } from "./ui";
 import { Icon } from "./icons";
+import { Iris } from "./Iris";
 import { Setup } from "./Setup";
-import { Devices } from "./Devices";
+import { Mesh } from "./Mesh";
+import { Services } from "./Services";
 import { ExitNodes } from "./ExitNodes";
 import { Settings } from "./Settings";
 import { AddDevice } from "./AddDevice";
 import { Migrate, TailscaleOffer } from "./Migrate";
+import { Palette } from "./Palette";
+import { useSSH } from "./Terminal";
+import { Toaster, useToast } from "./toast";
 
 /// Where "not now" on the Tailscale offer is remembered.
 const OFFER_DISMISSED = "makima:tailscale-offer-dismissed";
@@ -21,22 +26,48 @@ const OFFER_DISMISSED = "makima:tailscale-offer-dismissed";
 /// happening now.
 const POLL = 2000;
 
-export type Page = "devices" | "exit" | "settings";
+const preview = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
+
+/// How many latency samples each device keeps: a minute and a half of them.
+const HISTORY = 45;
+
+export type Page = "mesh" | "services" | "exit" | "settings";
 
 /// Run a privileged action. Resolves to the CLI's output on success, or null
 /// when it failed or the person said no at the prompt.
 export type Act = (action: Action) => Promise<string | null>;
 
+/// Recent latency per device, in nanoseconds, oldest first.
+export type History = Record<string, number[]>;
+
 export default function App() {
+  return (
+    <Toaster>
+      <Shell />
+    </Toaster>
+  );
+}
+
+function Shell() {
   const [env, setEnv] = useState<Environment | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [page, setPage] = useState<Page>("devices");
+  // The browser preview can open on any page and device: ?page=services&select=tenet.
+  const [page, setPage] = useState<Page>(() => (!inTauri && (preview.get("page") as Page)) || "mesh");
+  const [selected, setSelected] = useState<string | null>(() => (!inTauri && preview.get("select")) || null);
   const [adding, setAdding] = useState(false);
+  const [palette, setPalette] = useState(false);
   const [tailscale, setTailscale] = useState<Tailscale | null>(null);
   const [migrating, setMigrating] = useState(false);
   const [offerDismissed, setOfferDismissed] = useState(() => localStorage.getItem(OFFER_DISMISSED) === "1");
+  const [history, setHistory] = useState<History>({});
+  const toast = useToast();
+  const { ssh, picker, error: sshError } = useSSH();
+
+  useEffect(() => {
+    if (sshError) toast(sshError, "error");
+  }, [sshError, toast]);
 
   // Tailscale is looked for once, when the window opens, and again after a
   // move — it is the one thing that changes it.
@@ -49,6 +80,14 @@ export default function App() {
       const [e, s] = await Promise.all([api.environment(), api.status()]);
       setEnv(e);
       setSnap(s);
+      if (s.status) {
+        const peers = s.status.peers;
+        setHistory((h) => {
+          const next: History = {};
+          for (const p of peers) next[p.name] = [...(h[p.name] ?? []), p.online ? p.latency : 0].slice(-HISTORY);
+          return next;
+        });
+      }
     } catch (e) {
       setSnap({ running: false, error: String(e) });
     }
@@ -67,7 +106,7 @@ export default function App() {
     const subs = [
       listen<string>("navigate", (e) => {
         if (e.payload === "add-device") {
-          setPage("devices");
+          setPage("mesh");
           setAdding(true);
         }
       }),
@@ -103,9 +142,36 @@ export default function App() {
     [refresh],
   );
 
+  const running = !!snap?.running && !!snap.status;
+
+  // The keys a person reaches for without looking.
+  const keys = useRef({ running, adding, palette, migrating });
+  keys.current = { running, adding, palette, migrating };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const k = keys.current;
+      if (k.migrating || !(e.metaKey || e.ctrlKey)) return;
+      if (e.key === "k") {
+        e.preventDefault();
+        setPalette((p) => !p);
+      } else if (e.key === "n" && k.running && !k.adding) {
+        e.preventDefault();
+        setPalette(false);
+        setAdding(true);
+      } else if (e.key === "," ) {
+        e.preventDefault();
+        setPage("settings");
+      } else if (["1", "2", "3", "4"].includes(e.key)) {
+        e.preventDefault();
+        setPage((["mesh", "services", "exit", "settings"] as Page[])[Number(e.key) - 1]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   if (!env || !snap) return <Splash />;
 
-  const running = snap.running && !!snap.status;
   const mac = env.platform === "macos";
   const offer = tailscale?.running && tailscale.peers > 0 ? tailscale : null;
 
@@ -136,21 +202,24 @@ export default function App() {
     );
   }
 
+  const status = snap.status;
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-bg">
       <TitleBar
-        status={snap.status}
+        status={status}
         running={running}
         busy={busy}
         act={act}
         page={page}
         setPage={setPage}
         onAdd={() => setAdding(true)}
+        onSearch={() => setPalette(true)}
         mac={mac}
       />
 
       {notice && <Notice text={notice} onDismiss={() => setNotice(null)} />}
-      {offer && !offerDismissed && (
+      {running && offer && !offerDismissed && (
         <TailscaleOffer
           compact
           peers={offer.peers}
@@ -162,23 +231,49 @@ export default function App() {
         />
       )}
 
-      <div className="flex min-h-0 flex-1">
-        <Sidebar page={page} setPage={setPage} />
-        <main className="flex min-w-0 flex-1">
-          {!running || !snap.status ? (
-            <Off snap={snap} busy={busy} act={act} />
-          ) : page === "devices" ? (
-            <Devices status={snap.status} env={env} busy={busy} act={act} onAdd={() => setAdding(true)} />
-          ) : page === "exit" ? (
-            <ExitNodes status={snap.status} busy={busy} act={act} />
-          ) : (
-            <Settings status={snap.status} env={env} busy={busy} act={act} tailscale={tailscale} onMigrate={() => setMigrating(true)} />
-          )}
-        </main>
-      </div>
+      <main className="relative flex min-h-0 flex-1">
+        {!running || !status ? (
+          <Off snap={snap} busy={busy} act={act} />
+        ) : page === "mesh" ? (
+          <Mesh
+            status={status}
+            env={env}
+            busy={busy}
+            act={act}
+            history={history}
+            selected={selected}
+            setSelected={setSelected}
+            onAdd={() => setAdding(true)}
+            ssh={ssh}
+            goto={setPage}
+          />
+        ) : page === "services" ? (
+          <Services status={status} busy={busy} act={act} />
+        ) : page === "exit" ? (
+          <ExitNodes status={status} busy={busy} act={act} />
+        ) : (
+          <Settings status={status} env={env} busy={busy} act={act} tailscale={tailscale} onMigrate={() => setMigrating(true)} />
+        )}
+      </main>
 
-      {adding && snap.status && (
-        <AddDevice status={snap.status} env={env} act={act} onClose={() => setAdding(false)} />
+      {picker}
+
+      {adding && status && <AddDevice status={status} env={env} act={act} onClose={() => setAdding(false)} />}
+
+      {palette && (
+        <Palette
+          status={status}
+          running={running}
+          onClose={() => setPalette(false)}
+          goto={(p) => setPage(p)}
+          select={(name) => {
+            setPage("mesh");
+            setSelected(name);
+          }}
+          ssh={ssh}
+          act={act}
+          onAdd={() => setAdding(true)}
+        />
       )}
     </div>
   );
@@ -206,14 +301,15 @@ async function openAtLoginOnce() {
 
 function Splash() {
   return (
-    <div className="flex h-full items-center justify-center" data-tauri-drag-region>
-      <Icon.Mark size={28} className="pulse text-dimmer" />
+    <div className="grain flex h-full items-center justify-center bg-bg" data-tauri-drag-region>
+      <Iris size={56} state="busy" className="opacity-60" />
     </div>
   );
 }
 
-/// The strip under the traffic lights: the switch, what this machine is
-/// called, and the two things somebody opens the window to do.
+/// The strip under the traffic lights: this device and its switch on the
+/// left, the pages in the middle, and the two things somebody opens the
+/// window to do on the right.
 function TitleBar({
   status,
   running,
@@ -222,6 +318,7 @@ function TitleBar({
   page,
   setPage,
   onAdd,
+  onSearch,
   mac,
 }: {
   status?: Status;
@@ -231,67 +328,80 @@ function TitleBar({
   page: Page;
   setPage: (p: Page) => void;
   onAdd: () => void;
+  onSearch: () => void;
   mac: boolean;
 }) {
   const online = status?.peers.filter((p) => p.online).length ?? 0;
   const total = status?.peers.length ?? 0;
-  const sub = !running
-    ? "Not connected"
-    : total === 0
-      ? "Connected · no other devices yet"
-      : `Connected · ${online} of ${total} device${total === 1 ? "" : "s"} online`;
+  const sub = busy
+    ? running
+      ? "Working…"
+      : "Connecting…"
+    : !running
+      ? "Not connected"
+      : total === 0
+        ? "Connected · no other devices yet"
+        : `${online} of ${total} device${total === 1 ? "" : "s"} reachable`;
 
   return (
     <header
       data-tauri-drag-region
-      className={`flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-bg pr-3 ${mac ? "pl-[84px]" : "pl-4"}`}
+      className={`flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-panel/70 pr-3 ${mac ? "pl-[84px]" : "pl-4"}`}
     >
-      <Toggle
-        on={running}
-        busy={busy}
-        size="lg"
-        label={running ? "Disconnect" : "Connect"}
-        onChange={(next) => act({ kind: next ? "up" : "down" })}
-      />
-      <div className="min-w-0 flex-1" data-tauri-drag-region>
-        <div className="truncate text-[14px] font-semibold leading-tight" data-tauri-drag-region>
-          {status?.node.name ?? "makima"}
+      <div className="flex min-w-0 items-center gap-2.5" data-tauri-drag-region>
+        <Iris size={22} state={busy ? "busy" : running ? "on" : "off"} />
+        <div className="min-w-0 max-w-[170px]" data-tauri-drag-region>
+          <div className="display truncate text-[14px] leading-tight" data-tauri-drag-region>
+            {status?.node.name ?? "makima"}
+          </div>
+          <div className="tabular truncate text-[11.5px] leading-tight text-dim" data-tauri-drag-region>
+            {sub}
+          </div>
         </div>
-        <div className="truncate text-[12px] leading-tight text-dim" data-tauri-drag-region>
-          {sub}
-        </div>
+        <Toggle
+          on={running}
+          busy={busy}
+          label={running ? "Disconnect this device" : "Connect this device"}
+          onChange={(next) => act({ kind: next ? "up" : "down" })}
+        />
       </div>
-      <Button icon={<Icon.Plus />} onClick={onAdd} disabled={!running} title="Add another device to this network">
-        Add device
-      </Button>
-      <IconButton title="Settings" active={page === "settings"} onClick={() => setPage(page === "settings" ? "devices" : "settings")}>
-        <Icon.Gear />
-      </IconButton>
-    </header>
-  );
-}
 
-function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
-  const items: { id: Page; label: string; icon: React.ReactNode }[] = [
-    { id: "devices", label: "Devices", icon: <Icon.Devices /> },
-    { id: "exit", label: "Exit nodes", icon: <Icon.Exit /> },
-    { id: "settings", label: "Settings", icon: <Icon.Gear /> },
-  ];
-  return (
-    <nav className="w-[168px] shrink-0 space-y-0.5 border-r border-line bg-sidebar p-2.5">
-      {items.map((it) => (
+      <div className="flex min-w-0 flex-1 justify-center" data-tauri-drag-region>
+        <Segmented
+          value={page === "settings" ? ("" as Page) : page}
+          onChange={setPage}
+          options={[
+            { value: "mesh", label: <><Icon.Mesh size={14} />Mesh</>, title: "Your devices (⌘1)" },
+            { value: "services", label: <><Icon.Services size={14} />Services</>, title: "What they offer (⌘2)" },
+            { value: "exit", label: <><Icon.Exit size={14} />Exit node</>, title: "Route this device's traffic (⌘3)" },
+          ]}
+        />
+      </div>
+
+      <div className="flex items-center gap-1">
         <button
-          key={it.id}
           type="button"
-          onClick={() => setPage(it.id)}
-          className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] font-medium transition
-            ${page === it.id ? "bg-card-2 text-ink" : "text-dim hover:bg-card hover:text-ink"}`}
+          onClick={onSearch}
+          title="Search devices, services and actions"
+          className="flex h-[30px] items-center gap-2 rounded-lg px-2 text-dim transition hover:bg-ink/6 hover:text-ink"
         >
-          <span className={page === it.id ? "text-accent" : "text-dim"}>{it.icon}</span>
-          {it.label}
+          <Icon.Search size={15} />
+          <Kbd>⌘K</Kbd>
         </button>
-      ))}
-    </nav>
+        <button
+          type="button"
+          onClick={() => setPage(page === "settings" ? "mesh" : "settings")}
+          title="Settings (⌘,)"
+          aria-label="Settings"
+          className={`flex size-[30px] items-center justify-center rounded-lg transition hover:bg-ink/6 ${page === "settings" ? "bg-ink/8 text-ink" : "text-dim hover:text-ink"}`}
+        >
+          <Icon.Gear size={16} />
+        </button>
+        <Button variant="primary" size="sm" icon={<Icon.Plus size={14} />} onClick={onAdd} disabled={!running} title="Add another device to this network (⌘N)" className="ml-1">
+          Add device
+        </Button>
+      </div>
+    </header>
   );
 }
 
@@ -300,25 +410,24 @@ function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) 
 function Off({ snap, busy, act }: { snap: Snapshot; busy: boolean; act: Act }) {
   const permission = snap.error?.includes("not readable");
   return (
-    <div className="flex-1">
-      <Empty title={permission ? "makima is running for another account" : "makima is off"}>
-        {permission ? (
-          <p>
-            The daemon is up, but its socket belongs to whoever started it. Connect again from this account to
-            take it over.
-          </p>
-        ) : (
-          <p>Your other devices are unreachable until you connect. Once connected, this device stays on the network — after a restart too — until you disconnect.</p>
-        )}
-        <div className="mt-4">
-          <Button variant="primary" size="lg" busy={busy} onClick={() => act({ kind: "up" })}>
-            Connect
-          </Button>
-        </div>
-        {snap.error && !permission && !snap.error.includes("not running") && (
-          <p className="selectable mt-4 font-mono text-[11px] text-dimmer">{snap.error}</p>
-        )}
-      </Empty>
+    <div className="grain flex flex-1 flex-col items-center justify-center px-8 text-center">
+      <div className="relative">
+        <Iris size={132} state={busy ? "busy" : "off"} />
+      </div>
+      <h1 className="display mt-7 text-[26px]">{permission ? "makima is running for another account" : "makima is off"}</h1>
+      <p className="mt-2 max-w-[400px] text-[13.5px] leading-relaxed text-dim">
+        {permission
+          ? "The daemon is up, but its socket belongs to whoever started it. Connect again from this account to take it over."
+          : "Your other devices are out of reach until you connect. Once connected, this device stays on the network — after a restart too — until you switch it off."}
+      </p>
+      <div className="mt-6">
+        <Button variant="primary" size="lg" busy={busy} icon={<Icon.Power size={16} />} onClick={() => act({ kind: "up" })}>
+          Connect
+        </Button>
+      </div>
+      {snap.error && !permission && !snap.error.includes("not running") && (
+        <p className="selectable mt-5 max-w-md font-mono text-[11px] text-dimmer">{snap.error}</p>
+      )}
     </div>
   );
 }

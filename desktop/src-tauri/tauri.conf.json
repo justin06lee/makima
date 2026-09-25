@@ -21,7 +21,7 @@
         "visible": false,
         "decorations": true,
         "transparent": false,
-        "backgroundColor": "#ffffff",
+        "backgroundColor": "#f4f4f2",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "dragDropEnabled": true

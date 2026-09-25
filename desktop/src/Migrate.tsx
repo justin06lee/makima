@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, openExternal, type Candidate, type Choice, type MigrateEvent, type MigrationResult, type Plan } from "./api";
-import { Button, Card, Input, Spinner, Toggle } from "./ui";
+import { Button, Card, IconButton, Input, Spinner, Tag, Toggle } from "./ui";
+import { Iris } from "./Iris";
 import { Icon } from "./icons";
 
 /// Moving every device on a tailnet to makima, in one go.
@@ -171,12 +172,13 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
 
   return (
     <div className="fade-in fixed inset-0 z-40 flex flex-col bg-bg">
-      <header data-tauri-drag-region className={`flex h-[52px] shrink-0 items-center gap-3 border-b border-line pr-3 ${mac ? "pl-[84px]" : "pl-4"}`}>
+      <header data-tauri-drag-region className={`flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-panel/70 pr-3 ${mac ? "pl-[84px]" : "pl-4"}`}>
+        <Iris size={22} state={phase === "run" || scanning ? "busy" : "on"} />
         <div className="min-w-0 flex-1" data-tauri-drag-region>
-          <div className="truncate text-[14px] font-semibold leading-tight" data-tauri-drag-region>
+          <div className="display truncate text-[14px] leading-tight" data-tauri-drag-region>
             {title}
           </div>
-          <div className="truncate text-[12px] leading-tight text-dim" data-tauri-drag-region>
+          <div className="truncate text-[11.5px] leading-tight text-dim" data-tauri-drag-region>
             {plan?.tailnet ? `Tailnet ${plan.tailnet}` : "Every device on your tailnet, onto makima"}
           </div>
         </div>
@@ -186,27 +188,30 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
         </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[640px] space-y-5 px-6 pb-8 pt-5">
+      <div className="grain min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[660px] space-y-7 px-7 pb-10 pt-7">
           {error && (
-            <p className="selectable rounded-lg bg-red/8 px-3 py-2 text-[12.5px] leading-relaxed text-red">{error}</p>
+            <p className="selectable flex gap-2 rounded-xl bg-red/8 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-red">
+              <Icon.Warn size={14} className="mt-0.5 shrink-0" />
+              {error}
+            </p>
           )}
 
           {phase === "scan" && <ScanList machines={machines} auth={auth} scanning={scanning} />}
 
           {phase === "choose" && (
             <>
-              <section className="space-y-2">
-                <p className="text-[13px] leading-relaxed text-dim">
-                  One device holds the network together — the others join through it and find each other through it, the
-                  way they used to through Tailscale's servers. Choose one that stays on, and that the others can reach.
-                </p>
+              <section className="space-y-3">
+                <Lead title="Which device holds the network?">
+                  The others join through it and find each other through it, the way they used to through Tailscale's
+                  servers. Choose one that stays on, and that the others can reach.
+                </Lead>
                 <div className="space-y-2">
                   {[...movable].sort((a, b) => b.score - a.score).map((m) => (
                     <ControllerCard key={m.id} m={m} on={m.id === controller} recommended={m.id === plan?.controller} onPick={() => pick(m.id)}>
                       {m.id === controller && (
-                        <div className="mt-3 space-y-1.5" onClick={(e) => e.stopPropagation()}>
-                          <label className="text-[12px] text-dim">The other devices reach it at</label>
+                        <div className="mt-3.5 space-y-1.5 border-t border-line pt-3" onClick={(e) => e.stopPropagation()}>
+                          <label className="caps text-dimmer">The others reach it at</label>
                           <Input value={advertise} onChange={setAdvertise} mono placeholder="an address, or https://a-name-you-own" />
                           <p className="text-[11.5px] leading-relaxed text-dimmer">
                             {m.public
@@ -218,11 +223,16 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                     </ControllerCard>
                   ))}
                 </div>
-                {plan?.advice && <p className="rounded-lg bg-amber/10 px-3 py-2 text-[12.5px] leading-relaxed text-dim">{plan.advice}</p>}
+                {plan?.advice && (
+                  <p className="flex gap-2 rounded-xl bg-amber/10 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-dim">
+                    <Icon.Info size={14} className="mt-0.5 shrink-0 text-amber" />
+                    {plan.advice}
+                  </p>
+                )}
               </section>
 
-              <section className="space-y-2">
-                <h3 className="text-[15px] font-medium text-dim">Coming along</h3>
+              <section className="space-y-2.5">
+                <h3 className="caps text-dimmer">Coming along</h3>
                 <Card>
                   {movable.map((m) => (
                     <ComingRow
@@ -255,8 +265,8 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
               </section>
 
               {staying.length > 0 && (
-                <section className="space-y-2">
-                  <h3 className="text-[15px] font-medium text-dim">Staying on Tailscale</h3>
+                <section className="space-y-2.5">
+                  <h3 className="caps text-dimmer">Staying on Tailscale</h3>
                   <Card>
                     {staying.map((m) => (
                       <MachineRow key={m.id} m={m} caption={m.why} dim />
@@ -267,9 +277,9 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
 
               <section className="space-y-2">
                 <Card>
-                  <div className="flex items-center gap-3 px-4 py-3">
+                  <div className="flex items-center gap-3 px-4 py-3.5">
                     <div className="min-w-0 flex-1">
-                      <div className="text-[14px] text-ink">Uninstall Tailscale from each device</div>
+                      <div className="text-[13.5px] font-medium text-ink">Uninstall Tailscale from each device</div>
                       <div className="mt-0.5 text-[12px] leading-relaxed text-dim">
                         Only once this device has logged in to it over makima. Until then Tailscale keeps running beside
                         makima, so a device that does not come up is exactly as reachable as before.
@@ -280,7 +290,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                   </div>
                 </Card>
                 {remove && left.length > 0 && (
-                  <p className="text-[12px] leading-relaxed text-dimmer">
+                  <p className="px-1 text-[12px] leading-relaxed text-dimmer">
                     Once this device is off Tailscale it can no longer reach {list(left.map((m) => m.name))}, which stay on it.
                   </p>
                 )}
@@ -291,8 +301,8 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
           {(phase === "run" || phase === "done") && (
             <>
               {phase === "run" && prompting && (
-                <p className="fade-in flex items-center gap-2 rounded-lg bg-accent/10 px-3 py-2 text-[12.5px] text-ink">
-                  <Icon.Key className="text-accent" /> Your password is needed in the dialog to change this device.
+                <p className="fade-in flex items-center gap-2 rounded-xl bg-accent/10 px-3.5 py-2.5 text-[12.5px] text-ink">
+                  <Icon.Key size={14} className="text-accent" /> Your password is needed in the dialog to change this device.
                 </p>
               )}
               {phase === "done" && result && <Summary result={result} removed={remove} />}
@@ -310,7 +320,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                 ))}
               </Card>
               {phase === "run" && (
-                <p className="text-[12px] leading-relaxed text-dimmer">
+                <p className="px-1 text-[12px] leading-relaxed text-dimmer">
                   Tailscale keeps running on every device until this one has logged in to it over makima. A device that
                   cannot be reached that way keeps Tailscale, and is exactly as reachable as it was.
                 </p>
@@ -320,7 +330,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
         </div>
       </div>
 
-      <footer className="flex h-[56px] shrink-0 items-center gap-3 border-t border-line px-4">
+      <footer className="flex h-[58px] shrink-0 items-center gap-3 border-t border-line bg-panel/70 px-4">
         {phase === "scan" && (
           <>
             <span className="flex-1 text-[12px] text-dim">
@@ -335,11 +345,11 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
               )}
             </span>
             {!scanning && (
-              <Button onClick={scan} icon={<Icon.Pulse />}>
+              <Button onClick={scan} icon={<Icon.Pulse size={14} />}>
                 Look again
               </Button>
             )}
-            <Button variant="primary" disabled={!plan || movable.length === 0} onClick={() => setPhase("choose")}>
+            <Button variant="primary" disabled={!plan || movable.length === 0} onClick={() => setPhase("choose")} icon={<Icon.ArrowRight size={14} />}>
               Continue
             </Button>
           </>
@@ -364,7 +374,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
         )}
         {phase === "done" && (
           <>
-            <span className="flex-1 text-[12px] text-dim">{result?.server ? `The network is held at ${result.server}.` : ""}</span>
+            <span className="flex-1 truncate text-[12px] text-dim">{result?.server ? `The network is held at ${result.server}.` : ""}</span>
             <Button variant="primary" onClick={onClose}>
               Done
             </Button>
@@ -375,13 +385,28 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
   );
 }
 
-function Stepper({ phase }: { phase: Phase }) {
-  const at = { scan: 0, choose: 1, run: 2, done: 2 }[phase];
+function Lead({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <ol className="hidden items-center gap-1.5 sm:flex" aria-label="Progress">
+    <div>
+      <h2 className="display text-[20px] leading-tight">{title}</h2>
+      <p className="mt-1.5 text-[13px] leading-relaxed text-dim">{children}</p>
+    </div>
+  );
+}
+
+function Stepper({ phase }: { phase: Phase }) {
+  const at = { scan: 0, choose: 1, run: 2, done: 3 }[phase];
+  return (
+    <ol className="mr-2 hidden items-center gap-2 sm:flex" aria-label="Progress">
       {["Look", "Choose", "Move"].map((label, i) => (
-        <li key={label} className="flex items-center gap-1.5">
-          {i > 0 && <span className="h-px w-4 bg-line-2" />}
+        <li key={label} className="flex items-center gap-2">
+          {i > 0 && <span className={`h-px w-5 ${i <= at ? "bg-ink/40" : "bg-line-2"}`} />}
+          <span
+            className={`flex size-[18px] items-center justify-center rounded-full text-[10px] font-semibold transition
+              ${i < at ? "bg-ink text-bg" : i === at ? "bg-accent text-accent-ink" : "border border-line-2 text-dimmer"}`}
+          >
+            {i < at ? <Icon.Check size={11} /> : i + 1}
+          </span>
           <span className={`text-[12px] ${i === at ? "font-medium text-ink" : i < at ? "text-dim" : "text-dimmer"}`}>{label}</span>
         </li>
       ))}
@@ -405,16 +430,24 @@ function osLabel(m: Candidate): string {
   return m.facts?.arch ? `${os} · ${m.facts.arch}` : os;
 }
 
+function OsIcon({ m, className = "" }: { m: Candidate; className?: string }) {
+  const os = (m.facts?.os ?? m.os).toLowerCase();
+  if (os === "darwin" || os === "macos") return <Icon.Laptop className={className} />;
+  if (os === "linux") return <Icon.Server className={className} />;
+  return <Icon.Devices className={className} />;
+}
+
 function ScanList({ machines, auth, scanning }: { machines: Candidate[]; auth: Record<string, string>; scanning: boolean }) {
+  const ready = machines.filter((m) => m.eligible).length;
   return (
-    <section className="space-y-3">
-      <p className="text-[13px] leading-relaxed text-dim">
-        makima reaches each device the way you do today — over Tailscale, with SSH — to see whether it can move. Once
-        every device is on makima, Tailscale can come off them.
-      </p>
+    <section className="space-y-4">
+      <Lead title={scanning ? "Looking at your devices" : `${ready} of ${machines.length} can move`}>
+        makima reaches each device the way you do today — over Tailscale, with SSH — to see whether it can move. Nothing
+        changes yet. Once every device is on makima, Tailscale can come off them.
+      </Lead>
       <Card>
         {machines.length === 0 && (
-          <div className="flex items-center gap-2 px-4 py-3 text-[13px] text-dim">{scanning ? <><Spinner /> Asking Tailscale for your devices…</> : "No devices."}</div>
+          <div className="flex items-center gap-2 px-4 py-3.5 text-[13px] text-dim">{scanning ? <><Spinner /> Asking Tailscale for your devices…</> : "No devices."}</div>
         )}
         {machines.map((m) => (
           <MachineRow
@@ -426,12 +459,16 @@ function ScanList({ machines, auth, scanning }: { machines: Candidate[]; auth: R
               m.checking && !auth[m.id] ? (
                 <Spinner className="text-dim" />
               ) : auth[m.id] ? (
-                <Button size="sm" variant="primary" icon={<Icon.Open />} onClick={() => openExternal(auth[m.id])}>
+                <Button size="sm" variant="primary" icon={<Icon.Open size={13} />} onClick={() => openExternal(auth[m.id])}>
                   Approve
                 </Button>
               ) : m.eligible ? (
-                <Icon.Check className="text-green" />
-              ) : null
+                <span className="flex items-center gap-1 text-[12px] text-green">
+                  <Icon.Check size={14} /> Ready
+                </span>
+              ) : (
+                <span className="text-[12px] text-dimmer">Stays</span>
+              )
             }
             note={auth[m.id] ? "Tailscale SSH wants you to approve this login in your browser." : undefined}
           />
@@ -464,12 +501,14 @@ function MachineRow({
   note?: string;
 }) {
   return (
-    <div className="flex items-center gap-3 border-b border-line px-4 py-2.5 last:border-0">
-      <Icon.Devices className={dim ? "text-dimmer" : "text-dim"} />
+    <div className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-0">
+      <span className={`flex size-8 shrink-0 items-center justify-center rounded-lg bg-raised-2 ${dim ? "text-dimmer" : "text-dim"}`}>
+        <OsIcon m={m} />
+      </span>
       <div className="min-w-0 flex-1">
-        <div className={`truncate text-[14px] ${dim ? "text-dim" : "text-ink"}`}>
+        <div className={`flex items-center gap-2 truncate text-[13.5px] font-medium ${dim ? "text-dim" : "text-ink"}`}>
           {m.name}
-          {m.local && <span className="ml-2 text-[11px] font-medium text-dimmer">THIS DEVICE</span>}
+          {m.local && <Tag>this device</Tag>}
         </div>
         {caption && <div className="mt-0.5 text-[12px] leading-snug text-dim">{caption}</div>}
         {note && <div className="mt-0.5 text-[12px] leading-snug text-amber">{note}</div>}
@@ -499,23 +538,27 @@ function ControllerCard({
       tabIndex={0}
       onClick={onPick}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onPick()}
-      className={`cursor-pointer rounded-xl border px-4 py-3 transition ${on ? "border-accent bg-accent/5" : "border-line bg-card hover:border-line-2"}`}
+      className={`cursor-pointer rounded-xl bg-raised px-4 py-3.5 transition
+        ${on ? "shadow-[0_0_0_1.5px_var(--accent),0_0_0_6px_var(--focus)]" : "shadow-[var(--shadow-sm)] hover:bg-raised-2"}`}
     >
       <div className="flex items-center gap-3">
-        <span className={`flex size-4 shrink-0 items-center justify-center rounded-full border ${on ? "border-accent" : "border-line-2"}`}>
-          {on && <span className="size-2 rounded-full bg-accent" />}
+        <span className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${on ? "bg-accent text-accent-ink" : "bg-raised-2 text-dim"}`}>
+          <OsIcon m={m} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[14px] font-medium text-ink">{m.name}</span>
-            {recommended && <span className="rounded-full bg-accent/12 px-2 py-px text-[11px] font-medium text-accent">Recommended</span>}
-            {m.local && <span className="text-[11px] font-medium text-dimmer">THIS DEVICE</span>}
+            <span className="truncate text-[14px] font-semibold text-ink">{m.name}</span>
+            {recommended && <Tag tone="accent">Recommended</Tag>}
+            {m.local && <Tag>this device</Tag>}
           </div>
           <div className="mt-0.5 text-[12px] leading-snug text-dim">
             {osLabel(m)}
             {m.pitch ? ` — ${m.pitch}` : ""}
           </div>
         </div>
+        <span className={`flex size-[18px] shrink-0 items-center justify-center rounded-full border-[1.5px] ${on ? "border-accent bg-accent" : "border-line-2"}`}>
+          {on && <span className="size-1.5 rounded-full bg-white" />}
+        </span>
       </div>
       {children}
     </div>
@@ -540,34 +583,26 @@ function ComingRow({
   setPassword: (v: string) => void;
 }) {
   return (
-    <div className="border-b border-line px-4 py-2.5 last:border-0">
+    <div className="border-b border-line px-4 py-3 last:border-0">
       <label className={`flex items-center gap-3 ${locked ? "" : "cursor-pointer"}`}>
-        <input
-          type="checkbox"
-          checked={on}
-          disabled={locked}
-          onChange={(e) => onToggle(e.target.checked)}
-          className="size-4 shrink-0 accent-[var(--accent)]"
-        />
+        <input type="checkbox" checked={on} disabled={locked} onChange={(e) => onToggle(e.target.checked)} className="peer sr-only" />
+        <span
+          className={`flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border-[1.5px] transition peer-focus-visible:shadow-[0_0_0_3px_var(--focus)]
+            ${on ? (locked ? "border-dimmer bg-dimmer text-bg" : "border-ink bg-ink text-bg") : "border-line-2"}`}
+        >
+          {on && <Icon.Check size={12} />}
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[14px] text-ink">
+          <div className="flex items-center gap-2 truncate text-[13.5px] font-medium text-ink">
             {m.name}
-            {m.local && <span className="ml-2 text-[11px] font-medium text-dimmer">THIS DEVICE</span>}
+            {m.local && <Tag>this device</Tag>}
           </div>
-          <div className="mt-0.5 text-[12px] leading-snug text-dim">
-            {role ?? m.why ?? readyCaption(m)}
-          </div>
+          <div className="mt-0.5 text-[12px] leading-snug text-dim">{role ?? m.why ?? readyCaption(m)}</div>
         </div>
       </label>
       {on && m.needs_password && (
-        <div className="ml-7 mt-2">
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder={`sudo password for ${m.facts?.user ?? "its account"} on ${m.name}`}
-            className="selectable h-8 w-full rounded-lg border border-line-2 bg-bg px-3 text-[13px] text-ink outline-none placeholder:text-dimmer focus:border-accent"
-          />
+        <div className="ml-[30px] mt-2.5">
+          <Input type="password" value={password} onChange={setPassword} placeholder={`sudo password for ${m.facts?.user ?? "its account"} on ${m.name}`} />
         </div>
       )}
     </div>
@@ -626,11 +661,15 @@ function ProgressRow({
   const text = outcome?.detail ?? (step ? stepText(step) : "Waiting its turn");
   return (
     <div className="flex items-start gap-3 border-b border-line px-4 py-3 last:border-0">
-      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+      <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center">
         {failed ? (
-          <Icon.Close className="text-red" />
+          <span className="flex size-5 items-center justify-center rounded-full bg-red/12 text-red">
+            <Icon.Close size={12} />
+          </span>
         ) : finished ? (
-          <Icon.Check className={outcome?.outcome === "both" ? "text-amber" : "text-green"} />
+          <span className={`flex size-5 items-center justify-center rounded-full ${outcome?.outcome === "both" ? "bg-amber/15 text-amber" : "bg-green/15 text-green"}`}>
+            <Icon.Check size={12} />
+          </span>
         ) : step && !done ? (
           <Spinner className="text-accent" />
         ) : (
@@ -639,12 +678,10 @@ function ProgressRow({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[14px] text-ink">{m.name}</span>
-          {role && <span className="text-[11px] font-medium uppercase tracking-wide text-dimmer">{role}</span>}
+          <span className="truncate text-[13.5px] font-medium text-ink">{m.name}</span>
+          {role && <Tag tone={role === "Control Devil" ? "accent" : "plain"}>{role}</Tag>}
         </div>
-        <div className={`mt-0.5 text-[12px] leading-snug ${failed ? "text-red" : "text-dim"}`}>
-          {sentence(text)}
-        </div>
+        <div className={`mt-0.5 text-[12px] leading-snug ${failed ? "text-red" : "text-dim"}`}>{sentence(text)}</div>
         {outcome?.notes?.map((n) => (
           <div key={n} className="mt-0.5 text-[11.5px] leading-snug text-dimmer">
             {n}
@@ -652,7 +689,7 @@ function ProgressRow({
         ))}
       </div>
       {auth && !done && (
-        <Button size="sm" variant="primary" icon={<Icon.Open />} onClick={() => openExternal(auth)}>
+        <Button size="sm" variant="primary" icon={<Icon.Open size={13} />} onClick={() => openExternal(auth)}>
           Approve
         </Button>
       )}
@@ -664,13 +701,11 @@ function Summary({ result, removed }: { result: MigrationResult; removed: boolea
   const on = result.machines.filter((m) => m.outcome === "moved" || m.outcome === "both").length;
   const tried = result.machines.filter((m) => m.outcome !== "stayed" || m.detail !== "not chosen").length;
   return (
-    <div className="flex items-start gap-3 rounded-xl bg-card px-4 py-3">
-      {result.ok ? <Icon.Check className="mt-0.5 text-green" /> : <Icon.Warn className="mt-0.5 text-amber" />}
+    <div className="rise flex items-start gap-4 rounded-2xl bg-raised px-5 py-4 shadow-[var(--shadow-sm)]">
+      <Iris size={44} state={result.ok ? "on" : "off"} />
       <div className="min-w-0 flex-1">
-        <div className="text-[14px] font-medium text-ink">
-          {result.ok ? `All ${on} devices are on makima.` : `${on} of ${tried} devices are on makima.`}
-        </div>
-        <div className="mt-0.5 text-[12.5px] leading-relaxed text-dim">
+        <div className="display text-[18px] leading-tight">{result.ok ? `All ${on} devices are on makima.` : `${on} of ${tried} devices are on makima.`}</div>
+        <div className="mt-1 text-[12.5px] leading-relaxed text-dim">
           {result.error
             ? result.error
             : result.ok
@@ -703,34 +738,36 @@ export function TailscaleOffer({
   const others = peers === 1 ? "1 other device" : `${peers} other devices`;
   if (compact) {
     return (
-      <div className="fade-in flex items-center gap-3 border-b border-line bg-accent/6 px-4 py-2.5">
-        <Icon.Exit className="text-accent" />
-        <p className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-ink">
-          Tailscale is running here, with {others}. Move them all to makima in one go.
+      <div className="fade-in flex items-center gap-3 border-b border-line bg-raised px-4 py-2">
+        <Icon.Exit size={14} className="text-accent" />
+        <p className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
+          Tailscale is running here with {others}. <span className="text-dim">Move them all to makima in one go.</span>
         </p>
-        <Button size="sm" variant="primary" onClick={onMove}>
+        <Button size="sm" onClick={onMove} icon={<Icon.ArrowRight size={13} />}>
           Move from Tailscale
         </Button>
         {onDismiss && (
-          <button type="button" onClick={onDismiss} title="Not now" aria-label="Not now" className="text-dimmer hover:text-ink">
-            <Icon.Close />
-          </button>
+          <IconButton onClick={onDismiss} title="Not now" size="sm">
+            <Icon.Close size={14} />
+          </IconButton>
         )}
       </div>
     );
   }
   return (
-    <div className="flex w-full max-w-[640px] items-center gap-4 rounded-2xl border border-accent/30 bg-accent/6 p-5">
-      <div className="min-w-0 flex-1">
-        <h2 className="text-[16px] font-semibold">Coming from Tailscale?</h2>
-        <p className="mt-1 text-[13px] leading-relaxed text-dim">
-          It is running on this device, with {others}. makima can put itself on every one of them through Tailscale,
-          connect them all, and take Tailscale off each once makima works there.
-        </p>
-      </div>
-      <Button variant="primary" size="lg" onClick={onMove}>
-        Move from Tailscale
-      </Button>
-    </div>
+    <button
+      type="button"
+      onClick={onMove}
+      className="group flex w-full items-center gap-3 rounded-xl border border-line-2 px-3.5 py-2.5 text-left transition hover:border-dimmer hover:bg-raised"
+    >
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+        <Icon.Exit size={15} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-semibold">Coming from Tailscale?</span>
+        <span className="block truncate text-[12px] text-dim">Move this device and its {others} over in one go.</span>
+      </span>
+      <Icon.ArrowRight size={15} className="text-dim transition group-hover:translate-x-0.5 group-hover:text-ink" />
+    </button>
   );
 }

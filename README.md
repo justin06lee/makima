@@ -724,19 +724,27 @@ updated by hand once (`make install` there); from then on this is the way.
 
 `makima up` and `makima status` are a fine way to run a network and a poor way
 to glance at one. The app is the glance, and for most people the whole
-program: a menu bar item and a window in the shape every mesh VPN app has
-settled on, because it is the right shape.
+program: a menu bar item, and a window that draws your network the way
+makima's icon is drawn — this device as the pupil, every other device on a
+ring around it.
 
 **The menu bar.** A switch, this device's address, every other device with a
 green or grey dot beside it — click one to copy its address — and the exit
 node, as a radio group. The window is one click further.
 
-**The window.** Devices down the left, with a search box. Pick one and the
-right-hand pane shows its name and address to copy, the services it publishes
-with an Open button beside anything a browser can reach, an SSH button that
-opens a shell in your terminal, and a place to drop a file — which lands in
-that device's inbox. This device's own pane lists what it publishes, with a
-Remove beside each, and where incoming files go.
+**The window.** *Mesh* is the map: the inner ring is every device reached
+directly, the middle one those going through the relay, the outer one those
+that are offline, with packets running along the lines. Click a device — or
+walk them with the arrow keys, or switch to the list — and a panel slides in
+with its latency over the last minute and a half, its name and address to
+copy, SSH into your terminal, the services it publishes with an Open button
+beside anything a browser can reach, and a place for files. Drop a file on a
+device, on the map or in the list, and it lands in that device's inbox. This
+device's own panel says what it shares and where incoming files go.
+*Services* lays out everything every device publishes as cards, one click to
+open, with what this device shares — and a Remove beside each — underneath.
+*Exit node* draws the route before you pick it. ⌘K finds any device, service
+or action by a few letters of its name.
 
 **The first run** asks one question: is this the first device, or is there a
 network already? *Start a network* is `makima up`. *Join a network* takes a
