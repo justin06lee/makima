@@ -205,6 +205,7 @@ func (n *node) Diagnose() localapi.Diagnosis {
 	peers := append([]netmap.Node(nil), f.Peers...)
 	exitNode := f.ExitNode
 	exitProblem := n.exitProblem
+	selfName := f.Self.Name
 	managed := f.Managed()
 	domain := f.Domain
 	n.mu.Unlock()
@@ -246,6 +247,23 @@ func (n *node) Diagnose() localapi.Diagnosis {
 			}
 			add(c)
 		}
+	}
+
+	// 2b. Tailscale running beside makima, and taking what is makima's:
+	// its routes, an exit node, or its DNS. See tailscale.go.
+	if ts, ok := tailscaleIface(listInterfaces(), iface); ok && addrErr == nil {
+		v := tailscaleView{iface: iface, self: addr, selfName: selfName, peers: peers}
+		if n.dnsActive() {
+			v.domain = domain
+		}
+		if n.exitClient != nil {
+			_, v.exit = n.exitClient.Active()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		for _, c := range tailscaleChecks(ctx, ts, v, systemLookups) {
+			add(c)
+		}
+		cancel()
 	}
 
 	// 3. The host firewall — the single most common reason a home server is
@@ -444,6 +462,9 @@ func firewallFix(r netcfg.Report) string {
 type ifaceAddrs struct {
 	name  string
 	addrs []netip.Prefix
+
+	// tunnel is a point-to-point interface: what every VPN's is.
+	tunnel bool
 }
 
 // listInterfaces reads the machine's interfaces and their addresses.
@@ -461,7 +482,7 @@ func listInterfaces() []ifaceAddrs {
 		if err != nil {
 			continue
 		}
-		entry := ifaceAddrs{name: iface.Name}
+		entry := ifaceAddrs{name: iface.Name, tunnel: iface.Flags&net.FlagPointToPoint != 0}
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
 			if !ok {

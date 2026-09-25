@@ -314,6 +314,14 @@ drops every packet from `100.64.0.0/10` that did not arrive on its own
 interface; makima's `10.77.0.0/16` is outside it, so the two run side by side
 on every machine and nothing has to be switched over.
 
+Tailscale can still take what is makima's, and `makima doctor` checks for each
+way, asking the routing table and the system resolver for their real answers
+rather than trusting what makima installed: a subnet route Tailscale accepted
+that covers makima's range (on Linux its routes are consulted first), a
+Tailscale exit node carrying makima's own packets along with everything else,
+and Tailscale's DNS answering for `*.makima`. Each comes with the `tailscale
+set` command that stops it.
+
 ### Services publish themselves
 
 Anything listening on `127.0.0.1` is put on the mesh once it has stayed up for
