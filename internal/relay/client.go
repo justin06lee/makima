@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"net/url"
 	"strconv"
 	"strings"
@@ -33,6 +34,18 @@ const recvQueue = 256
 // either end. The ping is what turns "silently unreachable" into "connection
 // error, reconnect".
 const keepaliveInterval = 30 * time.Second
+
+// readTimeout is how long a session may go without hearing anything from
+// the relay before it counts as dead.
+//
+// The keepalive alone never found out. Writing a ping into a connection whose
+// path has quietly gone succeeds — the bytes wait in the kernel's buffer —
+// and TCP only gives up after many minutes of retransmitting, all of which
+// time the client believed it was connected. The relay answers every ping,
+// so a live session hears something at least every keepaliveInterval; two
+// missed answers and a little slack is a dead one. A variable so a test can
+// shorten it.
+var readTimeout = 2*keepaliveInterval + 15*time.Second
 
 // Packet is one relayed WireGuard packet and the node that sent it.
 type Packet struct {
@@ -121,7 +134,8 @@ func (c *Client) Run(ctx context.Context) {
 		default:
 		}
 
-		err := c.session(ctx)
+		registered, err := c.session(ctx)
+		backoff = nextBackoff(backoff, registered)
 
 		select {
 		case <-ctx.Done():
@@ -145,24 +159,40 @@ func (c *Client) Run(ctx context.Context) {
 		case <-c.closed:
 			return
 		}
-		// Capped, because a relay that has been down for an hour should not
-		// mean an hour's delay noticing it came back.
-		if backoff < 30*time.Second {
-			backoff *= 2
-		}
 	}
 }
 
-// session runs one connection from dial to disconnect.
-func (c *Client) session(ctx context.Context) error {
+// nextBackoff is how long to wait before the next attempt, given the last
+// wait and whether the session that just ended ever got as far as being
+// registered with the relay.
+//
+// A session that worked starts the count again. Without that the wait only
+// ever grew: a laptop whose relay connection dropped once an hour, for a
+// day, waited half a minute to reconnect every time after the first few.
+// Attempts that fail outright double it, capped, because a relay that has
+// been down for an hour should not mean an hour's delay noticing it came
+// back.
+func nextBackoff(prev time.Duration, registered bool) time.Duration {
+	if registered {
+		return time.Second
+	}
+	if prev < 30*time.Second {
+		return prev * 2
+	}
+	return prev
+}
+
+// session runs one connection from dial to disconnect, and reports whether
+// it was ever registered with the relay.
+func (c *Client) session(ctx context.Context) (bool, error) {
 	conn, err := c.dial(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer conn.Close()
 
 	if err := c.handshake(conn); err != nil {
-		return fmt.Errorf("handshake: %w", err)
+		return false, fmt.Errorf("handshake: %w", err)
 	}
 
 	c.setConn(conn)
@@ -186,7 +216,7 @@ func (c *Client) session(ctx context.Context) error {
 		}
 	}()
 
-	return c.readLoop(conn)
+	return true, c.readLoop(conn)
 }
 
 // handshake proves possession of our node key to the relay.
@@ -301,8 +331,14 @@ func (c *Client) readLoop(conn net.Conn) error {
 	buf := make([]byte, maxFrameSize)
 
 	for {
+		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			return err
+		}
 		t, payload, err := readFrame(conn, buf)
 		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return fmt.Errorf("heard nothing from the relay for %s; the connection is gone", readTimeout)
+			}
 			return err
 		}
 

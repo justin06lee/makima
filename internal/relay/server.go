@@ -319,10 +319,19 @@ func (s *Server) handshake(c net.Conn) (key.Public, error) {
 }
 
 // readLoop forwards this client's frames until the connection ends.
+// clientSilence is how long a client may send nothing before the relay
+// drops it. Every client pings at least every keepaliveInterval, so a
+// client that has been silent for three of them is not there any more —
+// and until it is dropped, packets for it are queued into a dead socket.
+var clientSilence = 3 * keepaliveInterval
+
 func (s *Server) readLoop(c *serverClient) {
 	buf := make([]byte, maxFrameSize)
 
 	for {
+		if err := c.conn.SetReadDeadline(time.Now().Add(clientSilence)); err != nil {
+			return
+		}
 		t, payload, err := readFrame(c.conn, buf)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {

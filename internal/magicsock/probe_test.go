@@ -178,3 +178,26 @@ func TestRelayedProbeMeasuresTheRelay(t *testing.T) {
 		return a.peerFor(bNode.Public()).status().RelayLatency > 0
 	})
 }
+
+// The control plane moving a relay to a new key at the same address — a
+// relay reinstalled, its identity regenerated — has to be followed; the old
+// connection pins the old key and can never register again.
+func TestANewRelayKeyAtTheSameAddressIsFollowed(t *testing.T) {
+	a, _, _ := newConn(t)
+	k1, _ := key.NewPrivate()
+	k2, _ := key.NewPrivate()
+
+	a.SetNetwork(nil, "127.0.0.1:9", k1.Public())
+	a.mu.RLock()
+	first := a.relayClient
+	a.mu.RUnlock()
+
+	a.SetNetwork(nil, "127.0.0.1:9", k2.Public())
+	a.mu.RLock()
+	second, gotKey := a.relayClient, a.relayKey
+	a.mu.RUnlock()
+
+	if second == first || gotKey != k2.Public() {
+		t.Error("a new relay key at the same address was ignored")
+	}
+}

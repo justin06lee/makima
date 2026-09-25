@@ -646,7 +646,7 @@ func (c *Conn) SetNetwork(peers []PeerConfig, homeRelay string, relayKey key.Pub
 // setRelay reconciles the home-relay connection with the netmap's assignment.
 func (c *Conn) setRelay(url string, relayKey key.Public) {
 	c.mu.Lock()
-	if url == c.relayURL {
+	if url == c.relayURL && relayKey == c.relayKey {
 		c.mu.Unlock()
 		return
 	}
