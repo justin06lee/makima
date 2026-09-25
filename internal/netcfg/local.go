@@ -26,7 +26,7 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 
 	var out []netip.AddrPort
 	seen := make(map[netip.AddrPort]bool)
-	hostAddrs(func(addr netip.Addr) {
+	hostAddrs(func(addr netip.Addr, _ net.Flags) {
 		if !usableEndpoint(addr) {
 			return
 		}
@@ -47,10 +47,19 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 // every address LocalEndpoints would advertise, and its global IPv6 ones too,
 // which are not advertised yet but tell one network from another where two
 // hand out the same IPv4 address. Sorted.
+//
+// Not the addresses a VPN hands out. Those come and go when the VPN does,
+// and the machine has not moved: treating Tailscale starting as a network
+// move dropped every path makima had found, for nothing. So neither IPv6
+// unique-local addresses (Tailscale's fd7a:115c:a1e0::/48 among them — Go
+// counts them as global unicast) nor private addresses on a point-to-point
+// interface, which is what every VPN's tunnel is, say where this machine is.
+// A public address on one does: that is a PPP link carrying the machine's
+// own connection.
 func NetworkAddrs() []netip.Addr {
 	var out []netip.Addr
-	hostAddrs(func(addr netip.Addr) {
-		if usableEndpoint(addr) || (addr.Is6() && addr.IsGlobalUnicast() && !IsMeshAddr(addr)) {
+	hostAddrs(func(addr netip.Addr, flags net.Flags) {
+		if saysWhereWeAre(addr, flags) {
 			out = append(out, addr)
 		}
 	})
@@ -58,9 +67,28 @@ func NetworkAddrs() []netip.Addr {
 	return out
 }
 
+// saysWhereWeAre is NetworkAddrs' test for one address on an interface with
+// the given flags.
+func saysWhereWeAre(addr netip.Addr, flags net.Flags) bool {
+	if !usableEndpoint(addr) && !(addr.Is6() && addr.IsGlobalUnicast() && !IsMeshAddr(addr)) {
+		return false
+	}
+	if ula.Contains(addr) {
+		return false
+	}
+	if flags&net.FlagPointToPoint != 0 && (addr.IsPrivate() || IsMeshAddr(addr)) {
+		return false
+	}
+	return true
+}
+
+// ula is IPv6's private range, fc00::/7.
+var ula = netip.MustParsePrefix("fc00::/7")
+
 // hostAddrs calls fn with every address on an interface that is up, is not
-// loopback, and leads somewhere other than this host.
-func hostAddrs(fn func(netip.Addr)) {
+// loopback, and leads somewhere other than this host, and the interface's
+// flags.
+func hostAddrs(fn func(netip.Addr, net.Flags)) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return
@@ -79,7 +107,7 @@ func hostAddrs(fn func(netip.Addr)) {
 				continue
 			}
 			if addr, ok := netip.AddrFromSlice(ipnet.IP); ok {
-				fn(addr.Unmap())
+				fn(addr.Unmap(), iface.Flags)
 			}
 		}
 	}
