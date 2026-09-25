@@ -199,6 +199,21 @@ func openInbox(dir string, o *Owner) (*os.Root, error) {
 	}
 	defer home.Close()
 
+	root, err := inboxWithin(home, rel, o)
+	if err == nil {
+		return root, nil
+	}
+	// A link out of the home — a Downloads folder kept on another disk — is
+	// followed only to a directory the owner owns: root writing there is no
+	// more than the owner could do. A link to /etc is not.
+	if linked, lerr := inboxLinkedOut(dir, o); lerr == nil {
+		return linked, nil
+	}
+	return nil, err
+}
+
+// inboxWithin makes and opens the inbox without leaving the home.
+func inboxWithin(home *os.Root, rel string, o *Owner) (*os.Root, error) {
 	cur := ""
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		cur = filepath.Join(cur, part)
@@ -215,6 +230,48 @@ func openInbox(dir string, o *Owner) (*os.Root, error) {
 	_ = home.Lchown(rel, o.UID, o.GID)
 	return home.OpenRoot(rel)
 }
+
+// inboxLinkedOut opens an inbox whose parent is reached through a link out
+// of the home, provided the directories actually opened belong to the owner.
+// Ownership is read from the open directory itself, not from its path, so
+// the link cannot be pointed elsewhere between the check and the use.
+func inboxLinkedOut(dir string, o *Owner) (*os.Root, error) {
+	parent, err := os.OpenRoot(filepath.Dir(dir))
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if !ownedByOwner(parent, o) {
+		return nil, fmt.Errorf("%s leads to a directory %s does not own", filepath.Dir(dir), o.homeName())
+	}
+	base := filepath.Base(dir)
+	if err := parent.Mkdir(base, 0o700); err == nil {
+		_ = parent.Lchown(base, o.UID, o.GID)
+	} else if !errors.Is(err, fs.ErrExist) {
+		return nil, err
+	}
+	root, err := parent.OpenRoot(base)
+	if err != nil {
+		return nil, err
+	}
+	if !ownedByOwner(root, o) {
+		root.Close()
+		return nil, fmt.Errorf("%s is not %s's", dir, o.homeName())
+	}
+	return root, nil
+}
+
+// ownedByOwner reports whether an opened directory belongs to the owner.
+func ownedByOwner(r *os.Root, o *Owner) bool {
+	fi, err := r.Stat(".")
+	if err != nil {
+		return false
+	}
+	uid, ok := fileUID(fi)
+	return ok && uid == o.UID
+}
+
+func (o *Owner) homeName() string { return "the owner of " + o.Home }
 
 // Status reports where files land and how many have arrived.
 func (r *Receiver) Status() (dir string, active bool, received uint64) {

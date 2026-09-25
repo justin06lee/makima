@@ -403,11 +403,18 @@ func me(home string) *Owner {
 	return &Owner{UID: os.Getuid(), GID: os.Getgid(), Home: home}
 }
 
+// someoneElse is an Owner who is not the user running the tests, so every
+// directory the tests make belongs to somebody else as far as it is
+// concerned — standing in for /etc, which root owns.
+func someoneElse(home string) *Owner {
+	return &Owner{UID: os.Getuid() + 1, GID: os.Getgid(), Home: home}
+}
+
 // The daemon is root and the inbox is in somebody's home. Before, it made
 // the path and chowned it — following whatever was there — so a symlink from
 // ~/Downloads/makima to /etc gave the owner /etc, and every file a peer sent
 // was written into it as root.
-func TestInboxThatLeadsOutOfTheHomeIsRefused(t *testing.T) {
+func TestInboxThatLeadsToSomebodyElsesDirectoryIsRefused(t *testing.T) {
 	home := t.TempDir()
 	elsewhere := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o700); err != nil {
@@ -419,10 +426,10 @@ func TestInboxThatLeadsOutOfTheHomeIsRefused(t *testing.T) {
 
 	r := New(quiet())
 	t.Cleanup(r.Close)
-	r.Apply(netip.MustParseAddr("127.0.0.1"), Config{Dir: filepath.Join(home, "Downloads", "makima"), Owner: me(home)})
+	r.Apply(netip.MustParseAddr("127.0.0.1"), Config{Dir: filepath.Join(home, "Downloads", "makima"), Owner: someoneElse(home)})
 
 	if _, active, _ := r.Status(); active {
-		t.Error("the inbox opened through a symlink that leaves the owner's home")
+		t.Error("the inbox opened through a symlink to a directory its owner does not own")
 	}
 	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
 		t.Errorf("something was written outside the home: %v", entries)
@@ -436,11 +443,29 @@ func TestInboxUnderALinkedParentIsRefused(t *testing.T) {
 	if err := os.Symlink(elsewhere, filepath.Join(home, "Downloads")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openInbox(filepath.Join(home, "Downloads", "makima"), me(home)); err == nil {
-		t.Error("the inbox was made through a parent that leaves the owner's home")
+	if _, err := openInbox(filepath.Join(home, "Downloads", "makima"), someoneElse(home)); err == nil {
+		t.Error("the inbox was made through a parent that leads to somebody else's directory")
 	}
 	if _, err := os.Stat(filepath.Join(elsewhere, "makima")); err == nil {
 		t.Error("a directory was created outside the home")
+	}
+}
+
+// A Downloads folder kept on another disk is a link out of the home to a
+// directory the owner owns, and that is followed.
+func TestInboxOnTheOwnersOtherDiskIsFollowed(t *testing.T) {
+	home := t.TempDir()
+	disk := t.TempDir()
+	if err := os.Symlink(disk, filepath.Join(home, "Downloads")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := openInbox(filepath.Join(home, "Downloads", "makima"), me(home))
+	if err != nil {
+		t.Fatalf("a Downloads folder on the owner's other disk was refused: %v", err)
+	}
+	root.Close()
+	if fi, err := os.Stat(filepath.Join(disk, "makima")); err != nil || !fi.IsDir() {
+		t.Errorf("the inbox was not made on the other disk: %v", err)
 	}
 }
 
