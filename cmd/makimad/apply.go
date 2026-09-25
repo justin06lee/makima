@@ -131,6 +131,21 @@ func (n *node) stopDNS() {
 	n.stopDNSLocked()
 }
 
+// dnsServer is where makima's own resolver answers on this machine — the
+// loopback listener a Mac uses, or the mesh address — or zero when it is
+// not running.
+func (n *node) dnsServer() netip.AddrPort {
+	n.dnsMu.Lock()
+	defer n.dnsMu.Unlock()
+	if n.dns == nil {
+		return netip.AddrPort{}
+	}
+	if lp := n.dns.Loopback(); lp.IsValid() {
+		return lp
+	}
+	return n.dns.Addr()
+}
+
 // dnsActive reports whether the mesh resolver is running.
 func (n *node) dnsActive() bool {
 	n.dnsMu.Lock()

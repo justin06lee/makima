@@ -256,8 +256,8 @@ func (n *node) Diagnose() localapi.Diagnosis {
 	// its routes, an exit node, or its DNS. See tailscale.go.
 	if ts, ok := tailscaleIface(listInterfaces(), iface); ok && addrErr == nil {
 		v := tailscaleView{iface: iface, self: addr, selfName: selfName, peers: peers}
-		if n.dnsActive() {
-			v.domain = domain
+		if srv := n.dnsServer(); srv.IsValid() {
+			v.domain, v.dns = domain, srv
 		}
 		if n.exitClient != nil {
 			_, v.exit = n.exitClient.Active()
