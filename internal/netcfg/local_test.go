@@ -1,6 +1,7 @@
 package netcfg
 
 import (
+	"net"
 	"net/netip"
 	"testing"
 )
@@ -78,6 +79,32 @@ func TestHostOnlyBridgesAreNotPaths(t *testing.T) {
 	for _, name := range []string{"en0", "eth0", "wlan0", "enp2s0", "wlp3s0", "bridge0", "utun4", "makima0"} {
 		if hostOnly(name) {
 			t.Errorf("%s is treated as a host-only bridge", name)
+		}
+	}
+}
+
+// Tailscale starting or stopping is not this machine changing networks. Its
+// IPv6 address is unique-local, which Go counts as global unicast, so it used
+// to enter the fingerprint and every toggle dropped every path makima had.
+func TestAVPNsAddressesDoNotSayWhereWeAre(t *testing.T) {
+	lan := net.FlagUp | net.FlagBroadcast | net.FlagMulticast
+	tunnel := net.FlagUp | net.FlagPointToPoint | net.FlagMulticast
+
+	for _, c := range []struct {
+		addr  string
+		flags net.Flags
+		want  bool
+	}{
+		{"192.168.1.20", lan, true},
+		{"2001:db8:1:2::20", lan, true},
+		{"fd7a:115c:a1e0::1a:2b3c", tunnel, false}, // Tailscale
+		{"fd12:3456::1", lan, false},               // a router's ULA
+		{"100.101.102.103", tunnel, false},         // Tailscale, IPv4
+		{"10.8.0.6", tunnel, false},                // OpenVPN, WireGuard
+		{"203.0.113.9", tunnel, true},              // PPPoE: the real connection
+	} {
+		if got := saysWhereWeAre(netip.MustParseAddr(c.addr), c.flags); got != c.want {
+			t.Errorf("%s on %v: %v, want %v", c.addr, c.flags, got, c.want)
 		}
 	}
 }
