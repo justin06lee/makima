@@ -38,12 +38,15 @@ func (n *node) applySSH(ctx context.Context, reread bool) {
 
 	if !on {
 		n.ssh.Close()
+		n.noteSSH("")
 		return
 	}
 
 	account, err := resolveSSHUser(userName, own)
 	if err != nil {
 		log.Printf("ssh: %v", err)
+		n.ssh.Close()
+		n.noteSSH(err.Error())
 		return
 	}
 
@@ -73,6 +76,7 @@ func (n *node) applySSH(ctx context.Context, reread bool) {
 		// and the reason is almost always a path that does not exist.
 		log.Printf("ssh: not starting — no authorized keys found in %s", strings.Join(sources, ", "))
 		n.ssh.Close()
+		n.noteSSH("no authorized keys found in " + strings.Join(sources, ", "))
 		return
 	}
 
@@ -92,7 +96,19 @@ func (n *node) applySSH(ctx context.Context, reread bool) {
 	})
 	if err != nil {
 		log.Printf("ssh: %v", err)
+		n.noteSSH(err.Error())
+		return
 	}
+	n.noteSSH("")
+}
+
+// noteSSH records why the SSH server is not running although switched on,
+// for status and the doctor — a server that quietly did not start is one
+// nobody finds out about until they need it.
+func (n *node) noteSSH(why string) {
+	n.mu.Lock()
+	n.sshProblem = why
+	n.mu.Unlock()
 }
 
 // SetSSH switches the SSH server on or off and records the settings.

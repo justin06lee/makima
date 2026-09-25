@@ -44,6 +44,12 @@ type Node struct {
 	// the internet itself behind it: a destination of "*" or Internet then
 	// covers traffic it forwards, not only traffic addressed to it.
 	Exit bool
+
+	// Own are this node's real-world addresses — the endpoints it is
+	// reached at outside the mesh. An exit node's public address is on the
+	// internet, but a packet to it through the tunnel is a packet to the
+	// exit node itself, and Internet does not grant that.
+	Own []netip.Addr
 }
 
 // Internet is the destination for traffic leaving the mesh through an exit
@@ -254,11 +260,20 @@ func (p *Policy) CompileFor(self Node, all []Node) *Filter {
 
 	f := &Filter{}
 	for _, r := range p.ACLs {
-		// Only the parts of the rule that name *this* node as a destination
-		// matter; the rest is somebody else's ingress problem.
-		var ports []PortRange
-		var dsts []netip.Prefix
+		var srcs []netip.Prefix
+		for _, s := range r.Src {
+			srcs = appendPrefixes(srcs, p.resolveToPrefixes(s, all))
+		}
+		if len(srcs) == 0 {
+			continue
+		}
 
+		// Only the parts of the rule that name *this* node as a destination
+		// matter; the rest is somebody else's ingress problem. One match per
+		// destination: each carries its own addresses and its own ports, and
+		// pooling them would pair every address with every port — a rule
+		// for "the internet on 443, and tenet on 22" granting tenet on 443
+		// and the internet on 22.
 		for _, d := range r.Dst {
 			entity, pr, err := splitDstPort(d)
 			if err != nil {
@@ -268,22 +283,8 @@ func (p *Policy) CompileFor(self Node, all []Node) *Filter {
 			if len(covered) == 0 {
 				continue
 			}
-			dsts = appendPrefixes(dsts, covered)
-			ports = appendPort(ports, pr)
+			f.Matches = append(f.Matches, Match{Srcs: srcs, Dsts: covered, Ports: []PortRange{pr}})
 		}
-		if len(dsts) == 0 {
-			continue
-		}
-
-		var srcs []netip.Prefix
-		for _, s := range r.Src {
-			srcs = appendPrefixes(srcs, p.resolveToPrefixes(s, all))
-		}
-		if len(srcs) == 0 {
-			continue
-		}
-
-		f.Matches = append(f.Matches, Match{Srcs: srcs, Dsts: dsts, Ports: ports})
 	}
 	return f
 }
@@ -433,15 +434,28 @@ func (p *Policy) dstPrefixes(entity string, self Node) []netip.Prefix {
 	case entity == "*":
 		out := prefixesOf(self)
 		if self.Exit {
-			out = appendPrefixes(out, internet)
+			out = appendPrefixes(out, everywhere)
 		}
 		return out
 
 	case entity == Internet:
-		if self.Exit {
+		if !self.Exit {
+			return nil
+		}
+		var own []netip.Prefix
+		for _, a := range self.Own {
+			if a.Is4() {
+				own = append(own, netip.PrefixFrom(a, 32))
+			}
+		}
+		if len(own) == 0 {
 			return internet
 		}
-		return nil
+		var out []netip.Prefix
+		for _, p := range internet {
+			out = append(out, without(p, own...)...)
+		}
+		return out
 
 	case strings.HasPrefix(entity, "group:"):
 		var out []netip.Prefix
@@ -480,16 +494,32 @@ func overlap(a, b netip.Prefix) (netip.Prefix, bool) {
 	return b, true
 }
 
-// internet is every IPv4 address outside the mesh's own ranges: where an exit
-// node forwards to. IPv4 only, like the tunnel.
-//
-// The mesh ranges are carved out so that a rule granting the internet
-// through an exit node does not also grant every mesh address that happens
-// to arrive at it — traffic between nodes is what the rest of the policy is
-// for.
-var internet = without(netip.MustParsePrefix("0.0.0.0/0"),
+// everywhere is every IPv4 address outside the mesh's own ranges: what "*"
+// reaches through an exit node, the exit node's own network included — "*"
+// means everything. IPv4 only, like the tunnel. The mesh ranges are carved
+// out so a rule about the exit node does not also grant every mesh address
+// that happens to arrive at it; traffic between nodes is what the rest of
+// the policy is for.
+var everywhere = without(netip.MustParsePrefix("0.0.0.0/0"),
 	netip.MustParsePrefix("10.77.0.0/16"),
 	netip.MustParsePrefix("100.64.0.0/10"))
+
+// internet is what Internet grants: public IPv4, and nothing that is only
+// reachable from where the exit node stands. Not its LAN (the private
+// ranges), not itself (loopback, and its own addresses, taken out per node),
+// not a cloud machine's metadata service (link-local, where the
+// credentials are), not multicast or the reserved space. A guest allowed to
+// use an exit node gets the internet, not the exit node's house.
+var internet = without(netip.MustParsePrefix("0.0.0.0/0"),
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"))
 
 // without is whole with the holes removed, as the fewest prefixes that cover
 // what is left.

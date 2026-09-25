@@ -34,6 +34,13 @@ func fakeLookups(routes map[string]string, names map[string][]netip.Addr) lookup
 	return lookups{
 		route: func(_ context.Context, a netip.Addr) (string, error) { return routes[a.String()], nil },
 		names: func(_ context.Context, n string) ([]netip.Addr, error) { return names[n], nil },
+		// makima's own resolver answers for this machine.
+		direct: func(_ context.Context, _ netip.AddrPort, n string) ([]netip.Addr, error) {
+			if n == "huiyuns-macbook-air.makima" {
+				return []netip.Addr{netip.MustParseAddr("10.77.0.5")}, nil
+			}
+			return nil, nil
+		},
 	}
 }
 
@@ -43,6 +50,7 @@ func tsView() tailscaleView {
 		self:     netip.MustParseAddr("10.77.0.5"),
 		selfName: "Huiyun's MacBook Air",
 		domain:   "makima",
+		dns:      netip.MustParseAddrPort("127.0.0.1:53053"),
 		peers: []netmap.Node{{
 			Name:      "tenet",
 			Addresses: []netip.Prefix{netip.MustParsePrefix("10.77.0.1/32")},
@@ -97,6 +105,17 @@ func TestTailscaleAnsweringForMakimasNames(t *testing.T) {
 	)
 	got := tailscaleChecks(context.Background(), ts0, tsView(), look)
 	if len(got) != 1 || got[0].OK || !strings.Contains(got[0].Fix, "accept-dns") {
+		t.Errorf("got %+v", got)
+	}
+}
+
+// When makima's own resolver is not answering either, the fault is makima's,
+// and blaming Tailscale for it sends somebody after the wrong thing.
+func TestNamesMakimaCannotAnswerAreNotTailscalesFault(t *testing.T) {
+	look := fakeLookups(map[string]string{"10.77.0.1": "utun7", "1.1.1.1": "en0"}, map[string][]netip.Addr{})
+	look.direct = func(context.Context, netip.AddrPort, string) ([]netip.Addr, error) { return nil, nil }
+	got := tailscaleChecks(context.Background(), ts0, tsView(), look)
+	if len(got) != 1 || !got[0].OK {
 		t.Errorf("got %+v", got)
 	}
 }

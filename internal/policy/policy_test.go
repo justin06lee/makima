@@ -415,16 +415,68 @@ func TestCIDRDestinationGrantsOnlyWhatItNames(t *testing.T) {
 	}
 }
 
-func TestInternetExcludesTheMesh(t *testing.T) {
-	in := func(a string) bool { return containsAddr(internet, netip.MustParseAddr(a)) }
-	for _, a := range []string{"0.0.0.1", "8.8.8.8", "10.76.255.255", "10.78.0.0", "100.63.255.255", "100.128.0.0", "192.168.1.1", "255.255.255.255"} {
-		if !in(a) {
+func TestInternetIsThePublicInternet(t *testing.T) {
+	in := func(set []netip.Prefix, a string) bool { return containsAddr(set, netip.MustParseAddr(a)) }
+	for _, a := range []string{"1.1.1.1", "8.8.8.8", "93.184.216.34", "100.63.255.255", "100.128.0.0", "172.32.0.1", "223.255.255.255"} {
+		if !in(internet, a) {
 			t.Errorf("%s is missing from the internet", a)
 		}
 	}
-	for _, a := range []string{"10.77.0.0", "10.77.255.255", "100.64.0.1", "100.127.255.255"} {
-		if in(a) {
-			t.Errorf("%s, a mesh address, is on the internet", a)
+	for _, a := range []string{
+		"10.77.0.1", "100.64.0.1", // the mesh
+		"10.0.0.1", "172.16.0.1", "192.168.1.1", // somebody's LAN
+		"127.0.0.1", "169.254.169.254", "0.0.0.1", // the machine itself, a cloud's metadata
+		"224.0.0.251", "255.255.255.255", // multicast, broadcast
+	} {
+		if in(internet, a) {
+			t.Errorf("%s is on the internet", a)
 		}
+	}
+	// "*" is everything but the mesh.
+	for _, a := range []string{"192.168.1.1", "10.78.0.0", "8.8.8.8"} {
+		if !in(everywhere, a) {
+			t.Errorf("%s is missing from everywhere", a)
+		}
+	}
+	for _, a := range []string{"10.77.0.0", "100.127.255.255"} {
+		if in(everywhere, a) {
+			t.Errorf("%s, a mesh address, is in everywhere", a)
+		}
+	}
+}
+
+// A guest allowed the internet through an exit node used to get the exit
+// node's whole LAN, its own sshd at its LAN or public address, and a cloud
+// machine's metadata service with it.
+func TestInternetDoesNotGrantTheExitNodesHouse(t *testing.T) {
+	gw := exitNode
+	gw.Own = []netip.Addr{netip.MustParseAddr("203.0.113.9"), netip.MustParseAddr("192.168.1.2")}
+	p := &Policy{ACLs: []Rule{{Action: "accept", Src: []string{"mac"}, Dst: []string{Internet + ":*"}}}}
+	f := p.CompileFor(gw, []Node{gw, mac})
+	from := mac.Addresses[0].Addr()
+	for _, to := range []string{"192.168.1.2", "192.168.1.30", "169.254.169.254", "203.0.113.9"} {
+		if f.Allow(from, netip.MustParseAddr(to), 22) {
+			t.Errorf("autogroup:internet granted %s", to)
+		}
+	}
+	if !f.Allow(from, netip.MustParseAddr("203.0.113.10"), 22) {
+		t.Error("the public internet beside the exit node's own address was refused")
+	}
+}
+
+// Each destination keeps its own ports.
+func TestDestinationsDoNotShareTheirPorts(t *testing.T) {
+	p := &Policy{ACLs: []Rule{{Action: "accept", Src: []string{"mac"}, Dst: []string{Internet + ":443", "tenet:22"}}}}
+	f := p.CompileFor(exitNode, []Node{exitNode, mac})
+	from := mac.Addresses[0].Addr()
+	a := netip.MustParseAddr
+	if !f.Allow(from, a("8.8.8.8"), 443) || !f.Allow(from, a("10.77.0.1"), 22) {
+		t.Fatal("what the rule names was refused")
+	}
+	if f.Allow(from, a("10.77.0.1"), 443) {
+		t.Error("tenet's 443 was granted by a rule that gives tenet 22 only")
+	}
+	if f.Allow(from, a("8.8.8.8"), 22) {
+		t.Error("the internet's 22 was granted by a rule that gives it 443 only")
 	}
 }

@@ -845,9 +845,11 @@ Tags come from the credential a machine joined with — `makima-server authkey
 -tags server` — never from anything the machine says about itself, because a
 node that could tag itself could grant itself whatever the tag confers.
 
-A destination of `*` includes the internet through any approved exit node.
-`autogroup:internet` grants that and nothing else — the right to use an exit
-node without the right to reach its own services:
+A destination of `*` includes everything reachable through any approved exit
+node. `autogroup:internet` grants the public internet and nothing else — the
+right to use an exit node without the right to reach the exit node itself,
+the network it sits on (private ranges), or a cloud machine's metadata
+address:
 
 ```json
 { "action": "accept", "src": ["group:laptops"], "dst": ["autogroup:internet:*"] }

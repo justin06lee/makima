@@ -1,9 +1,11 @@
 package netcfg
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"sync"
+	"time"
 )
 
 // An exit node has two halves, and they run on different machines.
@@ -161,7 +163,14 @@ func (c *ExitClient) Stop() error {
 
 	// Remove the redirect before the pins, mirroring Use. Removing a pin
 	// first would briefly route the exit node's own address into the tunnel.
-	err := delDefaultViaInterface(c.iface)
+	if err := delDefaultViaInterface(c.iface); err != nil && redirected(c.iface) {
+		// Still in place, so still active: the next netmap tries again, and
+		// the caller keeps the tunnel's sockets out of it meanwhile. Marking
+		// it stopped here left the redirect behind for good, since nothing
+		// retries a stop that says it happened.
+		return err
+	}
+	var err error
 	for _, p := range c.pinned {
 		if e := delRouteVia(p, c.gateway); e != nil && err == nil {
 			err = e
@@ -172,6 +181,21 @@ func (c *ExitClient) Stop() error {
 	c.exitAddr = netip.Addr{}
 	c.pinned = nil
 	return err
+}
+
+// redirected reports whether either half of the internet still routes out
+// of iface — the kernel's answer, since a delete that failed may have failed
+// because the route was already gone.
+func redirected(iface string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, probe := range []string{"1.1.1.1", "129.0.0.1"} {
+		ifc, err := RouteInterface(ctx, netip.MustParseAddr(probe))
+		if err != nil || ifc == iface {
+			return true
+		}
+	}
+	return false
 }
 
 // Active reports whether traffic is currently redirected, and where.

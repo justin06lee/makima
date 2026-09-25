@@ -194,6 +194,10 @@ type node struct {
 	exitMu      sync.Mutex
 	exitProblem string
 
+	// sshProblem is why the SSH server is not running although switched
+	// on. Guarded by mu.
+	sshProblem string
+
 	// dnsMu guards dns and resolver, which the poll loop starts and stops
 	// while status requests ask whether they are running.
 	dnsMu sync.Mutex
@@ -701,10 +705,27 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	// the whole point of the network lock: a control server that invents a
 	// peer has to forge a signature it holds no key for, and the invention is
 	// dropped here rather than admitted to the data plane.
-	n.mu.Lock()
-	pin := n.file.Lock
-	n.mu.Unlock()
-	peers, rejected, pin, lockErr := verifyPeers(resp, pin)
+	// Checked outside the lock, then committed only if the lock this node
+	// holds is still the one it was checked against: a `makima lock reset`
+	// landing in between would otherwise be written over with the pin it
+	// threw away. When that happens the netmap is checked again.
+	var (
+		peers    []netmap.Node
+		rejected []rejection
+		pin      *netmap.LockPin
+		lockErr  error
+	)
+	for {
+		n.mu.Lock()
+		held := n.file.Lock
+		n.mu.Unlock()
+		peers, rejected, pin, lockErr = verifyPeers(resp, held)
+		n.mu.Lock()
+		if n.file.Lock == held {
+			break // n.mu stays held for the commit below
+		}
+		n.mu.Unlock()
+	}
 	if lockErr != nil {
 		log.Printf("network lock: not following the control plane's lock past version %d: %v", pinEpoch(pin), lockErr)
 	}
@@ -712,7 +733,6 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 		log.Printf("REFUSING peer %s: %v", r.name, r.err)
 	}
 
-	n.mu.Lock()
 	if pinEpoch(pin) != pinEpoch(n.file.Lock) {
 		log.Printf("network lock: now at version %d (%s)", pin.Epoch, lockState(pin))
 	}

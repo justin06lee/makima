@@ -186,6 +186,9 @@ type SSHInfo struct {
 	KeyError string   `json:"key_error,omitempty"`
 
 	Sessions uint64 `json:"sessions"`
+
+	// Error is why the server is not running although it is switched on.
+	Error string `json:"error,omitempty"`
 }
 
 // SSHRequest switches the built-in SSH server on or off.

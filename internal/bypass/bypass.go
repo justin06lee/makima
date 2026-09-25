@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"syscall"
 	"time"
@@ -135,11 +136,19 @@ func (b *Binder) Track(s syscall.Conn) (untrack func()) {
 }
 
 // Control binds a socket as it is created, for net.Dialer and
-// net.ListenConfig. A no-op while nothing is bound.
+// net.ListenConfig. A no-op while nothing is bound, and for a connection to
+// this machine itself: loopback is neither in the tunnel's way nor reachable
+// from a socket bound to the Wi-Fi, and a local DNS stub — 127.0.0.53, or a
+// DNS proxy — is where name lookups go.
 func (b *Binder) Control(network, address string, c syscall.RawConn) error {
 	ifc, ok := b.Bound()
 	if !ok {
 		return nil
+	}
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		if ip, err := netip.ParseAddr(host); err == nil && ip.Unmap().IsLoopback() {
+			return nil
+		}
 	}
 	return bindSocket(c, &ifc)
 }

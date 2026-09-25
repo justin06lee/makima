@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -65,9 +66,32 @@ func tailscaleIface(ifaces []ifaceAddrs, mine string) (ifaceAddrs, bool) {
 type lookups struct {
 	route func(context.Context, netip.Addr) (string, error)
 	names func(context.Context, string) ([]netip.Addr, error)
+
+	// direct asks one DNS server, makima's own, bypassing the system.
+	direct func(context.Context, netip.AddrPort, string) ([]netip.Addr, error)
 }
 
-var systemLookups = lookups{route: netcfg.RouteInterface, names: netcfg.SystemLookup}
+var systemLookups = lookups{route: netcfg.RouteInterface, names: netcfg.SystemLookup, direct: askServer}
+
+// askServer resolves name at one DNS server and nowhere else.
+func askServer(ctx context.Context, server netip.AddrPort, name string) ([]netip.Addr, error) {
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "udp", server.String())
+		},
+	}
+	ips, err := r.LookupNetIP(ctx, "ip4", name)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, ip.Unmap())
+	}
+	return out, nil
+}
 
 // maxRouteChecks bounds how many peers the doctor asks the kernel about:
 // one route lookup per peer, and a route that covers one covers the range.
@@ -78,7 +102,8 @@ type tailscaleView struct {
 	iface    string // makima's own interface
 	self     netip.Addr
 	selfName string
-	domain   string // empty when mesh names are off here
+	domain   string         // empty when mesh names are off here
+	dns      netip.AddrPort // makima's own resolver, when it runs
 	peers    []netmap.Node
 	exit     bool // makima's own exit node is in use
 }
@@ -134,11 +159,15 @@ func tailscaleChecks(ctx context.Context, ts ifaceAddrs, v tailscaleView, look l
 		}
 	}
 
-	// Names. Asked for this machine's own, which the resolver here can
-	// only get wrong if something other than makima is answering.
-	if v.domain != "" && v.self.IsValid() && v.selfName != "" {
+	// Names. Asked for this machine's own, of makima's resolver and then of
+	// the system's: only when makima answers and the system does not is
+	// something else answering in its place. When makima's own resolver is
+	// wrong too, that is makima's problem, and the Names check's.
+	if v.domain != "" && v.self.IsValid() && v.selfName != "" && v.dns.IsValid() {
 		name := dnsserver.Label(v.selfName) + "." + v.domain
-		if got, err := look.names(ctx, name); err == nil && !slices.Contains(got, v.self) {
+		mine, derr := look.direct(ctx, v.dns, name)
+		got, err := look.names(ctx, name)
+		if derr == nil && slices.Contains(mine, v.self) && err == nil && !slices.Contains(got, v.self) {
 			out = append(out, localapi.Check{
 				Name:   "Tailscale",
 				Detail: fmt.Sprintf("%s does not resolve to %s through this machine's resolver while Tailscale runs — its DNS settings are answering for *.%s in makima's place", name, v.self, v.domain),

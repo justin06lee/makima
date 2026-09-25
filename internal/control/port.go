@@ -58,12 +58,18 @@ func RecordPort(statePath string, port int) error {
 // An address given explicitly is used as it is. Otherwise the recorded port,
 // which never moves once the network exists: the machines already in it hold
 // it, and a server that wandered to another port on a busy morning would be
-// one none of them could find. Only a server with nothing recorded — a new
-// network — picks one: DefaultPort, or the first free one after it.
-func ListenControl(statePath, addr string) (net.Listener, int, error) {
+// one none of them could find. A network with machines in it and nothing
+// recorded predates the record, from when the server always listened on
+// DefaultPort, so that is where it stays. Only a new network picks:
+// DefaultPort, or the first free one after it.
+func ListenControl(statePath, addr string, established bool) (net.Listener, int, error) {
 	var ln net.Listener
 	var err error
-	switch recorded := RecordedPort(statePath); {
+	recorded := RecordedPort(statePath)
+	if recorded == 0 && established && addr == "" {
+		recorded = DefaultPort
+	}
+	switch {
 	case addr != "":
 		ln, err = net.Listen("tcp", addr)
 	case recorded != 0:

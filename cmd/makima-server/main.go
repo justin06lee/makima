@@ -196,7 +196,7 @@ func serve(args []string) error {
 	// The public port next, and written down beside the state, so it is the
 	// same after every restart and anything that asks — invites, the
 	// forwarding advice, the command line — gets the port actually in use.
-	ln, port, err := control.ListenControl(*statePath, *addr)
+	ln, port, err := control.ListenControl(*statePath, *addr, len(store.Nodes()) > 0)
 	if err != nil {
 		return err
 	}

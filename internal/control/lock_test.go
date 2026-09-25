@@ -508,7 +508,7 @@ func TestSealingAnOlderLock(t *testing.T) {
 	}
 }
 
-func TestForgetLock(t *testing.T) {
+func TestForgetLockEmptiesTheLock(t *testing.T) {
 	s := newStore(t)
 	pub, priv := signingPair(t)
 	startLock(t, s, pub, priv)
@@ -522,5 +522,49 @@ func TestForgetLock(t *testing.T) {
 	}
 	if st := s.LockStatus(); len(st.TrustedKeys) != 0 || st.Signed != 0 {
 		t.Errorf("after forgetting: %+v", st)
+	}
+}
+
+// A version that trusts no key could never be followed by another: the lock
+// would be stuck there on every node that took it.
+func TestAVersionTrustingNoKeyIsRefused(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	if err := changeLock(s, priv, false); err == nil {
+		t.Error("the store took a version that trusts no key")
+	}
+	empty := SignLockStatement(priv, 2, false, nil)
+	if after, err := AdvanceLock(pinAt(t, s), []LockStatement{empty}); err == nil || after.Epoch != 1 {
+		t.Error("a node took a version that trusts no key")
+	}
+}
+
+// Forgetting the lock keeps the nodes' signatures: machines still holding
+// the lock check their peers against them, and wiping them had every such
+// machine refuse every peer — the ones you would reach to reset it included.
+func TestForgettingTheLockKeepsSignaturesButNotTheirStanding(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	n := registerNode(t, s, "laptop")
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, n.ID, n.NodeKey)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ForgetLock(); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Nodes()[0].KeySignature) == 0 {
+		t.Error("the signature was wiped")
+	}
+
+	// A new lock with a new key does not count the old signature.
+	pub2, priv2 := signingPair(t)
+	startLock(t, s, pub2, priv2)
+	if st := s.LockStatus(); st.Signed != 0 || st.Unsigned != 1 {
+		t.Errorf("status %+v: an old key's signature counted under the new lock", st)
+	}
+	if len(s.PendingSignatures()) != 1 {
+		t.Error("the node signed by the forgotten key is not waiting to be signed again")
 	}
 }

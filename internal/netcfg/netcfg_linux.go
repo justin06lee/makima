@@ -77,6 +77,12 @@ func enableForwarding(iface string, mesh netip.Prefix) error {
 		return fmt.Errorf("enable IP forwarding: %w", err)
 	}
 
+	// Whatever an earlier makima left first: v0.3.0 appended its accepts
+	// after any DROP, masqueraded Tailscale's range as well, and never took
+	// any of it down. Checking for a rule before adding it would find those
+	// and leave them as they were.
+	_ = removeForwarding(iface, MeshRange, LegacyMeshRange)
+
 	if err := ensureRule("nat", "POSTROUTING", false,
 		"-s", mesh.String(), "!", "-o", iface,
 		"-m", "comment", "--comment", natComment, "-j", "MASQUERADE"); err != nil {
@@ -111,6 +117,12 @@ func ensureRule(table, chain string, first bool, rule ...string) error {
 }
 
 func disableForwarding(iface string, mesh netip.Prefix) error {
+	return removeForwarding(iface, mesh)
+}
+
+// removeForwarding deletes every copy of makima's forwarding rules for the
+// given mesh ranges.
+func removeForwarding(iface string, meshes ...netip.Prefix) error {
 	var firstErr error
 	// Every copy, in case an earlier makima stacked several: -D removes one
 	// at a time, and succeeds until none is left.
@@ -126,8 +138,10 @@ func disableForwarding(iface string, mesh netip.Prefix) error {
 		}
 	}
 
-	del("nat", "POSTROUTING", "-s", mesh.String(), "!", "-o", iface,
-		"-m", "comment", "--comment", natComment, "-j", "MASQUERADE")
+	for _, mesh := range meshes {
+		del("nat", "POSTROUTING", "-s", mesh.String(), "!", "-o", iface,
+			"-m", "comment", "--comment", natComment, "-j", "MASQUERADE")
+	}
 	del("filter", "FORWARD", "-i", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
 	del("filter", "FORWARD", "-o", iface, "-m", "comment", "--comment", natComment, "-j", "ACCEPT")
 
