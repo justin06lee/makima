@@ -333,3 +333,47 @@ func TestLaunchdPlistIsValid(t *testing.T) {
 		t.Fatalf("plutil -lint: %v\n%s", err, out)
 	}
 }
+
+// A unit makima wrote says so on its first line, and one written before it
+// did is still recognised: it has no Documentation line, which every unit in
+// dist/ has.
+func TestOwnUnitTellsMakimasFromSomebodyElses(t *testing.T) {
+	d := Daemon{Name: "makimad", Service: Service{Unit: "makimad", Description: "makima node daemon"}}
+	if !ownUnit([]byte(systemdUnit(d, "/usr/local/bin/makimad"))) {
+		t.Error("the unit makima writes is not recognised as its own")
+	}
+	old := "[Unit]\nDescription=makima node daemon\nAfter=network-online.target\n\n[Service]\nExecStart=/usr/local/bin/makimad\n"
+	if !ownUnit([]byte(old)) {
+		t.Error("a unit an older makima wrote is not recognised as its own")
+	}
+	for _, name := range []string{"makimad.service", "makima-server.service", "makima-relay.service"} {
+		b, err := os.ReadFile(filepath.Join("..", "..", "dist", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ownUnit(b) {
+			t.Errorf("dist/%s is taken for makima's own, and would be overwritten by makima up", name)
+		}
+	}
+}
+
+// The node daemon's unit in dist/ used to narrow its capabilities and hide
+// /home, which broke mesh names, ssh sessions, the inbox, the desktop socket
+// and fleet updates without a word. None of that may come back.
+func TestTheDaemonsUnitDoesNotConfineWhatItNeeds(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "dist", "makimad.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, bad := range []string{"CapabilityBoundingSet", "AmbientCapabilities", "ProtectHome", "ProtectSystem", "NoNewPrivileges", "ReadWritePaths", "PrivateTmp", "User=", "DynamicUser"} {
+			if strings.HasPrefix(line, bad) {
+				t.Errorf("dist/makimad.service has %q", line)
+			}
+		}
+	}
+}

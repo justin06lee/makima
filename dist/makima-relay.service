@@ -14,6 +14,8 @@ RestartSec=5
 # being root than anything else here, and the confinement below is the machine
 # saying the same thing the protocol does.
 DynamicUser=yes
+User=makima
+Group=makima
 StateDirectory=makima
 
 ProtectSystem=strict

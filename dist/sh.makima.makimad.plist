@@ -26,8 +26,8 @@
   <integer>20</integer>
 
   <key>StandardOutPath</key>
-  <string>/var/log/makimad.log</string>
+  <string>/var/log/makima/makimad.log</string>
   <key>StandardErrorPath</key>
-  <string>/var/log/makimad.log</string>
+  <string>/var/log/makima/makimad.log</string>
 </dict>
 </plist>

@@ -3,10 +3,10 @@
 #
 # `makima up` already registers the daemon with launchd or systemd, so that it
 # is back after a reboot; nobody has to run this to get that. What this installs
-# instead are the units in this directory — narrowed capabilities, a protected
-# home, a dynamic user for the control server — for a machine somebody
-# administers themselves and wants locked down that way. Running it replaces
-# whatever `makima up` registered.
+# instead are the units in this directory, for a machine somebody administers
+# themselves — the control plane's and relay's confined to a dynamic user of
+# their own. `makima up` and `makima down` start and stop units installed this
+# way as they are, and never write over them or remove them.
 set -eu
 
 die() { echo "install-service: $*" >&2; exit 1; }
@@ -38,6 +38,7 @@ Linux)
 
 Darwin)
 	PLIST=/Library/LaunchDaemons/sh.makima.makimad.plist
+	mkdir -p /var/log/makima
 	install -m 0644 "$DIR/sh.makima.makimad.plist" "$PLIST"
 
 	# bootout first so re-running this is an upgrade rather than an error. The
@@ -48,7 +49,7 @@ Darwin)
 
 	echo "  makimad loaded and started"
 	echo
-	echo "  logs:  tail -f /var/log/makimad.log"
+	echo "  logs:  tail -f /var/log/makima/makimad.log"
 	echo "  stop:  sudo launchctl bootout system $PLIST"
 	;;
 

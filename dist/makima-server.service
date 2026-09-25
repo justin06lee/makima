@@ -14,9 +14,14 @@ RestartSec=5
 # it as a plain user is what makes "compromising it buys an attacker the
 # ability to lie about membership, and nothing else" true of the machine as
 # well as of the protocol.
+#
+# One named dynamic user for both the control plane and the relay: they share
+# /var/lib/makima, and two anonymous ones would each take it from the other on
+# every start.
 DynamicUser=yes
+User=makima
+Group=makima
 StateDirectory=makima
-Environment=MAKIMA_STATE=/var/lib/makima/control.json
 
 ProtectSystem=strict
 ProtectHome=yes

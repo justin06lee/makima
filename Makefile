@@ -294,4 +294,4 @@ clean: release-clean
 # systemd itself; this installs the hardened units in dist/ instead, for a
 # server somebody administers themselves.
 service:
-	@sh dist/install-service.sh
+	@sudo sh dist/install-service.sh

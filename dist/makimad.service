@@ -17,22 +17,18 @@ RestartSec=5
 # believes it can still reach mesh addresses down a dead interface blackholes
 # them until the next reboot.
 KillSignal=SIGTERM
-TimeoutStopSec=15
+TimeoutStopSec=20
 
-# Root is required to create the TUN device and edit the routing table. The
-# capability set is narrowed to what that actually needs rather than left as
-# full root: NET_ADMIN for the interface and routes, NET_RAW for the socket.
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
-
-# The daemon reads and writes exactly one directory. /etc/resolver is a macOS
-# mechanism and has no meaning here: on Linux, split DNS goes through
-# systemd-resolved over D-Bus, so there is no resolver file to write.
-ReadWritePaths=/etc/makima
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-NoNewPrivileges=yes
+# Root, and not narrowed. This unit used to keep only NET_ADMIN and NET_RAW and
+# hide /home, and so broke, without a word, nearly everything the daemon does
+# besides the tunnel: binding port 53 for mesh names, becoming the owner's
+# account for an ssh session (and sudo inside one), handing the inbox and the
+# desktop socket to the owner, reading their authorized_keys, finding the owner
+# at all, driving ufw, and replacing its own binaries on a fleet update. The
+# control plane and the relay need none of that, and their units are confined.
+#
+# `makima up` starts this unit as it is when it finds it, rather than writing
+# its own over it.
 
 [Install]
 WantedBy=multi-user.target

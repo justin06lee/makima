@@ -1292,7 +1292,8 @@ desktop/devserver   a pretend mesh, so the UI can be built without root
 
 dist/install.sh     one archive, one checksum, four binaries
 dist/packaging      homebrew formula, PKGBUILD, Dockerfile
-dist/*.service      hardened service units for servers run by hand; `makima up` registers its own
+dist/*.service      units for machines run by hand (the control plane and relay confined to a
+                    dynamic user); `makima up` starts one it finds as it is, and writes its own otherwise
 flake.nix           the Nix build
 ```
 
