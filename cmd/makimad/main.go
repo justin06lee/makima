@@ -93,6 +93,11 @@ func main() {
 	// whether the version now here has had its chances.
 	self := update.Self()
 	upd := &update.Installer{Running: version, Self: self, StateDir: filepath.Dir(*configPath)}
+	// Which network's orders the update record is about, before anything
+	// reads the record: read with the wrong network, it is emptied.
+	if f, err := conf.Load(*configPath); err == nil && f.Managed() {
+		upd.Network = f.ServerKey.String()
+	}
 	switch out, err := upd.Starting(); {
 	case err != nil:
 		log.Printf("update: %v", err)

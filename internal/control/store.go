@@ -973,6 +973,22 @@ func (s *Store) IsMember(nodeKey key.Public) bool {
 	return false
 }
 
+// MayOrderUpdates is the name of the node holding a machine key, if it may
+// order every node onto a new release: a node of this network, not
+// expired, and named by the policy's updaters when there is a policy.
+func (s *Store) MayOrderUpdates(machineKey key.Public) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.findByMachineKey(machineKey)
+	if n == nil || n.Expired {
+		return "", errors.New("this machine is not in the network")
+	}
+	if !s.state.Policy.MayOrderUpdates(n.policyNode()) {
+		return "", fmt.Errorf("this network's access policy does not let %s move every machine to a new release — name it under \"updaters\" in the policy, or run 'makima-server update' on the network's server", n.Name)
+	}
+	return n.Name, nil
+}
+
 // NameOf is the name of the node holding a machine key, and whether it is a
 // node of this network that may act — registered, and not expired.
 func (s *Store) NameOf(machineKey key.Public) (string, bool) {

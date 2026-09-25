@@ -81,6 +81,13 @@ type Installer struct {
 	// configuration.
 	StateDir string
 
+	// Network names the network whose update orders this machine follows —
+	// its control plane's key — or is empty for one without a control
+	// plane. Order numbers are the network's own and start again at one on
+	// another, so which orders have been handled only means anything for
+	// the network that numbered them.
+	Network string
+
 	// Options are passed to subaru; tests point it at a fake GitHub.
 	Options []subaru.Option
 
@@ -325,6 +332,9 @@ func (in *Installer) Pending() *Pending {
 // State is the update record, kept as update.json beside the node's
 // configuration.
 type State struct {
+	// Network is the network Handled and Failed are about.
+	Network string `json:"network,omitempty"`
+
 	// Handled is the last update order this machine acted on.
 	Handled uint64 `json:"handled,omitempty"`
 
@@ -362,6 +372,15 @@ func (in *Installer) load() State {
 	if err == nil {
 		_ = json.Unmarshal(b, &st)
 	}
+	if st.Network != in.Network {
+		// Another network's record. Its order numbers say nothing about this
+		// one's — a machine that joined a new network used to ignore every
+		// order until the new numbers passed the old — and its failure is
+		// not one this network asked about. An update swapped in and not yet
+		// proven is this machine's business wherever it is, and stays.
+		st = State{Pending: st.Pending}
+	}
+	st.Network = in.Network
 	return st
 }
 
