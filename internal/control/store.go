@@ -222,6 +222,11 @@ type Store struct {
 
 	// serverVersion is the release this server runs, handed to every node.
 	serverVersion string
+
+	// online is whether each node was online when presence was last
+	// checked, so going offline or coming back can be published. Not
+	// persisted. See RunPresence.
+	online map[netmap.NodeID]bool
 }
 
 // DefaultPrefix is where a new network's addresses come from: makima's own
