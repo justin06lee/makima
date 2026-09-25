@@ -213,10 +213,12 @@ func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdate is a node asking for every node to move to a release.
 //
-// Any node may ask. An order names a release and nothing more; each node
-// checks that release against the project's own published checksums and
-// refuses to go backwards, so the worst a node can do by asking is move the
-// network forward to a release the project published.
+// Any node may ask on a network with no access policy; on one with a policy,
+// only the nodes it names as updaters (see policy.Policy.Updaters). An order
+// names a release and nothing more; each node checks that release against the
+// project's own published checksums and refuses to go backwards, so the
+// worst an updater can do by asking is move the network forward to a release
+// the project published — restarting every daemon on the way.
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !s.registers.allow(r.RemoteAddr, time.Now()) {
 		tooMany(w, registerEvery)
@@ -226,9 +228,9 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	by, known := s.store.NameOf(env.MachineKey)
-	if !known {
-		s.reply(w, env.MachineKey, &UpdateResponse{Error: "this machine is not in the network"})
+	by, err := s.store.MayOrderUpdates(env.MachineKey)
+	if err != nil {
+		s.reply(w, env.MachineKey, &UpdateResponse{Error: err.Error()})
 		return
 	}
 	order, err := s.store.RequestUpdate(by, req.Tag)

@@ -709,7 +709,10 @@ is what asks it to try again.
 An order names a release and nothing else, and a machine refuses anything
 older than what it runs, so the most any machine in the network — or the
 control plane — can do with it is move the others forward to something this
-repository published. A development build ahead of the release is left alone.
+repository published. On a network with an access policy, only the machines
+the policy names under `"updaters"` may give the order at all — say
+`"updaters": ["mac"]` — since moving every machine restarts every daemon;
+without that field, only `makima-server update` can. A development build ahead of the release is left alone.
 The same caveat as the installer applies: the checksum proves the archive is
 the one the release published, not that the release itself is honest.
 

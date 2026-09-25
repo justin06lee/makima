@@ -13,6 +13,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
+	"github.com/justin06lee/makima/internal/policy"
 )
 
 // One machine asks; every machine hears it on its next netmap, reports how it
@@ -164,5 +165,49 @@ func TestAnOldControlPlaneSaysItCannotPassAnUpdateOn(t *testing.T) {
 
 	if _, err := c.RequestUpdate(context.Background(), "v0.3.0"); !errors.Is(err, ErrNoRemoteUpdates) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Once a network has an access policy, moving every machine at once is for
+// the nodes it names as updaters — not for any machine that happens to be in
+// the network, a guest's laptop included.
+func TestOnlyTheNamedUpdatersMayOrderUnderAPolicy(t *testing.T) {
+	store, url := testMesh(t)
+	auth, _ := store.MintAuthKey(true, time.Hour)
+	owner, _ := joinClient(t, store, url, "mac", auth.Secret)
+	guest, _ := joinClient(t, store, url, "guest", auth.Secret)
+
+	if err := store.SetPolicy(&policy.Policy{
+		ACLs:     []policy.Rule{{Action: "accept", Src: []string{"*"}, Dst: []string{"*:*"}}},
+		Updaters: []string{"mac"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := guest.RequestUpdate(context.Background(), "v0.3.1"); err == nil {
+		t.Error("a node the policy does not name ordered every machine onto a release")
+	}
+	if _, ok := store.UpdateOrdered(); ok {
+		t.Fatal("the refused order was recorded")
+	}
+	if _, err := owner.RequestUpdate(context.Background(), "v0.3.1"); err != nil {
+		t.Errorf("the named updater was refused: %v", err)
+	}
+}
+
+// A policy that names no updaters leaves the order to the server's own
+// command line.
+func TestAPolicyWithoutUpdatersLeavesItToTheServer(t *testing.T) {
+	store, url := testMesh(t)
+	auth, _ := store.MintAuthKey(true, time.Hour)
+	c, _ := joinClient(t, store, url, "mac", auth.Secret)
+	if err := store.SetPolicy(policy.DefaultPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RequestUpdate(context.Background(), "v0.3.1"); err == nil {
+		t.Error("a node ordered an update under a policy that names no updaters")
+	}
+	if _, err := store.RequestUpdate("admin", "v0.3.1"); err != nil {
+		t.Errorf("the server's own command line was refused: %v", err)
 	}
 }

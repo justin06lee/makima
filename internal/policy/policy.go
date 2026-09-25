@@ -73,6 +73,17 @@ type Policy struct {
 	// bottom tells you what is allowed, with no need to hold earlier rules in
 	// your head to understand a later one.
 	ACLs []Rule `json:"acls"`
+
+	// Updaters are the nodes that may order every node onto a new release
+	// (`makima update`), as entities like a rule's Src.
+	//
+	// Without a policy any node may, as the default for machines one person
+	// owns. A network that has written one has said its machines are not all
+	// alike, and moving all of them at once — restarting every daemon, and
+	// every session running through one — is not something to let a guest's
+	// laptop do by default: without this field, only the control plane's
+	// own command line can.
+	Updaters []string `json:"updaters,omitempty"`
 }
 
 // Rule permits traffic from a set of sources to a set of destinations.
@@ -144,6 +155,11 @@ func (p *Policy) Validate() error {
 			return fmt.Errorf("group %q must be named \"group:something\"", name)
 		}
 	}
+	for _, u := range p.Updaters {
+		if strings.HasPrefix(u, "autogroup:") {
+			return fmt.Errorf("updaters: %q is not a node; name nodes, tags, groups or \"*\"", u)
+		}
+	}
 	for i, r := range p.ACLs {
 		if r.Action != "accept" {
 			return fmt.Errorf("acl %d: action is %q; only \"accept\" is supported", i, r.Action)
@@ -183,6 +199,15 @@ func knownAutogroup(entity string) error {
 		return fmt.Errorf("unknown autogroup; the only one is %s", Internet)
 	}
 	return nil
+}
+
+// MayOrderUpdates reports whether n may order every node onto a release.
+// See Updaters.
+func (p *Policy) MayOrderUpdates(n Node) bool {
+	if p == nil {
+		return true
+	}
+	return p.matchesEntity(p.Updaters, n)
 }
 
 // CanSee reports whether node a should be told about node b.
