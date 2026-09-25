@@ -241,8 +241,9 @@ func lockRemoveKey(args []string) error {
 		if len(kept) == len(keys) {
 			return nil, false, fmt.Errorf("no trusted signing key with id %q", *id)
 		}
-		if len(kept) == 0 && enabled {
-			return nil, false, fmt.Errorf("that is the only trusted key and the lock is enabled; disable the lock first, or the mesh would reject every node")
+		if len(kept) == 0 {
+			// Nothing could sign the version after one that trusts no key.
+			return nil, false, fmt.Errorf("that is the only trusted key; trust another first (lock add-key), or start the lock over (lock forget)")
 		}
 		return kept, enabled, nil
 	})
@@ -296,7 +297,8 @@ func lockForget(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Print("the lock is gone from this server, and every node signature with it.\n\n")
+	fmt.Print("the lock is gone from this server. node signatures are kept, since machines that\n")
+	fmt.Print("still hold the lock check their peers against them.\n\n")
 	fmt.Print("every machine that held the lock still enforces it — the server cannot tell it\n")
 	fmt.Print("otherwise, which is what the lock is for. on each one, as root:\n")
 	fmt.Print("  makima lock reset\n")

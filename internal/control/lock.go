@@ -121,6 +121,11 @@ func (st LockStatement) signedBy(trusted [][]byte) error {
 	if len(st.Signer) != ed25519.PublicKeySize {
 		return fmt.Errorf("lock version %d has no signer", st.Epoch)
 	}
+	if len(st.Keys) == 0 {
+		// Nothing could ever sign the version after it: the lock would be
+		// stuck there for good, on every node that took it.
+		return fmt.Errorf("lock version %d trusts no key", st.Epoch)
+	}
 	if !containsKey(trusted, st.Signer) {
 		return fmt.Errorf("lock version %d is signed by a key the version before it did not trust", st.Epoch)
 	}
@@ -313,13 +318,24 @@ func (s *Store) LockStatus() LockStatus {
 		}
 	}
 	for _, n := range s.state.Nodes {
-		if len(n.KeySignature) > 0 {
+		if s.signedLocked(n) {
 			st.Signed++
 		} else {
 			st.Unsigned++
 		}
 	}
 	return st
+}
+
+// signedLocked reports whether a node's signature is one the lock's current
+// keys verify — not merely present: one left from a lock that was forgotten,
+// or from a key since dropped, signs nothing now. Callers hold s.mu.
+func (s *Store) signedLocked(n *Node) bool {
+	if len(n.KeySignature) == 0 || s.state.Lock == nil {
+		return false
+	}
+	l := &Lock{Enabled: true, TrustedKeys: s.state.Lock.TrustedKeys}
+	return l.VerifyNodeKey(n.ID, n.NodeKey, n.KeySignature) == nil
 }
 
 // ApplyLockStatement makes st the lock's next version.
@@ -413,9 +429,15 @@ func (s *Store) ApplyLockStatement(st LockStatement, names map[string]string) er
 }
 
 // ForgetLock throws the lock away, for a network whose every signing key is
-// lost. It changes nothing on a node that holds the lock — that is the point
+// lost. A node that holds the lock goes on enforcing it — that is the point
 // of nodes holding it — until somebody with root there runs
-// `makima lock reset`; after that the node sees no lock, and admits everyone.
+// `makima lock reset`; after that it sees no lock, and admits everyone.
+//
+// The nodes' signatures are kept. A node still holding the lock checks its
+// peers against them, and wiping them would have every such node refuse
+// every peer on its next netmap — including the peers somebody would have to
+// reach, over makima, to run the reset. Signatures no longer verified by
+// the lock's keys count as unsigned (see PendingSignatures).
 func (s *Store) ForgetLock() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -423,9 +445,6 @@ func (s *Store) ForgetLock() error {
 		return ErrLockDisabled
 	}
 	s.state.Lock = nil
-	for _, n := range s.state.Nodes {
-		n.KeySignature = nil
-	}
 	if err := s.save(); err != nil {
 		return err
 	}
@@ -465,7 +484,7 @@ func (s *Store) PendingSignatures() []UnsignedNode {
 
 	var out []UnsignedNode
 	for _, n := range s.state.Nodes {
-		if len(n.KeySignature) > 0 {
+		if s.signedLocked(n) {
 			continue
 		}
 		out = append(out, UnsignedNode{
