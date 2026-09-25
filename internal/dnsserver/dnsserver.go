@@ -417,6 +417,10 @@ func stripDomain(name, domain string) (string, bool) {
 	return strings.TrimSuffix(name, suffix), true
 }
 
+// Label is the DNS label a node's name answers to: the name a lookup has to
+// ask for, as SetRecords serves it.
+func Label(name string) string { return normaliseName(name) }
+
 // normaliseName renders a node name as a DNS label.
 //
 // Node names come from hostnames, which routinely contain characters DNS does
