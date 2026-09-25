@@ -305,3 +305,39 @@ func TestAPackageManagersFilesAreLeftToIt(t *testing.T) {
 		t.Errorf("/usr/local/bin refused: %v", err)
 	}
 }
+
+// Order numbers are a network's own and start at one again on another. A
+// machine that left one network for another used to ignore every order the
+// new one gave until its numbers passed the old one's.
+func TestAnotherNetworksOrdersAreNotHandledAlready(t *testing.T) {
+	dir := t.TempDir()
+	home := &Installer{StateDir: dir, Network: "network-a"}
+	if err := home.MarkHandled(7, "v0.3.0", errors.New("no")); err != nil {
+		t.Fatal(err)
+	}
+	if !home.Handled(1) || home.Failed() == nil {
+		t.Fatal("the first network's record did not stick")
+	}
+
+	moved := &Installer{StateDir: dir, Network: "network-b"}
+	if moved.Handled(1) {
+		t.Error("the new network's first order counts as handled because of the old network's seventh")
+	}
+	if moved.Failed() != nil {
+		t.Error("the old network's failure is reported to the new one")
+	}
+}
+
+// The same network, read again, keeps its record — the daemon reads it on
+// every start, and losing it would retry a failed order on every restart.
+func TestTheSameNetworksRecordSurvives(t *testing.T) {
+	dir := t.TempDir()
+	a := &Installer{StateDir: dir, Network: "network-a"}
+	if err := a.MarkHandled(3, "v0.3.0", nil); err != nil {
+		t.Fatal(err)
+	}
+	again := &Installer{StateDir: dir, Network: "network-a"}
+	if !again.Handled(3) {
+		t.Error("the record was lost between two reads for the same network")
+	}
+}
