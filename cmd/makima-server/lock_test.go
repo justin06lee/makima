@@ -1079,3 +1079,25 @@ func TestNamesInPromptsCannotRewriteThem(t *testing.T) {
 		t.Errorf("printKeys wrote an escape: %q", out)
 	}
 }
+
+// With nobody at a terminal, the look at what a lock version will trust is
+// refused — and the refusal does not point at a -yes that cannot stand in
+// for it.
+func TestWithNobodyToLookAtTheKeysNothingIsSigned(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	was := os.Stdin
+	os.Stdin = f
+	t.Cleanup(func() { os.Stdin = was })
+
+	var ok bool
+	capture(t, func() {
+		ok, err = confirmChange(2, []control.SigningKey{{Public: make([]byte, 32)}}, nil, true)
+	})
+	if ok || err == nil || strings.Contains(err.Error(), "-yes") {
+		t.Errorf("with no terminal: %v, %v; want a refusal that does not offer -yes", ok, err)
+	}
+}

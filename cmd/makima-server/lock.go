@@ -433,7 +433,7 @@ var confirmSeal = func(keys []control.SigningKey, own []byte, enabled bool) (boo
 	if err := printKeys(keys, own); err != nil {
 		return false, err
 	}
-	return ask("\nare these all yours? [y/N] ")
+	return ask("\nare these all yours? [y/N] ", errLookAtKeys)
 }
 
 // confirmChange shows what a lock version built on history taken on trust —
@@ -446,7 +446,7 @@ var confirmChange = func(epoch uint64, keys []control.SigningKey, own []byte, en
 	if err := printKeys(keys, own); err != nil {
 		return false, err
 	}
-	return ask("\nare these all yours? [y/N] ")
+	return ask("\nare these all yours? [y/N] ", errLookAtKeys)
 }
 
 // printable is s with anything that is not printable taken out. Names come
@@ -907,14 +907,18 @@ var confirmSigning = func(fresh []control.UnsignedNode) (bool, error) {
 		return false, fmt.Errorf("no terminal to ask at: check each of these is yours ('makima status' on it shows its node key), then run again with -yes")
 	}
 	fmt.Print("\nthe server chose this list, so a machine you do not recognise may be its own.\n")
-	return ask("each machine's 'makima status' shows its node key. sign them? [y/N] ")
+	return ask("each machine's 'makima status' shows its node key. sign them? [y/N] ", errors.New("no terminal to ask at; check the list above, then run again with -yes"))
 }
 
-// ask puts a yes-or-no question to whoever is at the terminal; no terminal
-// is an error that says to pass -yes, never a yes.
-func ask(question string) (bool, error) {
+// errLookAtKeys is the answer when there is nobody to look at the keys a
+// lock version will trust: no flag stands in for that look.
+var errLookAtKeys = errors.New("no terminal to ask at: what the lock will trust has to be looked at by somebody — run this at a terminal")
+
+// ask puts a yes-or-no question to whoever is at the terminal. No terminal is
+// the error given, never a yes.
+func ask(question string, noTerminal error) (bool, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return false, errors.New("no terminal to ask at; check the list above, then run again with -yes")
+		return false, noTerminal
 	}
 	fmt.Print(question)
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
