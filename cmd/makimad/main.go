@@ -718,9 +718,9 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	)
 	for {
 		n.mu.Lock()
-		held := n.file.Lock
+		held, network := n.file.Lock, n.file.ServerKey
 		n.mu.Unlock()
-		peers, rejected, pin, lockErr = verifyPeers(resp, held)
+		peers, rejected, pin, lockErr = verifyPeers(resp, network, held)
 		n.mu.Lock()
 		if n.file.Lock == held {
 			break // n.mu stays held for the commit below

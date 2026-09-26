@@ -21,7 +21,7 @@ func signingPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 // startLock sets up a lock trusting pub alone, not enforced: version 1.
 func startLock(t *testing.T, s *Store, pub ed25519.PublicKey, priv ed25519.PrivateKey) {
 	t.Helper()
-	if err := s.ApplyLockStatement(SignLockStatement(priv, 1, false, [][]byte{pub}), nil); err != nil {
+	if err := s.ApplyLockStatement(SignLockStatement(priv, s.ServerKey().Public(), 1, false, [][]byte{pub}), nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -32,7 +32,7 @@ func changeLock(s *Store, priv ed25519.PrivateKey, enabled bool, keys ...ed25519
 	for _, k := range keys {
 		ks = append(ks, k)
 	}
-	return s.ApplyLockStatement(SignLockStatement(priv, s.LockStatus().Epoch+1, enabled, ks), nil)
+	return s.ApplyLockStatement(SignLockStatement(priv, s.ServerKey().Public(), s.LockStatus().Epoch+1, enabled, ks), nil)
 }
 
 // registerNode joins a node and returns its record.
@@ -307,7 +307,7 @@ func TestNetMapCarriesTheLock(t *testing.T) {
 	if len(resp.Lock.TrustedKeys) != 1 {
 		t.Errorf("%d trusted keys in the netmap, want 1", len(resp.Lock.TrustedKeys))
 	}
-	pin, err := AdvanceLock(nil, resp.Lock.Chain)
+	pin, err := AdvanceLock(s.ServerKey().Public(), nil, resp.Lock.Chain)
 	if err != nil || pin == nil || !pin.Enabled || pin.Epoch != 2 {
 		t.Errorf("the chain in the netmap pins %+v, %v; want version 2, enforced", pin, err)
 	}
@@ -365,7 +365,7 @@ func TestNetMapCarriesPeerSignatures(t *testing.T) {
 // version, the way it would from its netmaps.
 func pinAt(t *testing.T, s *Store) *netmap.LockPin {
 	t.Helper()
-	pin, err := AdvanceLock(nil, s.LockChain())
+	pin, err := AdvanceLock(s.ServerKey().Public(), nil, s.LockChain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,9 +386,9 @@ func TestServerCannotSwitchThePinnedLockOff(t *testing.T) {
 	// The server's own key, or any key that is not trusted, signing
 	// "version 3: not enforced".
 	_, rogue := signingPair(t)
-	forged := append(s.LockChain(), SignLockStatement(rogue, 3, false, [][]byte{pub}))
+	forged := append(s.LockChain(), SignLockStatement(rogue, s.ServerKey().Public(), 3, false, [][]byte{pub}))
 
-	after, err := AdvanceLock(pin, forged)
+	after, err := AdvanceLock(s.ServerKey().Public(), pin, forged)
 	if err == nil {
 		t.Error("a version signed by an untrusted key was accepted")
 	}
@@ -404,8 +404,8 @@ func TestServerCannotTrustAKeyOfItsOwn(t *testing.T) {
 	pin := pinAt(t, s)
 
 	roguePub, rogue := signingPair(t)
-	forged := append(s.LockChain(), SignLockStatement(rogue, 2, true, [][]byte{pub, roguePub}))
-	if after, err := AdvanceLock(pin, forged); err == nil || containsKey(after.Keys, roguePub) {
+	forged := append(s.LockChain(), SignLockStatement(rogue, s.ServerKey().Public(), 2, true, [][]byte{pub, roguePub}))
+	if after, err := AdvanceLock(s.ServerKey().Public(), pin, forged); err == nil || containsKey(after.Keys, roguePub) {
 		t.Error("a key the lock never trusted signed itself in")
 	}
 }
@@ -423,13 +423,60 @@ func TestServerCannotRewriteHistory(t *testing.T) {
 
 	roguePub, rogue := signingPair(t)
 	history := []LockStatement{
-		SignLockStatement(rogue, 1, false, [][]byte{roguePub}),
-		SignLockStatement(rogue, 2, false, [][]byte{roguePub}),
-		SignLockStatement(rogue, 3, false, [][]byte{roguePub}),
+		SignLockStatement(rogue, s.ServerKey().Public(), 1, false, [][]byte{roguePub}),
+		SignLockStatement(rogue, s.ServerKey().Public(), 2, false, [][]byte{roguePub}),
+		SignLockStatement(rogue, s.ServerKey().Public(), 3, false, [][]byte{roguePub}),
 	}
-	after, err := AdvanceLock(pin, history)
+	after, err := AdvanceLock(s.ServerKey().Public(), pin, history)
 	if err == nil || !after.Enabled || containsKey(after.Keys, roguePub) {
 		t.Errorf("a rewritten history moved the pin to %+v (%v)", after, err)
+	}
+}
+
+// One signing key can serve two networks. A version made for one must not
+// move the other's lock: it used to, because a version named no network, so
+// network B's server could show its nodes network A's "version 3: not
+// enforced" and switch B's lock off.
+func TestAVersionSignedForAnotherNetworkIsRefused(t *testing.T) {
+	pub, priv := signingPair(t)
+
+	b := newStore(t)
+	startLock(t, b, pub, priv)
+	if err := changeLock(b, priv, true, pub); err != nil {
+		t.Fatal(err)
+	}
+	pin := pinAt(t, b)
+
+	a := newStore(t)
+	startLock(t, a, pub, priv)
+	if err := changeLock(a, priv, true, pub); err != nil {
+		t.Fatal(err)
+	}
+	if err := changeLock(a, priv, false, pub); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := AdvanceLock(b.ServerKey().Public(), pin, a.LockChain())
+	if err == nil || after.Epoch != 2 || !after.Enabled {
+		t.Errorf("network A's versions moved network B's lock to %+v (%v)", after, err)
+	}
+
+	// Nor does B's server take it, so an operator pointing the wrong key file
+	// at the wrong server hears about it rather than every node ignoring it.
+	if err := b.ApplyLockStatement(a.LockChain()[2], nil); err == nil {
+		t.Error("network B's server took a version signed for network A")
+	}
+}
+
+// A node that somehow has no control plane key cannot tell its network's lock
+// from another's, so it takes none rather than any.
+func TestALockIsNotFollowedWithoutTheNetworksKey(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+
+	if pin, err := AdvanceLock(key.Public{}, nil, s.LockChain()); err == nil || pin != nil {
+		t.Errorf("with no network key the chain pinned %+v (%v)", pin, err)
 	}
 }
 
@@ -450,7 +497,7 @@ func TestNodeFollowsARotationItMissed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	after, err := AdvanceLock(pin, s.LockChain())
+	after, err := AdvanceLock(s.ServerKey().Public(), pin, s.LockChain())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,8 +512,8 @@ func TestMissingVersionsStopTheWalk(t *testing.T) {
 	startLock(t, s, pub, priv)
 	pin := pinAt(t, s)
 
-	skip := []LockStatement{SignLockStatement(priv, 3, true, [][]byte{pub})}
-	if after, err := AdvanceLock(pin, skip); err == nil || after.Epoch != 1 {
+	skip := []LockStatement{SignLockStatement(priv, s.ServerKey().Public(), 3, true, [][]byte{pub})}
+	if after, err := AdvanceLock(s.ServerKey().Public(), pin, skip); err == nil || after.Epoch != 1 {
 		t.Errorf("a version with a gap before it was accepted: %+v", after)
 	}
 }
@@ -480,7 +527,7 @@ func TestStoreRefusesWhatNodesWouldRefuse(t *testing.T) {
 	if err := changeLock(s, rogue, false, pub); err == nil {
 		t.Error("the store took a version signed by an untrusted key")
 	}
-	if err := s.ApplyLockStatement(SignLockStatement(priv, 1, false, [][]byte{pub}), nil); err == nil {
+	if err := s.ApplyLockStatement(SignLockStatement(priv, s.ServerKey().Public(), 1, false, [][]byte{pub}), nil); err == nil {
 		t.Error("the store took a version it already has")
 	}
 	if got := s.LockStatus().Epoch; got != 1 {
@@ -497,10 +544,10 @@ func TestSealingAnOlderLock(t *testing.T) {
 
 	_, rogue := signingPair(t)
 	roguePub := rogue.Public().(ed25519.PublicKey)
-	if err := s.ApplyLockStatement(SignLockStatement(rogue, 1, false, [][]byte{roguePub}), nil); err == nil {
+	if err := s.ApplyLockStatement(SignLockStatement(rogue, s.ServerKey().Public(), 1, false, [][]byte{roguePub}), nil); err == nil {
 		t.Error("an untrusted key sealed an older lock with itself")
 	}
-	if err := s.ApplyLockStatement(SignLockStatement(priv, 1, false, [][]byte{pub}), nil); err != nil {
+	if err := s.ApplyLockStatement(SignLockStatement(priv, s.ServerKey().Public(), 1, false, [][]byte{pub}), nil); err != nil {
 		t.Fatalf("the trusted key could not seal the lock: %v", err)
 	}
 	if st := s.LockStatus(); st.Epoch != 1 || st.TrustedKeys[0].Name != "admin" {
@@ -534,8 +581,8 @@ func TestAVersionTrustingNoKeyIsRefused(t *testing.T) {
 	if err := changeLock(s, priv, false); err == nil {
 		t.Error("the store took a version that trusts no key")
 	}
-	empty := SignLockStatement(priv, 2, false, nil)
-	if after, err := AdvanceLock(pinAt(t, s), []LockStatement{empty}); err == nil || after.Epoch != 1 {
+	empty := SignLockStatement(priv, s.ServerKey().Public(), 2, false, nil)
+	if after, err := AdvanceLock(s.ServerKey().Public(), pinAt(t, s), []LockStatement{empty}); err == nil || after.Epoch != 1 {
 		t.Error("a node took a version that trusts no key")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/justin06lee/makima/internal/bypass"
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/dnsserver"
+	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/portmap"
@@ -38,13 +39,17 @@ type rejection struct {
 // sends it switched off, or sends a key of its own changes nothing here.
 // Returns the pin as it stands after this netmap.
 //
+// network is the key of the control plane this node joined: only versions
+// of that network's lock are followed, not ones the same signing key made
+// for another.
+//
 // With no lock ever seen every peer is admitted, which is what a mesh that
 // has not opted in has always done. A server whose lock predates signed
 // versions is believed as it always was, since it offers nothing to pin.
-func verifyPeers(resp *control.MapResponse, pin *netmap.LockPin) ([]netmap.Node, []rejection, *netmap.LockPin, error) {
+func verifyPeers(resp *control.MapResponse, network key.Public, pin *netmap.LockPin) ([]netmap.Node, []rejection, *netmap.LockPin, error) {
 	var chainErr error
 	if resp.Lock != nil && len(resp.Lock.Chain) > 0 {
-		pin, chainErr = control.AdvanceLock(pin, resp.Lock.Chain)
+		pin, chainErr = control.AdvanceLock(network, pin, resp.Lock.Chain)
 	}
 
 	var check func(p netmap.Node) error
