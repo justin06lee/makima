@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/justin06lee/makima/internal/hostaddr"
 )
 
 // An exit node has two halves, and they run on different machines.
@@ -43,9 +45,9 @@ func (a *Advertiser) Enable(self netip.Addr) error {
 	if a.enabled {
 		return nil
 	}
-	mesh := MeshRange
-	if LegacyMeshRange.Contains(self) {
-		mesh = LegacyMeshRange
+	mesh := hostaddr.MeshRange
+	if hostaddr.LegacyMeshRange.Contains(self) {
+		mesh = hostaddr.LegacyMeshRange
 	}
 	if err := enableForwarding(a.iface, mesh); err != nil {
 		return err

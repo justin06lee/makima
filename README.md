@@ -1298,6 +1298,7 @@ internal/control    the coordination protocol, its server, client, and store
 internal/policy     who may talk to whom, and the filter nodes enforce
 internal/dnsserver  mesh name resolution
 internal/netcfg     per-platform addresses, routes, resolvers, and NAT
+internal/hostaddr   the mesh's ranges, and which of this host's addresses to advertise
 internal/conf       on-disk node identity
 
 desktop/            the Tauri app: a menu bar item and a window over the local API

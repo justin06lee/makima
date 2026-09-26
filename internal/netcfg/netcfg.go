@@ -13,46 +13,6 @@ import (
 	"strings"
 )
 
-// MeshRange is the address space makima hands out.
-//
-// Its own, and not Tailscale's 100.64.0.0/10, so the two can run on one
-// machine at once. Sharing Tailscale's range meant they could not: on Linux
-// Tailscale drops every packet from 100.64.0.0/10 that did not arrive on its
-// own interface, so makima only worked with Tailscale stopped — and moving off
-// Tailscale had to be a switch-over instead of something added beside it.
-//
-// A /16 in the middle of 10/8, away from the ranges that are taken by
-// default: 10.0–10.1 by home routers and cloud VPCs, 10.42–10.43 by k3s,
-// 10.96 by Kubernetes services, 10.128 and up by cloud regions, 10.211 by
-// Parallels. Only /32 host routes are installed, so even a LAN that happens
-// to use it loses only the few addresses peers actually hold.
-var MeshRange = netip.MustParsePrefix("10.77.0.0/16")
-
-// LegacyMeshRange is where makima allocated before it had a range of its own.
-// Networks started then keep their addresses and keep working; they just
-// cannot share a Linux machine with a running Tailscale.
-var LegacyMeshRange = netip.MustParsePrefix("100.64.0.0/10")
-
-// IsMeshAddr reports whether an address is one makima hands out, now or
-// before. 100.64.0.0/10 is also Tailscale's, so it counts as somebody's
-// tunnel either way.
-func IsMeshAddr(a netip.Addr) bool {
-	a = a.Unmap()
-	return MeshRange.Contains(a) || LegacyMeshRange.Contains(a)
-}
-
-// MeshRangeOf is the range a mesh address came from.
-func MeshRangeOf(a netip.Addr) (netip.Prefix, bool) {
-	a = a.Unmap()
-	switch {
-	case MeshRange.Contains(a):
-		return MeshRange, true
-	case LegacyMeshRange.Contains(a):
-		return LegacyMeshRange, true
-	}
-	return netip.Prefix{}, false
-}
-
 // Router owns one interface's addresses and routes.
 //
 // It tracks what it installed so a changing netmap can be applied as a diff.

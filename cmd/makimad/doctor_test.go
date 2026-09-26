@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/justin06lee/makima/internal/netcfg"
+	"github.com/justin06lee/makima/internal/hostaddr"
 )
 
 // A network started by an older makima is in 100.64.0.0/10, Tailscale's
@@ -22,13 +22,13 @@ func TestOtherInterfacesInLegacyRange(t *testing.T) {
 		{name: "tailscale0", addrs: []netip.Prefix{p("100.102.72.87/32")}},
 	}
 
-	got := otherInterfacesIn(ifaces, "utun7", netcfg.LegacyMeshRange)
+	got := otherInterfacesIn(ifaces, "utun7", hostaddr.LegacyMeshRange)
 	want := []string{"utun4", "tailscale0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("otherInterfacesIn = %v, want %v", got, want)
 	}
 
-	if got := otherInterfacesIn(ifaces[:2], "utun7", netcfg.LegacyMeshRange); got != nil {
+	if got := otherInterfacesIn(ifaces[:2], "utun7", hostaddr.LegacyMeshRange); got != nil {
 		t.Errorf("a machine with no other VPN was flagged: %v", got)
 	}
 }
@@ -40,7 +40,7 @@ func TestTailscaleIsNoConflictOnMakimasOwnRange(t *testing.T) {
 		{name: "utun7", addrs: []netip.Prefix{p("10.77.0.3/32")}},
 		{name: "tailscale0", addrs: []netip.Prefix{p("100.102.72.87/32")}},
 	}
-	if got := otherInterfacesIn(ifaces, "utun7", netcfg.MeshRange); got != nil {
+	if got := otherInterfacesIn(ifaces, "utun7", hostaddr.MeshRange); got != nil {
 		t.Errorf("Tailscale was flagged against makima's own range: %v", got)
 	}
 }

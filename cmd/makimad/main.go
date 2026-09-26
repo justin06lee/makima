@@ -38,6 +38,7 @@ import (
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/drop"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/magicsock"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -582,7 +583,7 @@ func (n *node) endpoints() []netip.AddrPort {
 		port = n.sock.LocalPort()
 	}
 
-	out := netcfg.LocalEndpoints(port)
+	out := hostaddr.LocalEndpoints(port)
 	if n.sock != nil {
 		for _, e := range n.sock.SelfEndpoints() {
 			out = appendUniqueAddrPort(out, e)

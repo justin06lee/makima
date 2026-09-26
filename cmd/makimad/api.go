@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/netcfg"
@@ -235,7 +236,7 @@ func (n *node) Diagnose() localapi.Diagnosis {
 	// it not arriving on its own interface, on macOS with a route. The
 	// symptom is a tunnel that is up, addresses that are right, and nothing
 	// getting through.
-	if rng, ok := netcfg.MeshRangeOf(addr); addrErr == nil && ok {
+	if rng, ok := hostaddr.MeshRangeOf(addr); addrErr == nil && ok {
 		if others := otherInterfacesIn(listInterfaces(), iface, rng); len(others) > 0 {
 			c := localapi.Check{
 				Name: "Another VPN",
@@ -243,10 +244,10 @@ func (n *node) Diagnose() localapi.Diagnosis {
 					strings.Join(others, ", "), rng),
 				Fix: "quit that VPN while using makima",
 			}
-			if rng == netcfg.LegacyMeshRange {
+			if rng == hostaddr.LegacyMeshRange {
 				c.Detail = fmt.Sprintf("%s also uses 100.64.0.0/10 — Tailscale's range, which this network was started in by an older makima — and while both run, the other one can swallow makima's traffic",
 					strings.Join(others, ", "))
-				c.Fix = "start the network again with this makima, which uses " + netcfg.MeshRange.String() + " and runs beside Tailscale — or quit Tailscale while using makima"
+				c.Fix = "start the network again with this makima, which uses " + hostaddr.MeshRange.String() + " and runs beside Tailscale — or quit Tailscale while using makima"
 			}
 			add(c)
 		}

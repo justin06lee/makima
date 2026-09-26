@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/justin06lee/makima/internal/netcfg"
+	"github.com/justin06lee/makima/internal/hostaddr"
 )
 
 // TempKeyComment ends the line of the move's temporary key in every
@@ -72,7 +72,7 @@ const CheckScript = "echo makima-ok"
 // tempLine is the authorized_keys line for the move's temporary key: good
 // only from makima's own addresses, and for running commands, nothing more.
 func tempLine(pub string) string {
-	return `from="` + netcfg.MeshRange.String() + `",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ` + pub
+	return `from="` + hostaddr.MeshRange.String() + `",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ` + pub
 }
 
 // WithoutTempKeys is an authorized_keys file with the move's temporary keys

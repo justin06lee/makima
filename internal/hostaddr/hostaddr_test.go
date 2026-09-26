@@ -1,4 +1,4 @@
-package netcfg
+package hostaddr
 
 import (
 	"net"

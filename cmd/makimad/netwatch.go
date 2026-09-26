@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/justin06lee/makima/internal/netcfg"
+	"github.com/justin06lee/makima/internal/hostaddr"
 )
 
 // netCheckInterval is how often the daemon looks at its own addresses.
@@ -77,7 +77,7 @@ func (n *node) networkChanged(ctx context.Context) {
 // addresses because an IPv6 privacy address is rotated every day on the same
 // network, and that is not a move.
 func networkFingerprint() string {
-	return fingerprint(netcfg.NetworkAddrs())
+	return fingerprint(hostaddr.NetworkAddrs())
 }
 
 func fingerprint(addrs []netip.Addr) string {
