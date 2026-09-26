@@ -891,10 +891,13 @@ func (n *node) refreshEndpoints(ctx context.Context) {
 		}
 	}
 
+	// The mapping is advertised from the port mapper (see endpoints), and
+	// only from there. It used to be copied among the socket's observations
+	// as well, and the copy outlived the mapping: a router that went away
+	// took the mapping with it, and the copy went on being advertised for
+	// up to five minutes more.
 	if n.pm != nil {
-		if addr, err := n.pm.Map(ctx, n.sock.LocalPort()); err == nil {
-			n.sock.NoteSelfObservation(addr)
-		} else if n.verbose {
+		if _, err := n.pm.Map(ctx, n.sock.LocalPort()); err != nil && n.verbose {
 			log.Printf("portmap: %v", err)
 		}
 	}
