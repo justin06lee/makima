@@ -591,6 +591,18 @@ func (t *target) currentLock() (network key.Public, cur *netmap.LockPin, pinned 
 		return key.Public{}, nil, false, errUnsealed
 	}
 
+	// The version signed here has to be the one the server shows at that
+	// number. Nothing would be built on a different one — the walk starts
+	// from what was signed here — but a server showing one has rewritten
+	// history, and that is worth saying rather than quietly stepping past.
+	if pin != nil {
+		for _, st := range chain {
+			if st.Epoch == pin.Epoch && (st.Enabled != pin.Enabled || !sameKeys(st.Keys, pin.Keys)) {
+				return key.Public{}, nil, false, fmt.Errorf("the server shows a different version %d of this lock than the one signed from this machine: it has rewritten its history — nothing was signed", pin.Epoch)
+			}
+		}
+	}
+
 	cur, err = control.AdvanceLock(network, pin, chain)
 	if err != nil {
 		return key.Public{}, nil, false, fmt.Errorf("the lock this server holds does not follow, by signed versions, from the last one signed from this machine — nothing was signed: %w", err)
@@ -599,6 +611,19 @@ func (t *target) currentLock() (network key.Public, cur *netmap.LockPin, pinned 
 		return key.Public{}, nil, false, fmt.Errorf("the server's lock is at version %d, but version %d was signed from this machine; it has lost or hidden versions — nothing was signed", last, pinEpoch(cur))
 	}
 	return network, cur, pin != nil, nil
+}
+
+// sameKeys reports whether a and b hold the same keys, in any order.
+func sameKeys(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, k := range a {
+		if !containsKey(b, k) {
+			return false
+		}
+	}
+	return true
 }
 
 func pinEpoch(p *netmap.LockPin) uint64 {

@@ -951,3 +951,28 @@ func TestWhatWasSignedHereNeverGoesBackwards(t *testing.T) {
 		t.Errorf("remembered %+v after a newer version, want version 6", pin)
 	}
 }
+
+// A server showing a different version at the number signed from here has
+// rewritten history. Nothing was ever built on it, but it used to be stepped
+// past without a word; it is refused and said.
+func TestADifferentVersionAtTheOneSignedHereIsRefused(t *testing.T) {
+	server, _ := key.NewPrivate()
+	network := server.Public()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+
+	f := fakeAdmin(t, network)
+	f.chain = []control.LockStatement{
+		control.SignLockStatement(priv, network, 1, false, [][]byte{pub}),
+		control.SignLockStatement(priv, network, 2, false, [][]byte{pub}),
+	}
+	keyPath := signingKeyAt(t, priv)
+	pinAt(t, network, &netmap.LockPin{Epoch: 2, Enabled: true, Keys: [][]byte{pub}})
+
+	err := lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, false)
+	if err == nil || !strings.Contains(err.Error(), "rewritten") {
+		t.Errorf("lock disable over a rewritten version 2 = %v", err)
+	}
+	if n := len(f.statements()); n != 0 {
+		t.Errorf("%d version(s) posted", n)
+	}
+}
