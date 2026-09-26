@@ -18,9 +18,9 @@ import (
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
-	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 )
 
@@ -330,7 +330,7 @@ func joinNode(args []string) error {
 		NodeKey:   nodeKey.Public(),
 		DiscoKey:  discoKey.Public(),
 		AuthKey:   *authKey,
-		Endpoints: netcfg.LocalEndpoints(uint16(*port)),
+		Endpoints: hostaddr.LocalEndpoints(uint16(*port)),
 	})
 	if err != nil {
 		return err
@@ -583,8 +583,8 @@ func meshPrefix(s string) (netip.Prefix, error) {
 	if !addr.Is4() {
 		return netip.Prefix{}, fmt.Errorf("mesh addresses are IPv4 for now, got %q", s)
 	}
-	if !netcfg.IsMeshAddr(addr) {
-		return netip.Prefix{}, fmt.Errorf("%s is outside the mesh range %s", addr, netcfg.MeshRange)
+	if !hostaddr.IsMeshAddr(addr) {
+		return netip.Prefix{}, fmt.Errorf("%s is outside the mesh range %s", addr, hostaddr.MeshRange)
 	}
 	return netip.PrefixFrom(addr, 32), nil
 }

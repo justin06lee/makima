@@ -23,11 +23,11 @@ import (
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/invite"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/migrate"
-	"github.com/justin06lee/makima/internal/netcfg"
 )
 
 // migrateCmd is `makima migrate`: everything on Tailscale, onto makima.
@@ -520,7 +520,7 @@ func holdNetwork(ctx context.Context, path, name, advertise string) (string, err
 	if err == nil {
 		switch {
 		case onLegacyRange(f) || serverStateOnLegacyRange(serverStatePath):
-			fmt.Fprintf(os.Stderr, "This machine is on a network from an older makima, in 100.64.0.0/10 — Tailscale's range, which cannot run beside Tailscale. Starting it over in %s.\n", netcfg.MeshRange)
+			fmt.Fprintf(os.Stderr, "This machine is on a network from an older makima, in 100.64.0.0/10 — Tailscale's range, which cannot run beside Tailscale. Starting it over in %s.\n", hostaddr.MeshRange)
 			if err := leaveNetwork(ctx, path, true); err != nil {
 				return "", err
 			}
@@ -596,7 +596,7 @@ func holdsNetworkHere() bool {
 // makima allocated before it had a range of its own.
 func onLegacyRange(f *conf.File) bool {
 	a, err := f.Self.Addr()
-	return err == nil && netcfg.LegacyMeshRange.Contains(a)
+	return err == nil && hostaddr.LegacyMeshRange.Contains(a)
 }
 
 // serverStateOnLegacyRange says whether the server whose state is at path
@@ -612,7 +612,7 @@ func serverStateOnLegacyRange(path string) bool {
 	if json.Unmarshal(b, &st) != nil || !st.Prefix.IsValid() {
 		return false
 	}
-	return netcfg.LegacyMeshRange.Contains(st.Prefix.Addr())
+	return hostaddr.LegacyMeshRange.Contains(st.Prefix.Addr())
 }
 
 // leaveNetwork takes this machine off the network it is on, keeping nothing of

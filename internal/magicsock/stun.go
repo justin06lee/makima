@@ -105,12 +105,6 @@ func (c *Conn) expireSTUNLocked() {
 	}
 }
 
-// NoteSelfObservation records an address something else reported seeing us at.
-//
-// Exported for the port mapper, which learns an external address from the
-// router rather than from a packet, and so has no other way in.
-func (c *Conn) NoteSelfObservation(addr netip.AddrPort) { c.noteSelfObservation(addr) }
-
 // resolveUDP resolves a host:port with the context's deadline respected.
 func resolveUDP(ctx context.Context, s string) (netip.AddrPort, error) {
 	if ap, err := netip.ParseAddrPort(s); err == nil {

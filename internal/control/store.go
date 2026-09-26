@@ -231,7 +231,7 @@ type Store struct {
 
 // DefaultPrefix is where a new network's addresses come from: makima's own
 // range, clear of Tailscale's, so both can run on a machine at once (see
-// netcfg.MeshRange). A network started before it existed keeps the prefix
+// hostaddr.MeshRange). A network started before it existed keeps the prefix
 // written in its state, and its addresses with it.
 var DefaultPrefix = netip.MustParsePrefix("10.77.0.0/16")
 

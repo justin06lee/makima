@@ -3,6 +3,8 @@ package netcfg
 import (
 	"fmt"
 	"net/netip"
+
+	"github.com/justin06lee/makima/internal/hostaddr"
 )
 
 // setAddr configures the interface via iproute2.
@@ -81,7 +83,7 @@ func enableForwarding(iface string, mesh netip.Prefix) error {
 	// after any DROP, masqueraded Tailscale's range as well, and never took
 	// any of it down. Checking for a rule before adding it would find those
 	// and leave them as they were.
-	_ = removeForwarding(iface, MeshRange, LegacyMeshRange)
+	_ = removeForwarding(iface, hostaddr.MeshRange, hostaddr.LegacyMeshRange)
 
 	if err := ensureRule("nat", "POSTROUTING", false,
 		"-s", mesh.String(), "!", "-o", iface,

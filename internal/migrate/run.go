@@ -147,7 +147,7 @@ type job struct {
 // this machine has reached over makima.
 //
 // Nothing here stops Tailscale. makima runs beside it, on addresses of its own
-// (netcfg.MeshRange), so every step before the last only adds: makima goes on
+// (hostaddr.MeshRange), so every step before the last only adds: makima goes on
 // each machine, the network starts, each machine joins it — and Tailscale is
 // how each is reached the whole time. A machine loses Tailscale only once this
 // one has logged in to it over makima, and that removal is itself done over

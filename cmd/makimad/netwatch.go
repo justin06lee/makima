@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/justin06lee/makima/internal/netcfg"
+	"github.com/justin06lee/makima/internal/hostaddr"
 )
 
 // netCheckInterval is how often the daemon looks at its own addresses.
@@ -56,6 +56,13 @@ func (n *node) networkChanged(ctx context.Context) {
 	// Before the relay is redialled below, so it is redialled out of the
 	// interface the machine is on now.
 	n.rebindExit()
+	// The old router's mapping is the old network's public address. It goes
+	// before the poll below is kicked, which would otherwise carry it to the
+	// control plane again — the refresh that asks the new router for one runs
+	// alongside, and has not answered by then.
+	if n.pm != nil {
+		n.pm.Forget()
+	}
 	if n.sock != nil {
 		n.sock.NetworkChanged()
 		go n.refreshEndpoints(ctx)
@@ -70,7 +77,7 @@ func (n *node) networkChanged(ctx context.Context) {
 // addresses because an IPv6 privacy address is rotated every day on the same
 // network, and that is not a move.
 func networkFingerprint() string {
-	return fingerprint(netcfg.NetworkAddrs())
+	return fingerprint(hostaddr.NetworkAddrs())
 }
 
 func fingerprint(addrs []netip.Addr) string {

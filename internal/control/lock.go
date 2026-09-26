@@ -77,12 +77,21 @@ type LockStatement struct {
 }
 
 // lockMaterial is the exact bytes a lock statement's signature covers: a
-// label no other signature in makima uses, the version, whether it is
-// enforced, and the trusted keys in a fixed order. Names and dates are for
-// people and are not covered.
-func lockMaterial(epoch uint64, enabled bool, keys [][]byte) []byte {
+// label no other signature in makima uses, the network the version is for,
+// the version, whether it is enforced, and the trusted keys in a fixed order.
+// Names and dates are for people and are not covered.
+//
+// The network is its control plane's public key, which every node already
+// holds (it sealed its registration to it) and which does not change for
+// the life of the network. Without it a version said nothing about which
+// network it belonged to, and an operator who used one signing key for two
+// networks could have either's server replay the other's versions into its
+// own nodes' chains: network A's "version 3: not enforced", shown to a node
+// of network B pinned at version 2, switched B's lock off.
+func lockMaterial(network key.Public, epoch uint64, enabled bool, keys [][]byte) []byte {
 	sorted := sortedKeys(keys)
 	b := []byte("makima lock statement v1\x00")
+	b = append(b, network[:]...)
 	b = binary.BigEndian.AppendUint64(b, epoch)
 	if enabled {
 		b = append(b, 1)
@@ -103,21 +112,23 @@ func sortedKeys(keys [][]byte) [][]byte {
 	return out
 }
 
-// SignLockStatement makes the next version of the lock. Run wherever the
-// signing key lives, which is not the control server.
-func SignLockStatement(priv ed25519.PrivateKey, epoch uint64, enabled bool, keys [][]byte) LockStatement {
+// SignLockStatement makes the next version of the lock of the network whose
+// control plane holds network. Run wherever the signing key lives, which is
+// not the control server.
+func SignLockStatement(priv ed25519.PrivateKey, network key.Public, epoch uint64, enabled bool, keys [][]byte) LockStatement {
 	keys = sortedKeys(keys)
 	return LockStatement{
 		Epoch:   epoch,
 		Enabled: enabled,
 		Keys:    keys,
 		Signer:  priv.Public().(ed25519.PublicKey),
-		Sig:     ed25519.Sign(priv, lockMaterial(epoch, enabled, keys)),
+		Sig:     ed25519.Sign(priv, lockMaterial(network, epoch, enabled, keys)),
 	}
 }
 
-// signedBy checks that st is signed by one of trusted.
-func (st LockStatement) signedBy(trusted [][]byte) error {
+// signedBy checks that st is a version of network's lock, signed by one of
+// trusted.
+func (st LockStatement) signedBy(network key.Public, trusted [][]byte) error {
 	if len(st.Signer) != ed25519.PublicKeySize {
 		return fmt.Errorf("lock version %d has no signer", st.Epoch)
 	}
@@ -134,8 +145,8 @@ func (st LockStatement) signedBy(trusted [][]byte) error {
 			return fmt.Errorf("lock version %d names a key of %d bytes", st.Epoch, len(k))
 		}
 	}
-	if !ed25519.Verify(ed25519.PublicKey(st.Signer), lockMaterial(st.Epoch, st.Enabled, st.Keys), st.Sig) {
-		return fmt.Errorf("lock version %d's signature does not verify", st.Epoch)
+	if !ed25519.Verify(ed25519.PublicKey(st.Signer), lockMaterial(network, st.Epoch, st.Enabled, st.Keys), st.Sig) {
+		return fmt.Errorf("lock version %d's signature does not verify for this network — it was altered, or signed for another", st.Epoch)
 	}
 	return nil
 }
@@ -159,9 +170,16 @@ func containsKey(keys [][]byte, k []byte) bool {
 // against the network can offer nothing the node will take: not a lock
 // switched off, not a key of its own, not a chain it wrote from scratch.
 //
+// Only versions of network's lock count — network being the key of the
+// control plane the node joined — so a version the same signing key made
+// for another network is refused like a forgery.
+//
 // Versions the node already has are skipped; a chain that breaks is followed
 // up to the break, and the error says where.
-func AdvanceLock(pin *netmap.LockPin, chain []LockStatement) (*netmap.LockPin, error) {
+func AdvanceLock(network key.Public, pin *netmap.LockPin, chain []LockStatement) (*netmap.LockPin, error) {
+	if network.IsZero() && len(chain) > 0 {
+		return pin, errors.New("no control plane key to tell this network's lock from another's")
+	}
 	cur := pin
 	for _, st := range chain {
 		if cur != nil && st.Epoch <= cur.Epoch {
@@ -177,7 +195,7 @@ func AdvanceLock(pin *netmap.LockPin, chain []LockStatement) (*netmap.LockPin, e
 		default:
 			trusted = st.Keys
 		}
-		if err := st.signedBy(trusted); err != nil {
+		if err := st.signedBy(network, trusted); err != nil {
 			return cur, err
 		}
 		cur = &netmap.LockPin{Epoch: st.Epoch, Enabled: st.Enabled, Keys: sortedKeys(st.Keys)}
@@ -340,10 +358,10 @@ func (s *Store) signedLocked(n *Node) bool {
 
 // ApplyLockStatement makes st the lock's next version.
 //
-// The server checks what every node will check — the version follows the
-// last, and is signed by a key the last one trusted, or for the first by one
-// of its own — so a mistake is an error here rather than a version every node
-// ignores. It also refuses a version that would partition the network: one
+// The server checks what every node will check — the version is for this
+// network, follows the last, and is signed by a key the last one trusted, or
+// for the first by one of its own — so a mistake is an error here rather than
+// a version every node ignores. It also refuses a version that would partition the network: one
 // enforced while some node has no signature from a key it trusts, which the
 // whole mesh would then reject, including the machine somebody is sitting at.
 //
@@ -380,7 +398,7 @@ func (s *Store) ApplyLockStatement(st LockStatement, names map[string]string) er
 	if st.Epoch != want {
 		return fmt.Errorf("this is lock version %d, but the next version is %d — somebody else changed the lock; try again", st.Epoch, want)
 	}
-	if err := st.signedBy(prev); err != nil {
+	if err := st.signedBy(s.state.ServerKey.Public(), prev); err != nil {
 		return err
 	}
 	if st.Enabled {

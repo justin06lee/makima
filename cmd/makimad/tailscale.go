@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/justin06lee/makima/internal/dnsserver"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -53,7 +54,7 @@ func tailscaleIface(ifaces []ifaceAddrs, mine string) (ifaceAddrs, bool) {
 		}
 		for _, p := range ifc.addrs {
 			a := p.Addr()
-			if tailscaleULA.Contains(a) || (ifc.tunnel && a.Is4() && netcfg.LegacyMeshRange.Contains(a)) {
+			if tailscaleULA.Contains(a) || (ifc.tunnel && a.Is4() && hostaddr.LegacyMeshRange.Contains(a)) {
 				return ifc, true
 			}
 		}
@@ -134,8 +135,8 @@ func tailscaleChecks(ctx context.Context, ts ifaceAddrs, v tailscaleView, look l
 		}
 	}
 	if len(taken) > 0 {
-		rng := netcfg.MeshRange
-		if r, ok := netcfg.MeshRangeOf(v.self); ok {
+		rng := hostaddr.MeshRange
+		if r, ok := hostaddr.MeshRangeOf(v.self); ok {
 			rng = r
 		}
 		out = append(out, localapi.Check{

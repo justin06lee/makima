@@ -2,6 +2,7 @@ package dnsserver
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -161,6 +162,99 @@ func TestReverseLookup(t *testing.T) {
 	}
 }
 
+// firstAnswerName reads the name out of the first answer record, as a PTR
+// carries it.
+func firstAnswerName(t *testing.T, resp []byte) string {
+	t.Helper()
+
+	i := 12
+	for resp[i] != 0 {
+		i += int(resp[i]) + 1
+	}
+	i += 1 + 4
+	i += 2 + 2 + 2 + 4
+	length := int(binary.BigEndian.Uint16(resp[i : i+2]))
+	i += 2
+	rdata := resp[i : i+length]
+
+	var labels []string
+	for j := 0; j < len(rdata) && rdata[j] != 0; j += int(rdata[j]) + 1 {
+		labels = append(labels, string(rdata[j+1:j+1+int(rdata[j])]))
+	}
+	return strings.Join(labels, ".")
+}
+
+// The reverse answer used to carry the node's raw name, so the NAS came back
+// as "Justin's NAS.makima": not a valid hostname, and not the name
+// justins-nas.makima that resolves to it. Anything checking one against the
+// other — sshd with UseDNS, say — found them disagreeing.
+func TestReverseLookupAnswersTheForwardName(t *testing.T) {
+	s := testServer(t)
+
+	resp, err := s.respond(askFor("3.0.64.100.in-addr.arpa", typePTR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answerCount(resp) != 1 {
+		t.Fatalf("reverse lookup gave %d answers, want 1", answerCount(resp))
+	}
+	if got := firstAnswerName(t, resp); got != "justins-nas.makima" {
+		t.Errorf("100.64.0.3 reverses to %q, want justins-nas.makima", got)
+	}
+}
+
+// Two nodes whose names come out as the same label cannot both have it. The
+// one that lost the forward name must not keep answering reverse lookups with
+// it: that name resolves to the other machine.
+func TestReverseLookupNeverNamesAnotherMachine(t *testing.T) {
+	s := &Server{}
+	s.SetRecords("makima",
+		netmap.Node{Name: "laptop", Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.1/32")}},
+		[]netmap.Node{
+			{Name: "web server", Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.5/32")}},
+			{Name: "web_server", Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.6/32")}},
+		})
+
+	resp, err := s.respond(askFor("web-server.makima", typeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := firstAnswerA(t, resp)
+	other := netip.MustParseAddr("100.64.0.5")
+	if owner == other {
+		other = netip.MustParseAddr("100.64.0.6")
+	}
+
+	o := other.As4()
+	arpa := fmt.Sprintf("%d.%d.%d.%d.in-addr.arpa", o[3], o[2], o[1], o[0])
+	resp, err = s.respond(askFor(arpa, typePTR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answerCount(resp) != 0 {
+		t.Errorf("%s reverses to %q, which resolves to %s", other, firstAnswerName(t, resp), owner)
+	}
+}
+
+// Mesh addresses are IPv4 today, but nothing in a netmap node's type says so.
+// An A answer for an IPv6 address used to panic in the resolver's goroutine,
+// which ends the whole daemon.
+func TestANodeWithoutAnIPv4AddressDoesNotCrashTheResolver(t *testing.T) {
+	s := &Server{}
+	s.SetRecords("makima",
+		netmap.Node{Name: "six", Addresses: []netip.Prefix{netip.MustParsePrefix("fd7a:115c:a1e0::1/128")}},
+		nil)
+
+	resp, err := s.respond(askFor("six.makima", typeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rcode(resp) != rcodeNoError || answerCount(resp) != 0 {
+		t.Errorf("rcode %d with %d answers, want NOERROR with none: the name exists, without an IPv4 address",
+			rcode(resp), answerCount(resp))
+	}
+}
+
 func TestReverseLookupOfUnknownAddress(t *testing.T) {
 	s := testServer(t)
 
@@ -238,5 +332,38 @@ func TestArpaToAddr(t *testing.T) {
 		if _, ok := arpaToAddr(bad); ok {
 			t.Errorf("arpaToAddr(%q) succeeded", bad)
 		}
+	}
+}
+
+// A DNS label holds at most 63 bytes, and a hostname can be longer. The label
+// used to be the whole name, which no query can carry, so the machine had no
+// working name — and its reverse answer dropped the label and named the bare
+// domain. It is cut to fit instead.
+func TestALongNameStillGetsAWorkingLabel(t *testing.T) {
+	long := "the-build-machine-in-the-back-office-that-nobody-remembers-setting-up"
+	s := &Server{}
+	s.SetRecords("makima",
+		netmap.Node{Name: long, Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.9/32")}},
+		nil)
+
+	label := Label(long)
+	if len(label) > 63 || !strings.HasPrefix(long, label) || strings.HasSuffix(label, "-") {
+		t.Fatalf("label %q (%d bytes) is not the name cut to fit", label, len(label))
+	}
+
+	resp, err := s.respond(askFor(label+".makima", typeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answerCount(resp) != 1 || firstAnswerA(t, resp).String() != "100.64.0.9" {
+		t.Errorf("%s.makima did not resolve to the machine", label)
+	}
+
+	resp, err = s.respond(askFor("9.0.64.100.in-addr.arpa", typePTR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := firstAnswerName(t, resp); got != label+".makima" {
+		t.Errorf("100.64.0.9 reverses to %q, want %s.makima", got, label)
 	}
 }

@@ -204,6 +204,16 @@ assuming.
 makima up -advertise https://makima.example.dev
 ```
 
+A proxy on the same machine — cloudflared, Caddy, nginx — is believed about
+whom it forwards for (`X-Forwarded-For`), so the server's rate limits count
+machines rather than the proxy. nginx only says so when told to
+(`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Something
+that copies the connection without setting the header — socat, `ssh -R`,
+haproxy in TCP mode — passes on whatever the client wrote in it, so behind one
+of those run the server with `-trusted-proxies ""`. A proxy anywhere else has
+to be named, or every machine behind it shares one budget:
+`makima-server serve -trusted-proxies 127.0.0.0/8,::1/128,192.0.2.10`.
+
 Or put it on anything with a public address; a small VPS is plenty.
 
 That is the whole thing. There is no mesh yet, so it makes one, puts the
@@ -929,7 +939,12 @@ on your machine by a key the lock already trusts, so those commands read your
 signing key (`-key`, default `~/.config/makima/signing.key`). Each node keeps
 the latest version it has accepted and moves forward only along signed ones: a
 server that stops sending the lock, sends it switched off, or adds a key of its
-own changes nothing on any node. `makima lock` shows a machine's copy.
+own changes nothing on any node. `makima lock` shows a machine's copy. Each
+version is signed for one network — its control server's key is part of what
+is signed — so one network's versions cannot be replayed into another's. A
+node's signature does not name its network yet, though: give each network a
+signing key of its own, or a machine signed into one could be shown to the
+other by that network's server.
 
 A node takes the first version it is shown on trust — the same trust it placed
 in the server when it joined. Rotating a key is two signed steps: `lock add-key`
@@ -1298,6 +1313,7 @@ internal/control    the coordination protocol, its server, client, and store
 internal/policy     who may talk to whom, and the filter nodes enforce
 internal/dnsserver  mesh name resolution
 internal/netcfg     per-platform addresses, routes, resolvers, and NAT
+internal/hostaddr   the mesh's ranges, and which of this host's addresses to advertise
 internal/conf       on-disk node identity
 
 desktop/            the Tauri app: a menu bar item and a window over the local API

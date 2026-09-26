@@ -38,6 +38,7 @@ import (
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/drop"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/magicsock"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -582,7 +583,7 @@ func (n *node) endpoints() []netip.AddrPort {
 		port = n.sock.LocalPort()
 	}
 
-	out := netcfg.LocalEndpoints(port)
+	out := hostaddr.LocalEndpoints(port)
 	if n.sock != nil {
 		for _, e := range n.sock.SelfEndpoints() {
 			out = appendUniqueAddrPort(out, e)
@@ -717,9 +718,9 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	)
 	for {
 		n.mu.Lock()
-		held := n.file.Lock
+		held, network := n.file.Lock, n.file.ServerKey
 		n.mu.Unlock()
-		peers, rejected, pin, lockErr = verifyPeers(resp, held)
+		peers, rejected, pin, lockErr = verifyPeers(resp, network, held)
 		n.mu.Lock()
 		if n.file.Lock == held {
 			break // n.mu stays held for the commit below
@@ -890,10 +891,13 @@ func (n *node) refreshEndpoints(ctx context.Context) {
 		}
 	}
 
+	// The mapping is advertised from the port mapper (see endpoints), and
+	// only from there. It used to be copied among the socket's observations
+	// as well, and the copy outlived the mapping: a router that went away
+	// took the mapping with it, and the copy went on being advertised for
+	// up to five minutes more.
 	if n.pm != nil {
-		if addr, err := n.pm.Map(ctx, n.sock.LocalPort()); err == nil {
-			n.sock.NoteSelfObservation(addr)
-		} else if n.verbose {
+		if _, err := n.pm.Map(ctx, n.sock.LocalPort()); err != nil && n.verbose {
 			log.Printf("portmap: %v", err)
 		}
 	}

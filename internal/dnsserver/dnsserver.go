@@ -50,7 +50,7 @@ type Server struct {
 	mu      sync.RWMutex
 	domain  string
 	forward map[string]netip.Addr // "laptop." -> 100.64.0.1
-	reverse map[netip.Addr]string // 100.64.0.1 -> "laptop"
+	reverse map[netip.Addr]string // 100.64.0.1 -> "laptop", the label
 
 	conn      *net.UDPConn
 	local     *net.UDPConn // 127.0.0.1, on macOS; see ListenLoopback
@@ -138,20 +138,39 @@ func (s *Server) SetRecords(domain string, self netmap.Node, peers []netmap.Node
 		if err != nil {
 			return
 		}
+		// A reverse lookup arrives as a plain IPv4 address; one written as
+		// ::ffff:a.b.c.d would never be found under it.
+		addr = addr.Unmap()
 		name := normaliseName(n.Name)
 		if name == "" {
 			return
 		}
+		// Last writer wins, in both directions. Two nodes cannot share an
+		// address, so a collision in the reverse map means a stale record,
+		// and the newer one arrives later in the peer list.
 		forward[name] = addr
-		// First writer wins for reverse lookups. Two nodes cannot share an
-		// address, so a collision here means a stale record, and the newer one
-		// arrives later in the peer list.
-		reverse[addr] = n.Name
+		// The label, not the node's name: the reverse answer is a DNS name,
+		// and it has to be the one the forward lookup answers to. The raw
+		// name ("Justin's MacBook Pro") is not a valid label, and a name
+		// with a dot in it would have come back as two.
+		reverse[addr] = name
 	}
 
 	add(self)
 	for _, p := range peers {
 		add(p)
+	}
+
+	// A reverse answer is only given for a name that resolves back to the
+	// address it was asked about. Two nodes whose names come out as the same
+	// label leave the forward name with one of them; the other's address
+	// would otherwise answer with a name that leads somewhere else, and
+	// anything checking reverse against forward — sshd's UseDNS, a log
+	// reader — would be told the wrong machine.
+	for addr, name := range reverse {
+		if forward[name] != addr {
+			delete(reverse, addr)
+		}
 	}
 
 	s.mu.Lock()
@@ -225,6 +244,13 @@ func (s *Server) respond(q []byte) ([]byte, error) {
 			// send the resolver off to ask the public internet about a private
 			// name.
 			return nxdomain(msg), nil
+		}
+		if !addr.Is4() {
+			// The name exists, just not with an IPv4 address. Mesh addresses
+			// are IPv4 today, but nothing in the netmap's type says so, and
+			// an A answer built from anything else panics — which, in the
+			// resolver's goroutine, takes the whole daemon with it.
+			return emptyAnswer(msg), nil
 		}
 		return answerA(msg, addr), nil
 
@@ -427,6 +453,10 @@ func Label(name string) string { return normaliseName(name) }
 // not allow. Rewriting rather than rejecting means a machine called
 // "Justin's MacBook Pro" still gets a working name instead of silently having
 // none.
+//
+// For the same reason a name too long for one label is cut to the 63 bytes a
+// label holds. Left whole, no query could carry it, and the reverse answer
+// dropped it and named the bare domain.
 func normaliseName(name string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(name) {
@@ -439,8 +469,15 @@ func normaliseName(name string) string {
 			b.WriteRune('-')
 		}
 	}
-	return strings.Trim(b.String(), "-")
+	label := strings.Trim(b.String(), "-")
+	if len(label) > maxLabel {
+		label = strings.TrimRight(label[:maxLabel], "-")
+	}
+	return label
 }
+
+// maxLabel is the longest a DNS label may be (RFC 1035).
+const maxLabel = 63
 
 // arpaToAddr decodes a reverse-lookup name back into an address.
 func arpaToAddr(name string) (netip.Addr, bool) {

@@ -15,6 +15,7 @@ import (
 type dialLimit struct {
 	burst int
 	every time.Duration
+	max   int // hosts tracked at once; past it, new ones share overflow
 
 	mu sync.Mutex
 	at map[string]*dialBucket
@@ -30,8 +31,15 @@ type dialBucket struct {
 // accumulate a row per address it has ever seen.
 const idleTTL = 10 * time.Minute
 
+// maxTracked is how many hosts are remembered at once, and overflow the one
+// budget every host past that shares. See allow.
+const (
+	maxTracked = 4096
+	overflow   = "*"
+)
+
 func newDialLimit(burst int, every time.Duration) *dialLimit {
-	return &dialLimit{burst: burst, every: every, at: map[string]*dialBucket{}}
+	return &dialLimit{burst: burst, every: every, max: maxTracked, at: map[string]*dialBucket{}}
 }
 
 // allow reports whether one attempt from host may proceed.
@@ -47,8 +55,19 @@ func (d *dialLimit) allow(host string, now time.Time) bool {
 				delete(d.at, k)
 			}
 		}
-		b = &dialBucket{tokens: float64(d.burst), last: now}
-		d.at[host] = b
+		// A full table does not grow: a public relay is scanned from
+		// everywhere, an IPv6 host has a /64 to walk, and behind a trusted
+		// proxy that passes X-Forwarded-For through untouched every request
+		// can name a new address. Past the limit new arrivals share one
+		// budget, and the hosts already held keep theirs.
+		if len(d.at) >= d.max {
+			host = overflow
+			b = d.at[host]
+		}
+		if b == nil {
+			b = &dialBucket{tokens: float64(d.burst), last: now}
+			d.at[host] = b
+		}
 	}
 
 	b.tokens += now.Sub(b.last).Seconds() / d.every.Seconds()

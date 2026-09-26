@@ -28,6 +28,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/justin06lee/makima/internal/clientip"
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -106,7 +107,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `makima-server — the coordination plane for a makima mesh
 
 running it:
-  makima-server serve   [-addr :PORT] [-no-relay]
+  makima-server serve   [-addr :PORT] [-no-relay] [-trusted-proxies CIDR,...]
   makima-server key
 
 admitting machines:
@@ -157,8 +158,14 @@ func serve(args []string) error {
 	socketPath := fs.String("socket", "", "admin socket path (default: beside the state file)")
 	addr := fs.String("addr", "", "address to listen on (default: the port this network's server has always used, or for a new one :8080 or the next free port)")
 	noRelay := fs.Bool("no-relay", false, "do not carry a relay on this port")
+	trusted := fs.String("trusted-proxies", clientip.Loopback.String(),
+		"reverse proxies believed about whom they forward for (X-Forwarded-For), as addresses or prefixes; empty trusts none")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	proxies, err := clientip.Parse(*trusted)
+	if err != nil {
+		return fmt.Errorf("-trusted-proxies: %w", err)
 	}
 
 	store, err := control.OpenStore(*statePath)
@@ -183,6 +190,10 @@ func serve(args []string) error {
 		defer rs.Close()
 		handlers.SetRelay(rs)
 	}
+	// Rate limits count clients, and behind a reverse proxy every client
+	// arrives from the proxy. What the proxies named here say about whom
+	// they forward for is believed, by this server and the relay it carries.
+	handlers.SetTrustedProxies(proxies)
 
 	// Claim the admin socket before binding the public port, so a second
 	// server refuses to start rather than racing the first over the state

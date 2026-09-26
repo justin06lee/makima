@@ -16,6 +16,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/invite"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
@@ -529,7 +530,7 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 		NodeKey:   nodeKey.Public(),
 		DiscoKey:  discoKey.Public(),
 		AuthKey:   inv.AuthKey,
-		Endpoints: netcfg.LocalEndpoints(listenPort),
+		Endpoints: hostaddr.LocalEndpoints(listenPort),
 	})
 	if err != nil {
 		return fmt.Errorf("join %s: %w", inv.Server, err)

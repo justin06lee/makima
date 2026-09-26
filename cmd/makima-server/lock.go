@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/justin06lee/makima/internal/control"
+	"github.com/justin06lee/makima/internal/key"
 )
 
 // The network lock's private key is the one secret in makima that must not
@@ -168,7 +169,11 @@ func lockInit(args []string) error {
 	}
 
 	// The lock's first version, signed by the key it trusts.
-	first := control.SignLockStatement(priv, 1, false, [][]byte{pub})
+	network, err := t.serverKey()
+	if err != nil {
+		return err
+	}
+	first := control.SignLockStatement(priv, network, 1, false, [][]byte{pub})
 	if err := t.applyLock(first, map[string]string{(control.SigningKey{Public: pub}).ID(): *name}); err != nil {
 		return err
 	}
@@ -331,7 +336,11 @@ func (t *target) changeLock(keyPath string, names map[string]string, edit func(k
 	if err != nil {
 		return err
 	}
-	next := control.SignLockStatement(ed25519.PrivateKey(sk.Private), st.Epoch+1, enabled, keys)
+	network, err := t.serverKey()
+	if err != nil {
+		return err
+	}
+	next := control.SignLockStatement(ed25519.PrivateKey(sk.Private), network, st.Epoch+1, enabled, keys)
 	return t.applyLock(next, names)
 }
 
@@ -340,6 +349,16 @@ func (t *target) lockStatus() (control.LockStatus, error) {
 		return t.admin.LockStatus()
 	}
 	return t.store.LockStatus(), nil
+}
+
+// serverKey is the control plane's public key: the network every version of
+// its lock is signed for, so the same signing key's versions for another
+// network are refused by this one's nodes.
+func (t *target) serverKey() (key.Public, error) {
+	if t.live() {
+		return t.admin.ServerKey()
+	}
+	return t.store.ServerKey().Public(), nil
 }
 
 func (t *target) applyLock(st control.LockStatement, names map[string]string) error {

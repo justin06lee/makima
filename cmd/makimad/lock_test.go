@@ -23,6 +23,16 @@ func signedPeer(t *testing.T, id netmap.NodeID, name string, signer ed25519.Priv
 	return p
 }
 
+// network is a control plane's key: the network a lock's versions are for.
+func network(t *testing.T) key.Public {
+	t.Helper()
+	k, err := key.NewPrivate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k.Public()
+}
+
 // The control plane turning against the network: it drops the lock from the
 // netmap, or sends it switched off without a signed version saying so, and
 // introduces a peer of its own. A node holding the lock refuses the peer
@@ -41,7 +51,7 @@ func TestPinnedLockOutlivesTheServerSayingOtherwise(t *testing.T) {
 		"rogue key only": {Enabled: true, TrustedKeys: []control.SigningKey{{Public: make([]byte, 32)}}},
 	} {
 		resp := &control.MapResponse{Peers: []netmap.Node{real, invented}, Lock: lock}
-		kept, rejected, after, _ := verifyPeers(resp, pin)
+		kept, rejected, after, _ := verifyPeers(resp, network(t), pin)
 		if len(kept) != 1 || kept[0].Name != "laptop" || len(rejected) != 1 {
 			t.Errorf("%s: kept %v", name, kept)
 		}
@@ -55,15 +65,16 @@ func TestPinnedLockOutlivesTheServerSayingOtherwise(t *testing.T) {
 // version, and from then on holds it.
 func TestFirstLockIsPinned(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ours := network(t)
 	chain := []control.LockStatement{
-		control.SignLockStatement(priv, 1, false, [][]byte{pub}),
-		control.SignLockStatement(priv, 2, true, [][]byte{pub}),
+		control.SignLockStatement(priv, ours, 1, false, [][]byte{pub}),
+		control.SignLockStatement(priv, ours, 2, true, [][]byte{pub}),
 	}
 	resp := &control.MapResponse{
 		Peers: []netmap.Node{signedPeer(t, 1, "laptop", priv), signedPeer(t, 2, "intruder", nil)},
 		Lock:  &control.LockConfig{Enabled: true, Chain: chain},
 	}
-	kept, _, pin, err := verifyPeers(resp, nil)
+	kept, _, pin, err := verifyPeers(resp, ours, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,10 +86,40 @@ func TestFirstLockIsPinned(t *testing.T) {
 	}
 }
 
+// A node holding its network's lock is not moved by a version the same
+// signing key made for another network. It used to be: the version named no
+// network, so another network's "not enforced" switched this one's lock off,
+// and the peer its server invented was admitted.
+func TestAnotherNetworksLockDoesNotMoveThePin(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ours, theirs := network(t), network(t)
+	pin := &netmap.LockPin{Epoch: 2, Enabled: true, Keys: [][]byte{pub}}
+
+	replayed := []control.LockStatement{
+		control.SignLockStatement(priv, theirs, 1, false, [][]byte{pub}),
+		control.SignLockStatement(priv, theirs, 2, true, [][]byte{pub}),
+		control.SignLockStatement(priv, theirs, 3, false, [][]byte{pub}),
+	}
+	resp := &control.MapResponse{
+		Peers: []netmap.Node{signedPeer(t, 1, "laptop", priv), signedPeer(t, 2, "intruder", nil)},
+		Lock:  &control.LockConfig{Enabled: false, Chain: replayed},
+	}
+	kept, _, after, err := verifyPeers(resp, ours, pin)
+	if err == nil {
+		t.Error("another network's lock version was taken without complaint")
+	}
+	if after != pin {
+		t.Errorf("the pin moved to %+v", after)
+	}
+	if len(kept) != 1 || kept[0].Name != "laptop" {
+		t.Errorf("kept %v, want only the signed peer", kept)
+	}
+}
+
 // A mesh without a lock is unchanged: everyone is admitted.
 func TestNoLockAdmitsEveryone(t *testing.T) {
 	resp := &control.MapResponse{Peers: []netmap.Node{signedPeer(t, 1, "a", nil), signedPeer(t, 2, "b", nil)}}
-	kept, rejected, pin, err := verifyPeers(resp, nil)
+	kept, rejected, pin, err := verifyPeers(resp, network(t), nil)
 	if len(kept) != 2 || len(rejected) != 0 || pin != nil || err != nil {
 		t.Errorf("kept %d, rejected %d, pin %v, err %v", len(kept), len(rejected), pin, err)
 	}

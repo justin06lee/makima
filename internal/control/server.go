@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/justin06lee/makima/internal/clientip"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/relay"
@@ -32,7 +33,12 @@ type Server struct {
 
 	// relay is the relay carried on this server's own port, nil when it
 	// carries none.
-	relay http.Handler
+	relay *relay.Server
+
+	// proxies are the reverse proxies believed about whom they forward for,
+	// so the limits above count nodes rather than the proxy in front of
+	// them. See SetTrustedProxies.
+	proxies clientip.Proxies
 
 	// listenPort is the port this server answers on, which a DuckDNS name is
 	// assumed to be forwarded to unless told otherwise.
@@ -49,7 +55,28 @@ func NewServer(store *Store, logger *log.Logger) *Server {
 		log:       logger,
 		polls:     newPolls(maxPolls),
 		registers: newBuckets(registerBurst, registerEvery),
+		proxies:   clientip.Loopback,
 	}
+}
+
+// SetTrustedProxies names the reverse proxies whose X-Forwarded-For is
+// believed, here and by the relay this server carries. Loopback unless set:
+// cloudflared, or a Caddy or nginx on this machine. Call before Handler.
+//
+// Registration and update requests are rate-limited per address, and behind
+// a proxy every node arrives from the proxy's. Ten nodes registering at once
+// — a fleet restarting after an update — spent the budget for every node
+// behind it, and so could any stranger who reached the proxy.
+func (s *Server) SetTrustedProxies(p clientip.Proxies) {
+	s.proxies = p
+	if s.relay != nil {
+		s.relay.SetTrustedProxies(p)
+	}
+}
+
+// clientAddr is where a request came from, through any trusted proxy.
+func (s *Server) clientAddr(r *http.Request) string {
+	return s.proxies.Of(r.RemoteAddr, r.Header)
 }
 
 // SetRelay carries a relay on this server's own port, at relay.Path, and hands
@@ -68,6 +95,7 @@ func NewServer(store *Store, logger *log.Logger) *Server {
 // Call before Handler.
 func (s *Server) SetRelay(rs *relay.Server) {
 	rs.SetAllow(s.store.IsMember)
+	rs.SetTrustedProxies(s.proxies)
 	s.relay = rs
 	s.store.SetBuiltinRelay(netmap.Relay{URL: relay.Path, Key: rs.PublicKey()})
 }
@@ -131,7 +159,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.registers.allow(r.RemoteAddr, time.Now()) {
+	if !s.registers.allow(s.clientAddr(r), time.Now()) {
 		tooMany(w, registerEvery)
 		return
 	}
@@ -220,7 +248,7 @@ func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
 // worst an updater can do by asking is move the network forward to a release
 // the project published — restarting every daemon on the way.
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	if !s.registers.allow(r.RemoteAddr, time.Now()) {
+	if !s.registers.allow(s.clientAddr(r), time.Now()) {
 		tooMany(w, registerEvery)
 		return
 	}

@@ -211,7 +211,7 @@ func TokenEqual(a, b []byte) bool {
 }
 
 // meshPrefix is the range every makima address comes from, the same one the
-// control plane allocates out of (netcfg.MeshRange).
+// control plane allocates out of (hostaddr.MeshRange).
 var meshPrefix = netip.MustParsePrefix("10.77.0.0/16")
 
 // MeshAddr derives a machine's mesh address from its node key.
