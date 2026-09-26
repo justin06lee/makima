@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/magicsock"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -193,10 +194,16 @@ func (n *Node) currentRelayKey() key.Public {
 // Local interface addresses plus whatever peers and STUN have observed. There
 // is no port mapping here: asking a router to forward a port is a change that
 // outlives the process, and this mode's promise is that nothing does.
+//
+// The local addresses are the daemon's own choice, from hostaddr, which only
+// reads. This package used to keep a copy of it rather than import netcfg,
+// and the copy drifted: it advertised Tailscale's 100.64.0.0/10 addresses,
+// container and VM bridges that lead only into this host, and IPv6 paths
+// disco cannot rank yet — every one of which the daemon had learned not to.
 func (n *Node) endpoints() []netip.AddrPort {
 	port := n.sock.LocalPort()
 
-	out := localEndpoints(port)
+	out := hostaddr.LocalEndpoints(port)
 	for _, e := range n.sock.SelfEndpoints() {
 		out = appendUnique(out, e)
 	}
@@ -465,47 +472,6 @@ func splice(a, b net.Conn) {
 	go func() { io.Copy(a, b); done <- struct{}{} }()
 	go func() { io.Copy(b, a); done <- struct{}{} }()
 	<-done
-}
-
-// localEndpoints is every address on this machine, paired with the socket's
-// port.
-//
-// Duplicated from netcfg rather than shared, because netcfg is the package
-// that changes the system and this one exists specifically not to. Importing
-// it here would put every route- and resolver-editing function one call away
-// from a mode whose entire promise is that it cannot reach them.
-func localEndpoints(port uint16) []netip.AddrPort {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-
-	var out []netip.AddrPort
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			ipnet, ok := a.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip, ok := netip.AddrFromSlice(ipnet.IP)
-			if !ok {
-				continue
-			}
-			ip = ip.Unmap()
-			if !ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast() || pair.InMesh(ip) {
-				continue
-			}
-			out = appendUnique(out, netip.AddrPortFrom(ip, port))
-		}
-	}
-	return out
 }
 
 func appendUnique(s []netip.AddrPort, a netip.AddrPort) []netip.AddrPort {

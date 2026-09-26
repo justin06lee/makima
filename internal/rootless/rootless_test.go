@@ -3,16 +3,19 @@ package rootless
 import (
 	"context"
 	"fmt"
+	"go/build"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/pair"
 )
@@ -263,3 +266,62 @@ func getWithRetry(c *http.Client, url string) (*http.Response, error) {
 }
 
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
+
+// A rootless node advertises the addresses the daemon would, and nothing more.
+// It used to keep its own copy of the filter, which drifted: it advertised
+// Tailscale's 100.64.0.0/10 addresses, container and VM bridges that lead only
+// into this host, and IPv6 paths disco cannot rank yet. Which of those a
+// machine has decides what this can catch; a Mac with global IPv6 or a Linux
+// box running Docker is enough.
+func TestARootlessNodeAdvertisesWhatTheDaemonWould(t *testing.T) {
+	n := node(t, "a")
+
+	allowed := make(map[netip.AddrPort]bool)
+	for _, e := range hostaddr.LocalEndpoints(n.sock.LocalPort()) {
+		allowed[e] = true
+	}
+	for _, e := range n.sock.SelfEndpoints() {
+		allowed[e] = true
+	}
+
+	for _, e := range n.endpoints() {
+		if !allowed[e] {
+			t.Errorf("advertises %s, which the daemon would not", e)
+		}
+		if hostaddr.IsMeshAddr(e.Addr()) {
+			t.Errorf("advertises %s, a tunnel's address", e)
+		}
+	}
+}
+
+// The promise this mode rests on is that nothing in it can change the
+// machine. netcfg is where routes, firewall rules and resolvers are changed;
+// if anything rootless builds on ever imports it, that promise is one call
+// away from broken, however carefully the call is avoided today.
+func TestRootlessCannotReachTheSystemChangingPackages(t *testing.T) {
+	const module = "github.com/justin06lee/makima/"
+	forbidden := module + "internal/netcfg"
+
+	seen := make(map[string]bool)
+	var walk func(path string, chain []string)
+	walk = func(path string, chain []string) {
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		if path == forbidden {
+			t.Errorf("rootless reaches netcfg: %s", strings.Join(append(chain, path), " -> "))
+			return
+		}
+		pkg, err := build.ImportDir(filepath.Join("..", "..", strings.TrimPrefix(path, module)), 0)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		for _, imp := range pkg.Imports {
+			if strings.HasPrefix(imp, module) {
+				walk(imp, append(chain, path))
+			}
+		}
+	}
+	walk(module+"internal/rootless", nil)
+}
