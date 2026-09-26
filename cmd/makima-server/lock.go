@@ -260,6 +260,7 @@ func lockRemoveKey(args []string) error {
 	af := newAdminFlags("lock rm-key")
 	id := af.fs.String("id", "", "the key's id, from 'lock status'")
 	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "a signing key the lock trusts now, to sign the change")
+	yes := af.fs.Bool("yes", false, "sign the machines only the dropped key had signed without asking")
 
 	t, err := af.open(args)
 	if err != nil {
@@ -267,6 +268,28 @@ func lockRemoveKey(args []string) error {
 	}
 	if *id == "" {
 		return fmt.Errorf("lock rm-key needs -id")
+	}
+
+	// The machines only the dropped key had signed are signed again first,
+	// with the key making the change. Otherwise an enforced lock could not
+	// drop it — the version would have them rejected by the whole mesh —
+	// and nothing else would sign them while the old key still counts.
+	sk, err := readSigningKey(*keyPath)
+	if err != nil {
+		return err
+	}
+	if (control.SigningKey{Public: sk.Public}).ID() == *id {
+		return fmt.Errorf("that is the key in %s, signing this change; sign dropping it with a key that stays", *keyPath)
+	}
+	if _, cur, err := t.currentLock(sk); err != nil {
+		return err
+	} else if !containsKey(cur.Keys, sk.Public) {
+		return fmt.Errorf("the signing key in %s is not one the lock trusts, so no node would accept a change signed with it", *keyPath)
+	}
+	if n, err := t.signPendingWithout(sk, *yes, *id); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Print("\n")
 	}
 
 	err = t.changeLock(*keyPath, nil, func(keys [][]byte, enabled bool) ([][]byte, bool, error) {
@@ -573,14 +596,20 @@ func lockSign(args []string) error {
 // or from another network sharing the key — and present it as proof of a
 // machine it made up.
 func (t *target) signPending(sk *signingKeyFile, yes bool) (int, error) {
+	return t.signPendingWithout(sk, yes, "")
+}
+
+// signPendingWithout is signPending as things will be once the trusted key
+// with ID without is dropped: the machines only it had signed are signed too.
+func (t *target) signPendingWithout(sk *signingKeyFile, yes bool, without string) (int, error) {
 	var (
 		pending []control.UnsignedNode
 		err     error
 	)
 	if t.live() {
-		pending, err = t.admin.PendingSignatures()
+		pending, err = t.admin.PendingSignaturesWithout(without)
 	} else {
-		pending = t.store.PendingSignatures()
+		pending = t.store.PendingSignaturesWithout(without)
 	}
 	if err != nil {
 		return 0, err

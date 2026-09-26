@@ -3,6 +3,7 @@ package control
 import (
 	"net/http"
 	"net/netip"
+	"net/url"
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -148,8 +149,18 @@ func (c *AdminClient) LockStatus() (LockStatus, error) {
 
 // PendingSignatures lists nodes awaiting a signature.
 func (c *AdminClient) PendingSignatures() ([]UnsignedNode, error) {
+	return c.PendingSignaturesWithout("")
+}
+
+// PendingSignaturesWithout lists them as they would be once the trusted key
+// with that ID is dropped; see Store.PendingSignaturesWithout.
+func (c *AdminClient) PendingSignaturesWithout(without string) ([]UnsignedNode, error) {
 	var out []UnsignedNode
-	if err := c.call(http.MethodGet, "/admin/lock/pending", nil, &out); err != nil {
+	path := "/admin/lock/pending"
+	if without != "" {
+		path += "?without=" + url.QueryEscape(without)
+	}
+	if err := c.call(http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

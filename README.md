@@ -953,7 +953,8 @@ taken by another, even where both trust the same signing key.
 
 A node takes the first version it is shown on trust — the same trust it placed
 in the server when it joined. Rotating a key is two signed steps: `lock add-key`
-with the old key, then `lock rm-key` with the new one. A lock set up by an
+with the old key, then `lock rm-key` with the new one, which first signs again,
+with the new key, every machine only the old one had signed. A lock set up by an
 older makima was never signed and can still be switched off by the server
 until it is sealed: `makima-server lock seal`, which shows the keys it is about
 to pin — with no signed history, that list is the server's word — and, if the

@@ -322,7 +322,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("GET /admin/lock/pending", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, s.store.PendingSignatures())
+		writeJSON(w, http.StatusOK, s.store.PendingSignaturesWithout(r.URL.Query().Get("without")))
 	})
 
 	mux.HandleFunc("GET /admin/lock/chain", func(w http.ResponseWriter, r *http.Request) {

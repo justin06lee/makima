@@ -423,10 +423,18 @@ func (s *Store) LockStatus() LockStatus {
 // from a key the lock trusts now — what machines on makima v0.3.0 check.
 // Callers hold s.mu.
 func (s *Store) legacySignedLocked(n *Node) bool {
-	if len(n.KeySignature) == 0 || s.state.Lock == nil {
+	if s.state.Lock == nil {
 		return false
 	}
-	l := &Lock{TrustedKeys: s.state.Lock.TrustedKeys}
+	return legacySignedBy(n, s.state.Lock.TrustedKeys)
+}
+
+// legacySignedBy reports whether one of keys made n's old-kind signature.
+func legacySignedBy(n *Node, keys []SigningKey) bool {
+	if len(n.KeySignature) == 0 {
+		return false
+	}
+	l := &Lock{TrustedKeys: keys}
 	return l.verifies(legacySigningMaterial(n.ID, n.NodeKey), n.KeySignature)
 }
 
@@ -436,10 +444,19 @@ func (s *Store) legacySignedLocked(n *Node) bool {
 // and one made by makima v0.3.0 names no network, so a node holding a signed
 // lock does not accept it. Callers hold s.mu.
 func (s *Store) signedLocked(n *Node) bool {
-	if len(n.NetworkSignature) == 0 || s.state.Lock == nil {
+	if s.state.Lock == nil {
 		return false
 	}
-	l := &Lock{Enabled: true, TrustedKeys: s.state.Lock.TrustedKeys}
+	return s.signedBy(n, s.state.Lock.TrustedKeys)
+}
+
+// signedBy reports whether one of keys made n's signature for this network.
+// Callers hold s.mu.
+func (s *Store) signedBy(n *Node, keys []SigningKey) bool {
+	if len(n.NetworkSignature) == 0 {
+		return false
+	}
+	l := &Lock{Enabled: true, TrustedKeys: keys}
 	return l.VerifyNodeKey(s.state.ServerKey.Public(), n.ID, n.NodeKey, n.NetworkSignature) == nil
 }
 
@@ -594,8 +611,26 @@ type UnsignedNode struct {
 // that drift apart would produce signatures that verify nowhere, and the
 // failure would look like a key problem rather than an encoding one.
 func (s *Store) PendingSignatures() []UnsignedNode {
+	return s.PendingSignaturesWithout("")
+}
+
+// PendingSignaturesWithout is PendingSignatures as it would be once the
+// trusted key with ID without is dropped: every machine only that key had
+// signed is waiting too. What rotating the signing key while the lock is
+// enforced needs — the new key signs them before the old one goes, or the
+// version dropping it would have them rejected by the whole mesh.
+func (s *Store) PendingSignaturesWithout(without string) []UnsignedNode {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var keys []SigningKey
+	if s.state.Lock != nil {
+		for _, k := range s.state.Lock.TrustedKeys {
+			if without == "" || k.ID() != without {
+				keys = append(keys, k)
+			}
+		}
+	}
 
 	var out []UnsignedNode
 	for _, n := range s.state.Nodes {
@@ -606,7 +641,7 @@ func (s *Store) PendingSignatures() []UnsignedNode {
 		// Waiting means missing either kind: the one naming this network,
 		// which nodes holding the signed lock check, or the old one, which
 		// machines still on v0.3.0 check. Both are asked for either way.
-		if n.Expired || (s.signedLocked(n) && s.legacySignedLocked(n)) {
+		if n.Expired || (s.signedBy(n, keys) && legacySignedBy(n, keys)) {
 			continue
 		}
 		out = append(out, UnsignedNode{

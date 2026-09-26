@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -549,5 +550,62 @@ func TestTheLockCommandsFollowOneAnother(t *testing.T) {
 	}
 	if pin := sk.Networks[store.ServerKey().Public().String()]; pin == nil || pin.Epoch != 3 || !pin.Enabled {
 		t.Errorf("the key file remembers %+v, want version 3, enforced", pin)
+	}
+}
+
+// Rotating the signing key while the lock is enforced: trust the new key
+// with the old, then drop the old with the new. Dropping it used to be
+// refused — every machine was signed by the old key only, so the version
+// would have them all rejected — and lock sign could not help, since the
+// old key still counted and it found nothing to sign. rm-key now signs
+// again, with the key making the change, every machine that only the key
+// being dropped had signed.
+func TestTheSigningKeyCanBeRotatedWhileEnforced(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "control.json")
+	sock := filepath.Join(dir, "nobody.sock")
+	oldKey := filepath.Join(dir, "old.key")
+	at := func(keyPath string, extra ...string) []string {
+		return append([]string{"-state", state, "-socket", sock, "-key", keyPath}, extra...)
+	}
+
+	if err := lockInit(at(oldKey, "-name", "old")); err != nil {
+		t.Fatal(err)
+	}
+	store := mustOpen(t, state)
+	auth, _ := store.MintAuthKey(false, time.Hour)
+	machine, _ := key.NewPrivate()
+	node, _ := key.NewPrivate()
+	if _, err := store.Register(machine.Public(), &control.RegisterRequest{Name: "laptop", NodeKey: node.Public(), AuthKey: auth.Secret}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockSign(at(oldKey, "-yes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockEnable(at(oldKey), true); err != nil {
+		t.Fatal(err)
+	}
+
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	newKey := signingKeyAt(t, newPriv, nil)
+	if err := lockAddKey(at(oldKey, "-public", base64.RawURLEncoding.EncodeToString(newPub), "-name", "new")); err != nil {
+		t.Fatal(err)
+	}
+	old, err := readSigningKey(oldKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := answer(t, true)
+	if err := lockRemoveKey(at(newKey, "-id", (control.SigningKey{Public: old.Public}).ID())); err != nil {
+		t.Fatalf("dropping the old key: %v", err)
+	}
+	if len(*asked) != 1 {
+		t.Errorf("asked about %v, want the laptop", *asked)
+	}
+
+	after := mustOpen(t, state)
+	st := after.LockStatus()
+	if len(st.TrustedKeys) != 1 || !bytes.Equal(st.TrustedKeys[0].Public, newPub) || st.Signed != 1 || !st.Enabled {
+		t.Errorf("after rotating: %+v", st)
 	}
 }
