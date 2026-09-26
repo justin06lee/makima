@@ -66,8 +66,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The same caps as the bare port. A relay on a public web port is, if
-	// anything, more exposed to the internet's background noise.
-	if !s.admit(conn) {
+	// anything, more exposed to the internet's background noise. Counted
+	// against the client, not the reverse proxy it may have come through.
+	if !s.admit(s.proxies.Of(r.RemoteAddr, r.Header)) {
 		conn.Close()
 		return
 	}

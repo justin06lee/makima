@@ -204,6 +204,12 @@ assuming.
 makima up -advertise https://makima.example.dev
 ```
 
+A proxy on the same machine — cloudflared, Caddy, nginx — is believed about
+whom it forwards for (`X-Forwarded-For`), so the server's rate limits count
+machines rather than the proxy. A proxy anywhere else has to be named, or every
+machine behind it shares one budget:
+`makima-server serve -trusted-proxies 127.0.0.0/8,::1/128,192.0.2.10`.
+
 Or put it on anything with a public address; a small VPS is plenty.
 
 That is the whole thing. There is no mesh yet, so it makes one, puts the

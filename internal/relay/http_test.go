@@ -1,10 +1,13 @@
 package relay
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,12 +21,19 @@ import (
 // page of its own, and returns the server's base URL.
 func webRelayServer(t *testing.T) (string, key.Public) {
 	t.Helper()
+	return webRelayServerWith(t, func(*Server) {})
+}
+
+// webRelayServerWith is webRelayServer with the relay configured first.
+func webRelayServerWith(t *testing.T, configure func(*Server)) (string, key.Public) {
+	t.Helper()
 
 	priv, err := key.NewPrivate()
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(priv, log.New(io.Discard, "", 0))
+	configure(srv)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET "+Path, srv)
@@ -126,6 +136,54 @@ func TestWebRelayKeyIsPinned(t *testing.T) {
 
 	if _, err := c.session(ctx); err == nil || !strings.Contains(err.Error(), "relay key mismatch") {
 		t.Errorf("session = %v, want a key mismatch", err)
+	}
+}
+
+// upgradeFrom asks the web relay at base for an upgrade, as a proxy that says
+// it is forwarding for xff, and reports whether the relay took it.
+func upgradeFrom(t *testing.T, base, xff string) bool {
+	t.Helper()
+	host := strings.TrimPrefix(base, "http://")
+	c, err := net.Dial("tcp", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: %s\r\nConnection: Upgrade\r\nX-Forwarded-For: %s\r\n\r\n",
+		Path, host, UpgradeProto, xff)
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	return err == nil && resp.StatusCode == http.StatusSwitchingProtocols
+}
+
+// Behind a reverse proxy on the same machine — the httptest server's clients
+// are on loopback, as cloudflared or Caddy would be — every node arrives from
+// the proxy's address. The handshake limit used to count the proxy, so
+// twenty nodes redialling at once, a fleet restarting, spent it for all of
+// them, and any stranger reaching the proxy could do the same.
+func TestNodesBehindAProxyDoNotShareOneHandshakeBudget(t *testing.T) {
+	base, _ := webRelayServer(t)
+
+	for i := range 2 * handshakeBurst {
+		if !upgradeFrom(t, base, fmt.Sprintf("198.51.100.%d", i+1)) {
+			t.Fatalf("node %d behind the proxy was refused", i+1)
+		}
+	}
+}
+
+// With no proxy trusted, the header is ignored: anybody can write it, and a
+// relay that believed it would give every connection a fresh budget.
+func TestAnUntrustedForwardedForIsIgnored(t *testing.T) {
+	base, _ := webRelayServerWith(t, func(s *Server) { s.SetTrustedProxies(nil) })
+
+	refused := false
+	for i := range handshakeBurst + 1 {
+		if !upgradeFrom(t, base, fmt.Sprintf("198.51.100.%d", i+1)) {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Error("naming a new address each time got past the handshake limit")
 	}
 }
 

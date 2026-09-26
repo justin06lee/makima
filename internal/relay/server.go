@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/justin06lee/makima/internal/clientip"
 	"github.com/justin06lee/makima/internal/key"
 )
 
@@ -69,6 +70,10 @@ type Server struct {
 	// allow, when set, decides which node keys may use this relay at all.
 	// Set once, before serving.
 	allow func(key.Public) bool
+
+	// proxies are trusted to say whom they forward for, on the web path
+	// (ServeHTTP). Set once, before serving.
+	proxies clientip.Proxies
 }
 
 // SetAllow restricts the relay to node keys fn accepts. Call before serving.
@@ -79,6 +84,16 @@ type Server struct {
 // — and on a home connection's port, open to the internet, serving strangers
 // would be lending them that connection's upload for their own traffic.
 func (s *Server) SetAllow(fn func(key.Public) bool) { s.allow = fn }
+
+// SetTrustedProxies names the reverse proxies believed about whom they
+// forward for, when the relay is reached through a web server. Loopback
+// unless set. Call before serving.
+//
+// The handshake limit is per address, and behind a proxy every node arrives
+// from the proxy's: without this, twenty nodes redialling at once — a fleet
+// restarting — spent the budget for all of them, and so could any stranger.
+// The bare relay port is unaffected; nothing in front of it can say.
+func (s *Server) SetTrustedProxies(p clientip.Proxies) { s.proxies = p }
 
 // Stats is a relay's lifetime activity.
 type Stats struct {
@@ -110,6 +125,7 @@ func NewServer(privateKey key.Private, logger *log.Logger) *Server {
 		log:        logger,
 		clients:    make(map[key.Public]*serverClient),
 		dialers:    newDialLimit(handshakeBurst, handshakeEvery),
+		proxies:    clientip.Loopback,
 	}
 }
 
@@ -150,7 +166,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		}
 		// Checked before the goroutine: a connection refused here costs an
 		// accept and a close, and never a goroutine or a read buffer.
-		if !s.admit(c) {
+		if !s.admit(hostOf(c.RemoteAddr())) {
 			c.Close()
 			continue
 		}
@@ -158,10 +174,10 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 }
 
-// admit reports whether a freshly accepted connection may proceed to a
-// handshake, counting it against the relay's caps if so.
-func (s *Server) admit(c net.Conn) bool {
-	if !s.dialers.allow(hostOf(c.RemoteAddr()), time.Now()) {
+// admit reports whether a freshly accepted connection from host may proceed
+// to a handshake, counting it against the relay's caps if so.
+func (s *Server) admit(host string) bool {
+	if !s.dialers.allow(host, time.Now()) {
 		s.stats.Rejected.Add(1)
 		return false
 	}
@@ -171,7 +187,7 @@ func (s *Server) admit(c net.Conn) bool {
 	s.mu.RUnlock()
 	if full {
 		s.stats.Rejected.Add(1)
-		s.log.Printf("relay: at %d clients, refusing %s", MaxClients, hostOf(c.RemoteAddr()))
+		s.log.Printf("relay: at %d clients, refusing %s", MaxClients, host)
 		return false
 	}
 	return true
