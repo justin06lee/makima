@@ -288,6 +288,23 @@ func legacySigningMaterial(id netmap.NodeID, nodeKey key.Public) []byte {
 	return b
 }
 
+// SigningMaterial is what a node's signature in network covers, for the
+// signing tool to check the bytes a server hands it against: a server that
+// asked it to sign anything else — another network's material, or another
+// key than the node it names — would be asking for a signature to use
+// somewhere it should not be.
+func SigningMaterial(network key.Public, id netmap.NodeID, nodeKey key.Public) []byte {
+	return signingMaterial(network, id, nodeKey)
+}
+
+// SignedTheOldWay reports whether sig is pub's version-1 signature over a
+// node's ID and key: the signing key already approved this machine under
+// makima v0.3.0.
+func SignedTheOldWay(pub ed25519.PublicKey, id netmap.NodeID, nodeKey key.Public, sig []byte) bool {
+	return len(pub) == ed25519.PublicKeySize && len(sig) > 0 &&
+		ed25519.Verify(pub, legacySigningMaterial(id, nodeKey), sig)
+}
+
 // SignNodeKey produces a signature binding a node key to a node ID in the
 // network whose control plane holds network.
 //
@@ -546,6 +563,12 @@ type UnsignedNode struct {
 	Name     string        `json:"name"`
 	NodeKey  key.Public    `json:"node_key"`
 	Material []byte        `json:"material"`
+
+	// KeySignature is the node's signature from makima v0.3.0, if it has
+	// one: what lets the signing tool tell a machine its own key already
+	// approved, and needs only signing again for its network, from one it
+	// has never seen.
+	KeySignature []byte `json:"key_signature,omitempty"`
 }
 
 // PendingSignatures reports every node whose current key is unsigned.
@@ -564,10 +587,11 @@ func (s *Store) PendingSignatures() []UnsignedNode {
 			continue
 		}
 		out = append(out, UnsignedNode{
-			ID:       n.ID,
-			Name:     n.Name,
-			NodeKey:  n.NodeKey,
-			Material: signingMaterial(s.state.ServerKey.Public(), n.ID, n.NodeKey),
+			ID:           n.ID,
+			Name:         n.Name,
+			NodeKey:      n.NodeKey,
+			Material:     signingMaterial(s.state.ServerKey.Public(), n.ID, n.NodeKey),
+			KeySignature: n.KeySignature,
 		})
 	}
 	return out

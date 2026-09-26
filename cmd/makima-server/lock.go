@@ -1,17 +1,22 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"golang.org/x/term"
 )
 
 // The network lock's private key is the one secret in makima that must not
@@ -269,6 +274,7 @@ func lockRemoveKey(args []string) error {
 func lockSeal(args []string) error {
 	af := newAdminFlags("lock seal")
 	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "a signing key the lock trusts")
+	yes := af.fs.Bool("yes", false, "sign machines this key has never signed without asking")
 
 	t, err := af.open(args)
 	if err != nil {
@@ -291,7 +297,7 @@ func lockSeal(args []string) error {
 	if err != nil {
 		return err
 	}
-	if n, err := t.signPending(sk); err != nil {
+	if n, err := t.signPending(sk, *yes); err != nil {
 		return err
 	} else if n > 0 {
 		fmt.Print("\n")
@@ -406,6 +412,7 @@ func containsKey(keys [][]byte, k []byte) bool {
 func lockSign(args []string) error {
 	af := newAdminFlags("lock sign")
 	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "path to the signing key")
+	yes := af.fs.Bool("yes", false, "sign machines this key has never signed without asking")
 
 	t, err := af.open(args)
 	if err != nil {
@@ -417,7 +424,7 @@ func lockSign(args []string) error {
 		return err
 	}
 
-	n, err := t.signPending(sk)
+	n, err := t.signPending(sk, *yes)
 	if err != nil {
 		return err
 	}
@@ -432,7 +439,16 @@ func lockSign(args []string) error {
 // signPending signs every node the server says needs it — no signature, one
 // from a key no longer trusted, or one from makima v0.3.0, which names no
 // network — and reports how many it signed.
-func (t *target) signPending(sk *signingKeyFile) (int, error) {
+//
+// The list is the server's, and the server is what the lock defends against.
+// Signing whatever it named let a compromised one register a machine of its
+// own and wait for the next routine `lock sign`, with nothing to forge. So the
+// bytes are checked to be exactly each named node's, in this network; and a
+// machine this key has never approved is shown, and signed only once somebody
+// agrees — at the terminal, or with yes. One this key already signed under
+// makima v0.3.0, which the server cannot fake, is only being signed again for
+// its network, and goes through.
+func (t *target) signPending(sk *signingKeyFile, yes bool) (int, error) {
 	var (
 		pending []control.UnsignedNode
 		err     error
@@ -444,6 +460,29 @@ func (t *target) signPending(sk *signingKeyFile) (int, error) {
 	}
 	if err != nil {
 		return 0, err
+	}
+	network, err := t.serverKey()
+	if err != nil {
+		return 0, err
+	}
+
+	var fresh []control.UnsignedNode
+	for _, n := range pending {
+		if !bytes.Equal(n.Material, control.SigningMaterial(network, n.ID, n.NodeKey)) {
+			return 0, fmt.Errorf("the server asked to sign something other than %s's key in this network; nothing was signed", n.Name)
+		}
+		if !control.SignedTheOldWay(ed25519.PublicKey(sk.Public), n.ID, n.NodeKey, n.KeySignature) {
+			fresh = append(fresh, n)
+		}
+	}
+	if len(fresh) > 0 && !yes {
+		ok, err := confirmSigning(fresh)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, errors.New("nothing was signed")
+		}
 	}
 
 	for _, n := range pending {
@@ -486,6 +525,33 @@ func lockEnable(args []string, on bool) error {
 	fmt.Print("network lock disabled; nodes accept whatever peers the server sends\n")
 	fmt.Print("until a version signed by a trusted key enables it again\n")
 	return nil
+}
+
+// confirmSigning shows the machines this key has never signed and asks
+// whether to sign them. A variable so tests can answer.
+var confirmSigning = func(fresh []control.UnsignedNode) (bool, error) {
+	fmt.Print("never signed with this key before:\n\n")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprint(w, "NAME\tID\tNODE KEY\n")
+	for _, n := range fresh {
+		k := n.NodeKey.String()
+		fmt.Fprintf(w, "%s\t%d\t%s…\n", n.Name, n.ID, k[:16])
+	}
+	if err := w.Flush(); err != nil {
+		return false, err
+	}
+
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return false, fmt.Errorf("\nno terminal to ask at: check each of these is yours ('makima status' on it shows its node key), then run again with -yes")
+	}
+	fmt.Print("\nthe server chose this list, so a machine you do not recognise may be its own.\n")
+	fmt.Print("each machine's 'makima status' shows its node key. sign them? [y/N] ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false, nil
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
 }
 
 // writeSigningKey persists the operator's key.
