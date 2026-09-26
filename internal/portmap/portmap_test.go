@@ -1,6 +1,7 @@
 package portmap
 
 import (
+	"context"
 	"encoding/binary"
 	"net/netip"
 	"testing"
@@ -152,5 +153,35 @@ func TestMapNeedsAPort(t *testing.T) {
 	c := New(nil)
 	if _, err := c.Map(nil, 0); err == nil {
 		t.Error("mapping port zero was accepted")
+	}
+}
+
+// A laptop carried onto a network with no IPv4 gateway — or caught between two
+// networks when the mapping is renewed — has no router to ask. The mapping it
+// held was the old router's, and it used to go on being reported (and so
+// advertised to every peer) until it ran out, up to an hour later: only a
+// router that answered and refused ever cleared it.
+func TestAMappingIsDroppedWhenTheRouterIsGone(t *testing.T) {
+	c := New(nil)
+	c.record(netip.MustParseAddrPort("203.0.113.7:41641"), 51820, "pcp")
+
+	c.gateway = func() (netip.Addr, error) { return netip.Addr{}, ErrNoGateway }
+	if _, err := c.Map(context.Background(), 51820); err == nil {
+		t.Fatal("mapping succeeded with no gateway")
+	}
+	if e, ok := c.External(); ok {
+		t.Errorf("the old router's mapping %s is still reported after the router went away", e)
+	}
+}
+
+// A move to another network drops the mapping at once, before any router has
+// been asked, so the poll the move kicks off does not advertise it again.
+func TestForgetDropsTheMapping(t *testing.T) {
+	c := New(nil)
+	c.record(netip.MustParseAddrPort("203.0.113.7:41641"), 51820, "pcp")
+
+	c.Forget()
+	if e, ok := c.External(); ok {
+		t.Errorf("a forgotten mapping %s is still reported", e)
 	}
 }

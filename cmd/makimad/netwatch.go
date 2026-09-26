@@ -56,6 +56,13 @@ func (n *node) networkChanged(ctx context.Context) {
 	// Before the relay is redialled below, so it is redialled out of the
 	// interface the machine is on now.
 	n.rebindExit()
+	// The old router's mapping is the old network's public address. It goes
+	// before the poll below is kicked, which would otherwise carry it to the
+	// control plane again — the refresh that asks the new router for one runs
+	// alongside, and has not answered by then.
+	if n.pm != nil {
+		n.pm.Forget()
+	}
 	if n.sock != nil {
 		n.sock.NetworkChanged()
 		go n.refreshEndpoints(ctx)

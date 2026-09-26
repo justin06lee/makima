@@ -59,6 +59,10 @@ const attempts = 3
 type Client struct {
 	log *log.Logger
 
+	// gateway finds the router to ask. Gateway, except in tests, which need
+	// a machine whose router has just disappeared.
+	gateway func() (netip.Addr, error)
+
 	mu       sync.Mutex
 	external netip.AddrPort
 	haveMap  bool
@@ -72,7 +76,7 @@ func New(logger *log.Logger) *Client {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Client{log: logger}
+	return &Client{log: logger, gateway: Gateway}
 }
 
 // External reports the mapped public address, if a mapping is currently held.
@@ -113,8 +117,16 @@ func (c *Client) Map(ctx context.Context, localPort uint16) (netip.AddrPort, err
 		return netip.AddrPort{}, errors.New("portmap: no local port to map")
 	}
 
-	gw, err := Gateway()
+	// A mapping lives on a router. With no router to ask there is no
+	// mapping either — the one held was made by whichever router this
+	// machine used to sit behind, and advertising it sends peers to an
+	// address on a network it has left. Only a router that refused was ever
+	// treated that way; a router that vanished — a laptop carried onto a
+	// network with no IPv4 gateway, or caught between two — left the old
+	// public address advertised until it ran out, up to an hour later.
+	gw, err := c.gateway()
 	if err != nil {
+		c.Forget()
 		return netip.AddrPort{}, err
 	}
 
@@ -127,10 +139,20 @@ func (c *Client) Map(ctx context.Context, localPort uint16) (netip.AddrPort, err
 		return ext, nil
 	}
 
+	c.Forget()
+	return netip.AddrPort{}, ErrUnsupported
+}
+
+// Forget drops the mapping held, without telling the router.
+//
+// For when the machine has moved networks: the mapping is the old router's,
+// the old router is most likely out of reach, and waiting to tell it would
+// only delay the moment the old address stops being advertised. Left
+// behind, it expires on the router on its own.
+func (c *Client) Forget() {
 	c.mu.Lock()
 	c.haveMap = false
 	c.mu.Unlock()
-	return netip.AddrPort{}, ErrUnsupported
 }
 
 func (c *Client) record(ext netip.AddrPort, internal uint16, proto string) {
@@ -166,7 +188,7 @@ func (c *Client) Close() {
 		return
 	}
 
-	gw, err := Gateway()
+	gw, err := c.gateway()
 	if err != nil {
 		return
 	}
