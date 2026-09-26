@@ -933,9 +933,9 @@ with the server, and every node verifies its peers itself before admitting them
 to the data plane. A server that invents a peer has to forge a signature it
 holds no key for, and the invention is rejected by the entire mesh. Nor can it
 slip one into your next `lock sign`: the machines to sign are the server's
-list, so any your key has never signed are shown, and signed only once you say
-yes (`-yes` for a script that has checked some other way). `makima status` on
-each machine shows its node key.
+list, so each is shown with its node key and signed only once you say yes
+(`-yes` for a script that has checked some other way). `makima status` on each
+machine shows its node key.
 
 The lock itself is not the server's to change either. Every change to it —
 enforcing it, trusting another key, dropping one — is a numbered version signed

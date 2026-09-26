@@ -89,10 +89,12 @@ func oldLockedNetwork(t *testing.T, names ...string) (string, string) {
 // server to it, and a node holding a signed lock takes only signatures that
 // name its network. The old nodes have none, so sealing signs them first —
 // otherwise an enforced lock could not be sealed at all, and a node that
-// sealed it anyway would refuse every peer.
+// sealed it anyway would refuse every peer. They are shown and agreed to like
+// any others: an old signature is not proof the server has not made one up.
 func TestSealingAnOldLockSignsItsNodesForThisNetwork(t *testing.T) {
 	state, keyPath := oldLockedNetwork(t, "laptop", "desktop")
 	sock := filepath.Join(filepath.Dir(state), "nobody.sock")
+	asked := answer(t, true)
 
 	if err := lockSeal([]string{"-state", state, "-socket", sock, "-key", keyPath}); err != nil {
 		t.Fatalf("seal: %v", err)
@@ -101,6 +103,9 @@ func TestSealingAnOldLockSignsItsNodesForThisNetwork(t *testing.T) {
 	store, err := control.OpenStore(state)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(*asked) != 2 {
+		t.Errorf("asked about %v, want both machines", *asked)
 	}
 	st := store.LockStatus()
 	if st.Epoch != 1 || !st.Enabled || st.Signed != 2 || st.Unsigned != 0 {
@@ -224,23 +229,47 @@ func TestYesSignsWithoutAsking(t *testing.T) {
 }
 
 // A server handing over bytes that are not the named machine's key in its own
-// network — another network's material, or an intruder's key under a trusted
-// machine's name — gets no signature at all, even with -yes.
+// network — an intruder's key under a known machine's name, or material for
+// another network than the one it says it is — gets no signature at all, even
+// with -yes. One still asking for the old kind is told what is wrong, rather
+// than accused of lying.
 func TestAServerAskingToSignSomethingElseGetsNothing(t *testing.T) {
+	server, _ := key.NewPrivate()
+	elsewhere, _ := key.NewPrivate()
+	laptop, _ := key.NewPrivate()
+	intruder, _ := key.NewPrivate()
+
+	for _, c := range []struct {
+		name     string
+		material []byte
+		want     string
+	}{
+		{"an intruder's key", control.SigningMaterial(server.Public(), 3, intruder.Public()), "something other than"},
+		{"another network", control.SigningMaterial(elsewhere.Public(), 3, laptop.Public()), "something other than"},
+		{"an older server", control.LegacySigningMaterial(3, laptop.Public()), "older makima"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pending := []control.UnsignedNode{{ID: 3, Name: "laptop", NodeKey: laptop.Public(), Material: c.material}}
+			signed := lyingServer(t, server.Public(), pending, c.want)
+			if signed {
+				t.Error("a signature was uploaded")
+			}
+		})
+	}
+}
+
+// lyingServer runs a fake control plane's admin socket that reports network
+// as its key and pending as the machines to sign, runs lock sign -yes against
+// it, and reports whether anything was uploaded. The error has to contain
+// want.
+func lyingServer(t *testing.T, network key.Public, pending []control.UnsignedNode, want string) bool {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "mk")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "admin.sock")
-
-	server, _ := key.NewPrivate()
-	laptop, _ := key.NewPrivate()
-	intruder, _ := key.NewPrivate()
-	pending := []control.UnsignedNode{{
-		ID: 3, Name: "laptop", NodeKey: laptop.Public(),
-		Material: control.SigningMaterial(server.Public(), 3, intruder.Public()),
-	}}
 
 	var signed atomic.Bool
 	mux := http.NewServeMux()
@@ -250,7 +279,7 @@ func TestAServerAskingToSignSomethingElseGetsNothing(t *testing.T) {
 	mux.HandleFunc("GET /admin/key", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(struct {
 			ServerKey key.Public `json:"server_key"`
-		}{server.Public()})
+		}{network})
 	})
 	mux.HandleFunc("POST /admin/lock/sign", func(w http.ResponseWriter, r *http.Request) {
 		signed.Store(true)
@@ -268,12 +297,10 @@ func TestAServerAskingToSignSomethingElseGetsNothing(t *testing.T) {
 	// never fall through to the machine's own control plane.
 	_, keyPath := newLockedNetwork(t, "unused")
 	err = lockSign([]string{"-state", filepath.Join(dir, "control.json"), "-socket", sock, "-key", keyPath, "-yes"})
-	if err == nil || !strings.Contains(err.Error(), "something other than") {
-		t.Errorf("lock sign = %v, want a refusal", err)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("lock sign = %v, want a refusal saying %q", err, want)
 	}
-	if signed.Load() {
-		t.Error("a signature was uploaded for bytes that were not the named machine's")
-	}
+	return signed.Load()
 }
 
 func mustOpen(t *testing.T, state string) *control.Store {

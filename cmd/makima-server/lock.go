@@ -442,12 +442,18 @@ func lockSign(args []string) error {
 //
 // The list is the server's, and the server is what the lock defends against.
 // Signing whatever it named let a compromised one register a machine of its
-// own and wait for the next routine `lock sign`, with nothing to forge. So the
-// bytes are checked to be exactly each named node's, in this network; and a
-// machine this key has never approved is shown, and signed only once somebody
-// agrees — at the terminal, or with yes. One this key already signed under
-// makima v0.3.0, which the server cannot fake, is only being signed again for
-// its network, and goes through.
+// own and wait for the next routine `lock sign`, with nothing to forge. So
+// every machine is shown, and signed only once somebody agrees — at the
+// terminal, or with yes — and the bytes are checked to be exactly each named
+// machine's, in the network of the server being talked to. That network's key
+// comes from the server too; what the check catches is a server asking for a
+// key other than the machine it names, or for one network while claiming to
+// be another only if it slips.
+//
+// None goes through unasked, not even one this key signed under makima
+// v0.3.0: a server can keep an old signature — for a machine since forgotten,
+// or from another network sharing the key — and present it as proof of a
+// machine it made up.
 func (t *target) signPending(sk *signingKeyFile, yes bool) (int, error) {
 	var (
 		pending []control.UnsignedNode
@@ -466,17 +472,19 @@ func (t *target) signPending(sk *signingKeyFile, yes bool) (int, error) {
 		return 0, err
 	}
 
-	var fresh []control.UnsignedNode
+	if len(pending) == 0 {
+		return 0, nil
+	}
 	for _, n := range pending {
+		if bytes.Equal(n.Material, control.LegacySigningMaterial(n.ID, n.NodeKey)) {
+			return 0, errors.New("the running server is an older makima, which asks for signatures that name no network; restart it on this version (it restarts itself after an update), then sign again")
+		}
 		if !bytes.Equal(n.Material, control.SigningMaterial(network, n.ID, n.NodeKey)) {
 			return 0, fmt.Errorf("the server asked to sign something other than %s's key in this network; nothing was signed", n.Name)
 		}
-		if !control.SignedTheOldWay(ed25519.PublicKey(sk.Public), n.ID, n.NodeKey, n.KeySignature) {
-			fresh = append(fresh, n)
-		}
 	}
-	if len(fresh) > 0 && !yes {
-		ok, err := confirmSigning(fresh)
+	if !yes {
+		ok, err := confirmSigning(pending)
 		if err != nil {
 			return 0, err
 		}
@@ -527,10 +535,10 @@ func lockEnable(args []string, on bool) error {
 	return nil
 }
 
-// confirmSigning shows the machines this key has never signed and asks
-// whether to sign them. A variable so tests can answer.
+// confirmSigning shows the machines about to be signed and asks whether to
+// sign them. A variable so tests can answer.
 var confirmSigning = func(fresh []control.UnsignedNode) (bool, error) {
-	fmt.Print("never signed with this key before:\n\n")
+	fmt.Print("to be signed:\n\n")
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprint(w, "NAME\tID\tNODE KEY\n")
 	for _, n := range fresh {
@@ -542,7 +550,8 @@ var confirmSigning = func(fresh []control.UnsignedNode) (bool, error) {
 	}
 
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return false, fmt.Errorf("\nno terminal to ask at: check each of these is yours ('makima status' on it shows its node key), then run again with -yes")
+		fmt.Println()
+		return false, fmt.Errorf("no terminal to ask at: check each of these is yours ('makima status' on it shows its node key), then run again with -yes")
 	}
 	fmt.Print("\nthe server chose this list, so a machine you do not recognise may be its own.\n")
 	fmt.Print("each machine's 'makima status' shows its node key. sign them? [y/N] ")

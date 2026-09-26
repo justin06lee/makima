@@ -141,7 +141,7 @@ names, access, and routing:
 
 not trusting this server about membership:
   makima-server lock init      generate a signing key and trust it
-  makima-server lock sign      sign the nodes that need it (asks about any this key never signed; -yes)
+  makima-server lock sign      sign the nodes that need it (lists them and asks first; -yes)
   makima-server lock enable    start enforcing (signed with your key)
   makima-server lock add-key -public KEY   trust another key (signed with yours)
   makima-server lock seal      sign a lock set up by an older makima
