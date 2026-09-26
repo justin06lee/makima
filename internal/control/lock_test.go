@@ -259,6 +259,10 @@ func TestKeyRotationClearsTheSignature(t *testing.T) {
 	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
 		t.Fatal(err)
 	}
+	// And the old kind, as a network locked under makima v0.3.0 carries it.
+	s.mu.Lock()
+	s.state.Nodes[0].KeySignature = ed25519.Sign(priv, legacySigningMaterial(n.ID, n.NodeKey))
+	s.mu.Unlock()
 
 	rotated, _ := key.NewPrivate()
 	after, err := s.Register(machineKey.Public(), &RegisterRequest{
@@ -741,5 +745,60 @@ func TestTheOldSignatureMaterialIsUnchanged(t *testing.T) {
 	want := append([]byte{1, 1, 2, 3, 4, 5, 6, 7, 8}, k[:]...)
 	if !bytes.Equal(got, want) {
 		t.Errorf("legacy material %x, want %x", got, want)
+	}
+}
+
+// An expired machine may have been stolen. It is not listed for signing — a
+// signed key outlives the expiry and would be admitted again the moment it
+// re-registered — nor counted, nor waited for before the lock is enforced,
+// and a signature for it is refused.
+func TestAnExpiredMachineIsNeitherSignedNorWaitedFor(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	laptop := registerNode(t, s, "laptop")
+	stolen := registerNode(t, s, "stolen")
+	if err := s.ApplySignature(laptop.ID, SignNodeKey(priv, s.ServerKey().Public(), laptop.ID, laptop.NodeKey)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ExpireNode("stolen"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, n := range s.PendingSignatures() {
+		if n.Name == "stolen" {
+			t.Error("the expired machine is listed for signing")
+		}
+	}
+	if st := s.LockStatus(); st.Signed != 1 || st.Unsigned != 0 {
+		t.Errorf("status %+v: the expired machine was counted", st)
+	}
+	if err := s.ApplySignature(stolen.ID, SignNodeKey(priv, s.ServerKey().Public(), stolen.ID, stolen.NodeKey)); err == nil {
+		t.Error("a signature for the expired machine was recorded")
+	}
+	if err := changeLock(s, priv, true, pub); err != nil {
+		t.Errorf("enforcing was refused over the expired machine: %v", err)
+	}
+}
+
+// Expiring takes both kinds of signature away, or re-admitting the machine
+// would silently restore whichever was left.
+func TestExpiringDropsBothSignatures(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	n := registerNode(t, s, "laptop")
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.state.Nodes[0].KeySignature = ed25519.Sign(priv, legacySigningMaterial(n.ID, n.NodeKey))
+	s.mu.Unlock()
+
+	if err := s.ExpireNode("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if after := s.Nodes()[0]; len(after.KeySignature) != 0 || len(after.NetworkSignature) != 0 {
+		t.Error("a signature survived the expiry")
 	}
 }

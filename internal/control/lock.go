@@ -409,9 +409,12 @@ func (s *Store) LockStatus() LockStatus {
 		}
 	}
 	for _, n := range s.state.Nodes {
-		if s.signedLocked(n) {
+		switch {
+		case n.Expired:
+			// Out of the mesh until it rejoins; neither signed nor waiting.
+		case s.signedLocked(n):
 			st.Signed++
-		} else {
+		default:
 			st.Unsigned++
 		}
 	}
@@ -483,6 +486,11 @@ func (s *Store) ApplyLockStatement(st LockStatement, names map[string]string) er
 		pin := &netmap.LockPin{Epoch: st.Epoch, Enabled: true, Keys: st.Keys}
 		var rejected []string
 		for _, n := range s.state.Nodes {
+			// An expired machine is out of every netmap already; the lock
+			// refusing it too is not a partition, it is the point.
+			if n.Expired {
+				continue
+			}
 			if VerifyPinned(s.state.ServerKey.Public(), pin, n.ID, n.NodeKey, n.NetworkSignature) != nil {
 				rejected = append(rejected, n.Name)
 			}
@@ -583,7 +591,10 @@ func (s *Store) PendingSignatures() []UnsignedNode {
 
 	var out []UnsignedNode
 	for _, n := range s.state.Nodes {
-		if s.signedLocked(n) {
+		// An expired machine may have been stolen. Listing it would invite
+		// signing it back in, and a signed key outlives the expiry: it
+		// would be admitted again the moment it re-registered.
+		if n.Expired || s.signedLocked(n) {
 			continue
 		}
 		out = append(out, UnsignedNode{
@@ -621,6 +632,9 @@ func (s *Store) ApplySignature(id netmap.NodeID, sig []byte) error {
 	}
 	if target == nil {
 		return fmt.Errorf("no node with id %d", id)
+	}
+	if target.Expired {
+		return fmt.Errorf("%s is expired: it has to rejoin with a fresh auth key before it can be signed", target.Name)
 	}
 
 	l := &Lock{Enabled: true, TrustedKeys: s.state.Lock.TrustedKeys}
