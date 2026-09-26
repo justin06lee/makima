@@ -1,9 +1,11 @@
 package control
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -12,6 +14,8 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/clientip"
+	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/relay"
 )
 
 func TestPollsAreCapped(t *testing.T) {
@@ -207,5 +211,58 @@ func TestAFullTableSharesOneBudgetAndKeepsItsOwn(t *testing.T) {
 	// The address already held still has the token it did not spend.
 	if !b.allow("10.0.0.1", now) {
 		t.Error("a address the table already held lost its budget to the newcomers")
+	}
+}
+
+// relayUpgrade asks the relay a control server carries for a connection, as
+// a proxy forwarding for xff, and reports whether the relay took it.
+func relayUpgrade(t *testing.T, base, xff string) bool {
+	t.Helper()
+	host := strings.TrimPrefix(base, "http://")
+	c, err := net.Dial("tcp", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: %s\r\nConnection: Upgrade\r\nX-Forwarded-For: %s\r\n\r\n",
+		relay.Path, host, relay.UpgradeProto, xff)
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	return err == nil && resp.StatusCode == http.StatusSwitchingProtocols
+}
+
+// The relay a control server carries believes the proxies the server does,
+// whichever of the two is set up first. Here no proxy is trusted, so a
+// client on loopback naming a new address each time is still one client,
+// and runs out of handshakes.
+func TestTheCarriedRelayBelievesTheSameProxies(t *testing.T) {
+	for _, relayFirst := range []bool{true, false} {
+		s := NewServer(newStore(t), log.New(io.Discard, "", 0))
+		priv, err := key.NewPrivate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs := relay.NewServer(priv, log.New(io.Discard, "", 0))
+		if relayFirst {
+			s.SetRelay(rs)
+			s.SetTrustedProxies(nil)
+		} else {
+			s.SetTrustedProxies(nil)
+			s.SetRelay(rs)
+		}
+		ts := httptest.NewServer(s.Handler())
+
+		refused := false
+		for i := range 64 {
+			if !relayUpgrade(t, ts.URL, fmt.Sprintf("198.51.100.%d", i+1)) {
+				refused = true
+				break
+			}
+		}
+		ts.Close()
+		rs.Close()
+		if !refused {
+			t.Errorf("relay set up first: %v — the relay believed a proxy the server does not", relayFirst)
+		}
 	}
 }

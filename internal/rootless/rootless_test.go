@@ -2,6 +2,7 @@ package rootless
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/build"
 	"io"
@@ -270,9 +271,13 @@ func contains(haystack, needle string) bool { return strings.Contains(haystack, 
 // A rootless node advertises the addresses the daemon would, and nothing more.
 // It used to keep its own copy of the filter, which drifted: it advertised
 // Tailscale's 100.64.0.0/10 addresses, container and VM bridges that lead only
-// into this host, and IPv6 paths disco cannot rank yet. Which of those a
-// machine has decides what this can catch; a Mac with global IPv6 or a Linux
-// box running Docker is enough.
+// into this host, and IPv6 paths disco cannot rank yet.
+//
+// What the filter itself lets through is hostaddr's to test. This holds the
+// rootless node to it, and can only catch a drifted copy on a machine that has
+// something to drift over — a Mac with global IPv6, a Linux box running
+// Docker, a machine on Tailscale. On one with a lone LAN address it passes
+// whatever the node advertises.
 func TestARootlessNodeAdvertisesWhatTheDaemonWould(t *testing.T) {
 	n := node(t, "a")
 
@@ -298,30 +303,43 @@ func TestARootlessNodeAdvertisesWhatTheDaemonWould(t *testing.T) {
 // machine. netcfg is where routes, firewall rules and resolvers are changed;
 // if anything rootless builds on ever imports it, that promise is one call
 // away from broken, however carefully the call is avoided today.
+//
+// Walked for every platform makima builds for, not only the one running the
+// test: an import in a _linux.go file is as much of a break as any other.
+// It reads the source on disk, so -overlay does not reach it.
 func TestRootlessCannotReachTheSystemChangingPackages(t *testing.T) {
 	const module = "github.com/justin06lee/makima/"
 	forbidden := module + "internal/netcfg"
 
-	seen := make(map[string]bool)
-	var walk func(path string, chain []string)
-	walk = func(path string, chain []string) {
-		if seen[path] {
-			return
-		}
-		seen[path] = true
-		if path == forbidden {
-			t.Errorf("rootless reaches netcfg: %s", strings.Join(append(chain, path), " -> "))
-			return
-		}
-		pkg, err := build.ImportDir(filepath.Join("..", "..", strings.TrimPrefix(path, module)), 0)
-		if err != nil {
-			t.Fatalf("%s: %v", path, err)
-		}
-		for _, imp := range pkg.Imports {
-			if strings.HasPrefix(imp, module) {
-				walk(imp, append(chain, path))
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		ctx := build.Default
+		ctx.GOOS = goos
+
+		seen := make(map[string]bool)
+		var walk func(path string, chain []string)
+		walk = func(path string, chain []string) {
+			if seen[path] {
+				return
+			}
+			seen[path] = true
+			if path == forbidden {
+				t.Errorf("on %s rootless reaches netcfg: %s", goos, strings.Join(append(chain, path), " -> "))
+				return
+			}
+			pkg, err := ctx.ImportDir(filepath.Join("..", "..", strings.TrimPrefix(path, module)), 0)
+			if err != nil {
+				var none *build.NoGoError
+				if errors.As(err, &none) {
+					return
+				}
+				t.Fatalf("%s on %s: %v", path, goos, err)
+			}
+			for _, imp := range pkg.Imports {
+				if strings.HasPrefix(imp, module) {
+					walk(imp, append(chain, path))
+				}
 			}
 		}
+		walk(module+"internal/rootless", nil)
 	}
-	walk(module+"internal/rootless", nil)
 }
