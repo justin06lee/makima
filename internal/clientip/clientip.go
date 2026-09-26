@@ -19,7 +19,6 @@ package clientip
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -47,6 +46,11 @@ func Parse(s string) (Proxies, error) {
 			continue
 		}
 		if p, err := netip.ParsePrefix(f); err == nil {
+			// Addresses are compared unmapped, so a prefix written in
+			// IPv4-mapped form is kept as the IPv4 prefix it names.
+			if p.Addr().Is4In6() && p.Bits() >= 96 {
+				p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+			}
 			out = append(out, p.Masked())
 			continue
 		}
@@ -119,18 +123,21 @@ func (p Proxies) Of(remoteAddr string, h http.Header) string {
 	return peer.String()
 }
 
-// parseHost reads an address with or without a port, IPv6 bracketed or not.
+// parseHost reads an address with or without a port, IPv6 bracketed or not,
+// as one address per host: unmapped, and without an IPv6 zone.
+//
+// With a port is tried first. The other order read "[fe80::1%en0]:50001",
+// brackets trimmed, as an address whose zone was "en0]:50001" — port and
+// all, so every connection from one link-local host counted as a new one.
 func parseHost(s string) (netip.Addr, bool) {
-	if a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")); err == nil {
-		return a.Unmap(), true
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap().WithZone(""), true
 	}
-	host, _, err := net.SplitHostPort(s)
-	if err != nil {
-		return netip.Addr{}, false
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = s[1 : len(s)-1]
 	}
-	a, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}, false
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.Unmap().WithZone(""), true
 	}
-	return a.Unmap(), true
+	return netip.Addr{}, false
 }

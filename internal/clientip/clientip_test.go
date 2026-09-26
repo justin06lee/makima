@@ -96,3 +96,29 @@ func TestParse(t *testing.T) {
 		t.Error("a name was taken for an address")
 	}
 }
+
+// A peer on a link-local address arrives as "[fe80::1%en0]:50001". Reading
+// the zone as running to the end of the string kept the port in the result,
+// so every connection from one host got a budget of its own.
+func TestAZonedPeerIsOneAddressWhateverItsPort(t *testing.T) {
+	a := Loopback.Of("[fe80::1%en0]:50001", header())
+	b := Loopback.Of("[fe80::1%en0]:50002", header())
+	if a != b {
+		t.Errorf("one host counted as two: %q and %q", a, b)
+	}
+	if a != "fe80::1" {
+		t.Errorf("%q, want fe80::1", a)
+	}
+}
+
+// A trusted prefix written in IPv4-mapped form names the IPv4 addresses it
+// covers; addresses are compared unmapped, so it has to be too.
+func TestAMappedPrefixIsTrustedAsIPv4(t *testing.T) {
+	p, err := Parse("::ffff:192.0.2.0/120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Of("192.0.2.10:40000", header("198.51.100.7")); got != "198.51.100.7" {
+		t.Errorf("a proxy inside a mapped prefix was not trusted: %q", got)
+	}
+}
