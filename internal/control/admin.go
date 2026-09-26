@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -262,6 +263,10 @@ func (c *AdminClient) ServerKey() (key.Public, error) {
 	return kr.ServerKey, nil
 }
 
+// ErrUnknownAdminCall is a running server that does not know what it was
+// asked: an older makima, from before the call existed.
+var ErrUnknownAdminCall = errors.New("the running server does not know this request")
+
 func (c *AdminClient) call(method, path string, body, out any) error {
 	var rdr io.Reader
 	if body != nil {
@@ -289,6 +294,9 @@ func (c *AdminClient) call(method, path string, body, out any) error {
 		var e adminError
 		if json.NewDecoder(resp.Body).Decode(&e) == nil && e.Error != "" {
 			return fmt.Errorf("%s", e.Error)
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%w: %s %s", ErrUnknownAdminCall, method, path)
 		}
 		return fmt.Errorf("server returned %s", resp.Status)
 	}

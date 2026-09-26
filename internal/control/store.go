@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -127,7 +128,16 @@ type Node struct {
 
 	// KeySignature is the network lock's signature over this node's key,
 	// present only once the lock is enabled and the node has been signed.
+	//
+	// The version-1 kind, which names no network: what makima v0.3.0 made,
+	// and what machines still running it check. Signed beside
+	// NetworkSignature for them; a node holding a signed lock ignores it.
 	KeySignature []byte `json:"key_signature,omitempty"`
+
+	// NetworkSignature is the lock's signature over this node's key, its ID
+	// and this network's control-plane key (see signingMaterial) — what a
+	// node holding a signed lock checks.
+	NetworkSignature []byte `json:"network_signature,omitempty"`
 
 	// KeyRotatedAt records the last node-key change, so an operator can see
 	// which machines are overdue.
@@ -372,6 +382,19 @@ func (s *Store) allocate() (netip.Prefix, error) {
 	return netip.Prefix{}, fmt.Errorf("address range %s is exhausted", s.state.Prefix)
 }
 
+// printableName is a machine's name with anything that is not printable taken
+// out. The name is the machine's own to choose, and it is shown in terminals
+// — the operator's list of machines to sign among them — where a control
+// character can move the cursor, erase a line, or rewrite what was shown.
+func printableName(name string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, name))
+}
+
 // Register adds a node, or updates one that already holds this machine key.
 //
 // Re-registration needs no auth key. The request arrived sealed under a
@@ -383,6 +406,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
+	name := printableName(req.Name)
 
 	if existing := s.findByMachineKey(machineKey); existing != nil {
 		// An expired node has to prove itself again before anything else is
@@ -406,6 +430,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		if existing.NodeKey != req.NodeKey && !existing.NodeKey.IsZero() {
 			existing.KeyRotatedAt = now
 			existing.KeySignature = nil
+			existing.NetworkSignature = nil
 		}
 
 		existing.NodeKey = req.NodeKey
@@ -431,8 +456,8 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 			existing.ExitApproved = false
 		}
 
-		if req.Name != "" {
-			existing.Name = req.Name
+		if name != "" {
+			existing.Name = name
 		}
 		if err := s.save(); err != nil {
 			return nil, err
@@ -445,7 +470,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 	if auth == nil || !auth.Valid(now) {
 		return nil, fmt.Errorf("auth key is invalid, expired, or already used")
 	}
-	if req.Name == "" {
+	if name == "" {
 		return nil, fmt.Errorf("node name is required")
 	}
 
@@ -456,7 +481,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 
 	n := &Node{
 		ID:               netmap.NodeID(s.state.NextID),
-		Name:             req.Name,
+		Name:             name,
 		MachineKey:       machineKey,
 		NodeKey:          req.NodeKey,
 		DiscoKey:         req.DiscoKey,
@@ -505,6 +530,9 @@ func (s *Store) UpdateEndpoints(machineKey key.Public, eps []netip.AddrPort) (bo
 	if n == nil {
 		return false, fmt.Errorf("unknown machine key")
 	}
+	if n.Expired {
+		return false, errExpired
+	}
 	n.LastSeen = time.Now().UTC()
 
 	if sameEndpoints(n.Endpoints, eps) {
@@ -525,6 +553,9 @@ type Checkin struct {
 	Update    *netmap.UpdateStatus
 }
 
+// errExpired is what an expired machine hears when it checks in.
+var errExpired = errors.New("this machine was expired by the network's operator; it has to rejoin with a fresh invite")
+
 // Checkin records a polling node's report: where it can be reached, what it
 // runs, and how an update is going. Returns whether anything changed; like
 // UpdateEndpoints, a report that changes nothing must not wake every other
@@ -540,6 +571,9 @@ func (s *Store) Checkin(machineKey key.Public, c Checkin) (bool, error) {
 	n := s.findByMachineKey(machineKey)
 	if n == nil {
 		return false, fmt.Errorf("unknown machine key")
+	}
+	if n.Expired {
+		return false, errExpired
 	}
 	n.LastSeen = time.Now().UTC()
 
@@ -659,6 +693,12 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 	if self == nil {
 		return nil, fmt.Errorf("unknown machine key")
 	}
+	// An expired machine gets nothing: not its peers' keys and paths, not
+	// word of who is on the network. Being dropped from every other netmap
+	// kept it from reaching them; this keeps it from learning about them.
+	if self.Expired {
+		return nil, errExpired
+	}
 
 	relay := s.activeRelayLocked()
 
@@ -690,6 +730,13 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 
 	for _, n := range s.state.Nodes {
 		if n.ID == self.ID {
+			continue
+		}
+		// An expired machine is one that may have been stolen. It can no
+		// longer check in, and it must not stay in anybody else's netmap
+		// either: they would keep its key and paths, and it could go on
+		// reaching every one of them directly.
+		if n.Expired {
 			continue
 		}
 		if !pol.CanSee(selfNode, n.policyNode()) {
@@ -799,6 +846,8 @@ func (s *Store) toNetmapNode(n *Node, relay netmap.Relay) netmap.Node {
 		KeySignature: n.KeySignature,
 		Services:     n.Services,
 		Version:      n.Version,
+
+		NetworkSignature: n.NetworkSignature,
 	}
 	if n.Update != nil {
 		u := *n.Update

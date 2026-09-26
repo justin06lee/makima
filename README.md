@@ -931,26 +931,45 @@ makima-server lock enable
 Node keys are now signed by an authority whose private half lives with you, not
 with the server, and every node verifies its peers itself before admitting them
 to the data plane. A server that invents a peer has to forge a signature it
-holds no key for, and the invention is rejected by the entire mesh.
+holds no key for, and the invention is rejected by the entire mesh. Nor can it
+slip one into your next `lock sign`: the machines to sign are the server's
+list, so each is shown with its node key and signed only once you say yes.
+`makima status` on each machine shows its node key. `-yes` on `lock sign`,
+`lock seal` and `lock rm-key` agrees to the list unseen — for a script that
+has checked it some other way — and to nothing else.
 
 The lock itself is not the server's to change either. Every change to it —
 enforcing it, trusting another key, dropping one — is a numbered version signed
 on your machine by a key the lock already trusts, so those commands read your
-signing key (`-key`, default `~/.config/makima/signing.key`). Each node keeps
+signing key (`-key`, default `~/.config/makima/signing.key`). They build each
+change on the lock's signed versions, not on what the server says, and the
+machine you sign on remembers the last version signed from it for each network
+(`~/.config/makima/lock-pins.json`, beside the default key; key files are never
+rewritten): a server that rewrote or hid versions since gets nothing signed.
+The first change signed from a machine takes the history on trust, as a new
+node does, so it shows what the new version will trust and asks first; no flag
+skips that. If the record itself is what is wrong, `lock forget -local` lets
+go of it. Each node keeps
 the latest version it has accepted and moves forward only along signed ones: a
 server that stops sending the lock, sends it switched off, or adds a key of its
-own changes nothing on any node. `makima lock` shows a machine's copy. Each
-version is signed for one network — its control server's key is part of what
-is signed — so one network's versions cannot be replayed into another's. A
-node's signature does not name its network yet, though: give each network a
-signing key of its own, or a machine signed into one could be shown to the
-other by that network's server.
+own changes nothing on any node. `makima lock` shows a machine's copy. Every
+version, and every node's signature, is signed for one network — its control
+server's key is part of what is signed — so a machine holding a signed lock
+takes nothing signed for another network, even one trusting the same signing
+key. Machines still on v0.3.0, and locks not yet sealed, also take the older
+kind of node signature, which names no network; until none are left, give each
+network a signing key of its own.
 
 A node takes the first version it is shown on trust — the same trust it placed
 in the server when it joined. Rotating a key is two signed steps: `lock add-key`
-with the old key, then `lock rm-key` with the new one. A lock set up by an
+with the old key, then `lock rm-key` with the new one, which first signs again,
+with the new key, every machine only the old one had signed. A lock set up by an
 older makima was never signed and can still be switched off by the server
-until it is sealed: `makima-server lock seal`.
+until it is sealed: `makima-server lock seal`, which shows the keys it is about
+to pin — with no signed history, that list is the server's word — and, if the
+lock is enforced, first signs every node again for this network, since its old
+signatures name none. `lock enable` and `lock disable` on such a lock seal it
+that way; nothing else changes it until it is sealed.
 
 Lose every signing key and nothing can change the lock again, by design. The
 way out has to be taken on both sides: `makima-server lock forget`, then

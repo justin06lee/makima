@@ -141,11 +141,12 @@ names, access, and routing:
 
 not trusting this server about membership:
   makima-server lock init      generate a signing key and trust it
-  makima-server lock sign      sign every unsigned node
+  makima-server lock sign      sign the nodes that need it (lists them and asks first; -yes agrees unseen)
   makima-server lock enable    start enforcing (signed with your key)
   makima-server lock add-key -public KEY   trust another key (signed with yours)
-  makima-server lock seal      sign a lock set up by an older makima
+  makima-server lock seal      pin a lock set up by an older makima (shows its keys first)
   makima-server lock forget    every key is lost: start over (then 'makima lock reset' on each machine)
+  makima-server lock forget -local   drop only this machine's record of what it signed
   makima-server lock status
 
 every command takes -state PATH (default `+DefaultStatePath+`)
@@ -390,8 +391,12 @@ func nodes(args []string) error {
 		if len(n.Endpoints) > 0 {
 			eps = n.Endpoints[0].String()
 		}
+		seen := humanAge(n.LastSeen)
+		if n.Expired {
+			seen = "expired"
+		}
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n",
-			n.ID, n.Name, n.Address.Addr(), eps, humanAge(n.LastSeen), versionColumn(n.Version, n.Update))
+			n.ID, n.Name, n.Address.Addr(), eps, seen, versionColumn(n.Version, n.Update))
 	}
 	return w.Flush()
 }

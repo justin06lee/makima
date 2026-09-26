@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
@@ -8,6 +9,9 @@ import (
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
 )
+
+// testNetwork stands in for a control plane's key where no store is involved.
+var testNetwork = key.Public{0x42}
 
 func signingPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -59,12 +63,12 @@ func registerNode(t *testing.T, s *Store, name string) *Node {
 // A mesh with no lock behaves exactly as it always did.
 func TestDisabledLockAdmitsEveryone(t *testing.T) {
 	var l *Lock
-	if err := l.VerifyNodeKey(1, key.Public{1}, nil); err != nil {
+	if err := l.VerifyNodeKey(testNetwork, 1, key.Public{1}, nil); err != nil {
 		t.Errorf("a nil lock rejected a node: %v", err)
 	}
 
 	l = &Lock{Enabled: false}
-	if err := l.VerifyNodeKey(1, key.Public{1}, nil); err != nil {
+	if err := l.VerifyNodeKey(testNetwork, 1, key.Public{1}, nil); err != nil {
 		t.Errorf("a disabled lock rejected a node: %v", err)
 	}
 }
@@ -74,9 +78,9 @@ func TestSignAndVerify(t *testing.T) {
 	l := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: pub}}}
 
 	nodeKey, _ := key.NewPrivate()
-	sig := SignNodeKey(priv, 7, nodeKey.Public())
+	sig := SignNodeKey(priv, testNetwork, 7, nodeKey.Public())
 
-	if err := l.VerifyNodeKey(7, nodeKey.Public(), sig); err != nil {
+	if err := l.VerifyNodeKey(testNetwork, 7, nodeKey.Public(), sig); err != nil {
 		t.Errorf("a valid signature did not verify: %v", err)
 	}
 }
@@ -89,9 +93,9 @@ func TestSignatureIsBoundToTheNodeID(t *testing.T) {
 	l := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: pub}}}
 
 	nodeKey, _ := key.NewPrivate()
-	sig := SignNodeKey(priv, 7, nodeKey.Public())
+	sig := SignNodeKey(priv, testNetwork, 7, nodeKey.Public())
 
-	if err := l.VerifyNodeKey(8, nodeKey.Public(), sig); err == nil {
+	if err := l.VerifyNodeKey(testNetwork, 8, nodeKey.Public(), sig); err == nil {
 		t.Error("a signature for node 7 verified for node 8")
 	}
 }
@@ -102,9 +106,9 @@ func TestSignatureIsBoundToTheKey(t *testing.T) {
 
 	a, _ := key.NewPrivate()
 	b, _ := key.NewPrivate()
-	sig := SignNodeKey(priv, 7, a.Public())
+	sig := SignNodeKey(priv, testNetwork, 7, a.Public())
 
-	if err := l.VerifyNodeKey(7, b.Public(), sig); err == nil {
+	if err := l.VerifyNodeKey(testNetwork, 7, b.Public(), sig); err == nil {
 		t.Error("a signature over one node key verified another")
 	}
 }
@@ -118,9 +122,9 @@ func TestUntrustedSignerRejected(t *testing.T) {
 	l := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: trusted}}}
 
 	nodeKey, _ := key.NewPrivate()
-	sig := SignNodeKey(attackerPriv, 7, nodeKey.Public())
+	sig := SignNodeKey(attackerPriv, testNetwork, 7, nodeKey.Public())
 
-	if err := l.VerifyNodeKey(7, nodeKey.Public(), sig); err == nil {
+	if err := l.VerifyNodeKey(testNetwork, 7, nodeKey.Public(), sig); err == nil {
 		t.Error("a signature from an untrusted key was accepted")
 	}
 }
@@ -130,7 +134,7 @@ func TestMissingSignatureRejectedWhenEnabled(t *testing.T) {
 	l := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: pub}}}
 
 	nodeKey, _ := key.NewPrivate()
-	if err := l.VerifyNodeKey(7, nodeKey.Public(), nil); err == nil {
+	if err := l.VerifyNodeKey(testNetwork, 7, nodeKey.Public(), nil); err == nil {
 		t.Error("an unsigned node was admitted while the lock was enabled")
 	}
 }
@@ -144,8 +148,8 @@ func TestMultipleTrustedKeys(t *testing.T) {
 
 	nodeKey, _ := key.NewPrivate()
 	for name, priv := range map[string]ed25519.PrivateKey{"old": oldPriv, "new": newPriv} {
-		sig := SignNodeKey(priv, 7, nodeKey.Public())
-		if err := l.VerifyNodeKey(7, nodeKey.Public(), sig); err != nil {
+		sig := SignNodeKey(priv, testNetwork, 7, nodeKey.Public())
+		if err := l.VerifyNodeKey(testNetwork, 7, nodeKey.Public(), sig); err != nil {
 			t.Errorf("a signature from the %s key did not verify: %v", name, err)
 		}
 	}
@@ -179,8 +183,10 @@ func TestSignThenEnable(t *testing.T) {
 		t.Fatalf("%d nodes pending, want 1", len(pending))
 	}
 
+	// Both kinds, as lock sign signs them.
 	sig := ed25519.Sign(priv, pending[0].Material)
-	if err := s.ApplySignature(pending[0].ID, sig); err != nil {
+	legacy := ed25519.Sign(priv, pending[0].LegacyMaterial)
+	if err := s.ApplySignatures(pending[0].ID, sig, legacy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,7 +223,7 @@ func TestCannotEnforceAKeySetTheNodesAreNotSignedBy(t *testing.T) {
 	pub, priv := signingPair(t)
 	startLock(t, s, pub, priv)
 	n := registerNode(t, s, "laptop")
-	if err := s.ApplySignature(n.ID, SignNodeKey(priv, n.ID, n.NodeKey)); err != nil {
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
 		t.Fatal(err)
 	}
 	if err := changeLock(s, priv, true, pub); err != nil {
@@ -252,9 +258,13 @@ func TestKeyRotationClearsTheSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ApplySignature(n.ID, SignNodeKey(priv, n.ID, n.NodeKey)); err != nil {
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
 		t.Fatal(err)
 	}
+	// And the old kind, as a network locked under makima v0.3.0 carries it.
+	s.mu.Lock()
+	s.state.Nodes[0].KeySignature = ed25519.Sign(priv, legacySigningMaterial(n.ID, n.NodeKey))
+	s.mu.Unlock()
 
 	rotated, _ := key.NewPrivate()
 	after, err := s.Register(machineKey.Public(), &RegisterRequest{
@@ -264,7 +274,7 @@ func TestKeyRotationClearsTheSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(after.KeySignature) != 0 {
+	if len(after.KeySignature) != 0 || len(after.NetworkSignature) != 0 {
 		t.Error("the old signature survived a key rotation; it covers a key that no longer exists")
 	}
 	if after.KeyRotatedAt.IsZero() {
@@ -290,7 +300,7 @@ func TestNetMapCarriesTheLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ApplySignature(n.ID, SignNodeKey(priv, n.ID, n.NodeKey)); err != nil {
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
 		t.Fatal(err)
 	}
 	if err := changeLock(s, priv, true, pub); err != nil {
@@ -339,7 +349,7 @@ func TestNetMapCarriesPeerSignatures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sig := SignNodeKey(priv, peer.ID, peer.NodeKey)
+	sig := SignNodeKey(priv, s.ServerKey().Public(), peer.ID, peer.NodeKey)
 	if err := s.ApplySignature(peer.ID, sig); err != nil {
 		t.Fatal(err)
 	}
@@ -351,12 +361,12 @@ func TestNetMapCarriesPeerSignatures(t *testing.T) {
 	if len(resp.Peers) != 1 {
 		t.Fatalf("%d peers, want 1", len(resp.Peers))
 	}
-	if len(resp.Peers[0].KeySignature) == 0 {
+	if len(resp.Peers[0].NetworkSignature) == 0 {
 		t.Fatal("the peer's signature did not reach the netmap")
 	}
 
 	l := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: pub}}}
-	if err := l.VerifyNodeKey(resp.Peers[0].ID, resp.Peers[0].Key, resp.Peers[0].KeySignature); err != nil {
+	if err := l.VerifyNodeKey(s.ServerKey().Public(), resp.Peers[0].ID, resp.Peers[0].Key, resp.Peers[0].NetworkSignature); err != nil {
 		t.Errorf("the signature that reached the node did not verify: %v", err)
 	}
 }
@@ -560,7 +570,7 @@ func TestForgetLockEmptiesTheLock(t *testing.T) {
 	pub, priv := signingPair(t)
 	startLock(t, s, pub, priv)
 	n := registerNode(t, s, "laptop")
-	if err := s.ApplySignature(n.ID, SignNodeKey(priv, n.ID, n.NodeKey)); err != nil {
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -595,13 +605,13 @@ func TestForgettingTheLockKeepsSignaturesButNotTheirStanding(t *testing.T) {
 	pub, priv := signingPair(t)
 	startLock(t, s, pub, priv)
 	n := registerNode(t, s, "laptop")
-	if err := s.ApplySignature(n.ID, SignNodeKey(priv, n.ID, n.NodeKey)); err != nil {
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ForgetLock(); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Nodes()[0].KeySignature) == 0 {
+	if len(s.Nodes()[0].NetworkSignature) == 0 {
 		t.Error("the signature was wiped")
 	}
 
@@ -613,5 +623,234 @@ func TestForgettingTheLockKeepsSignaturesButNotTheirStanding(t *testing.T) {
 	}
 	if len(s.PendingSignatures()) != 1 {
 		t.Error("the node signed by the forgotten key is not waiting to be signed again")
+	}
+}
+
+// One signing key trusted by two networks: a machine signed into one must not
+// pass in the other. It did — a node's signature covered its ID and key and
+// nothing else — so network B's server could show its nodes a machine the
+// operator only ever signed into network A, and have it admitted.
+func TestANodeSignedIntoAnotherNetworkIsRefused(t *testing.T) {
+	pub, priv := signingPair(t)
+
+	a := newStore(t)
+	startLock(t, a, pub, priv)
+	x := registerNode(t, a, "x")
+	if err := a.ApplySignature(x.ID, SignNodeKey(priv, a.ServerKey().Public(), x.ID, x.NodeKey)); err != nil {
+		t.Fatal(err)
+	}
+	xs := a.Nodes()[0]
+
+	b := newStore(t)
+	startLock(t, b, pub, priv)
+	if err := changeLock(b, priv, true, pub); err != nil {
+		t.Fatal(err)
+	}
+	pin := pinAt(t, b)
+
+	if err := VerifyPinned(b.ServerKey().Public(), pin, xs.ID, xs.NodeKey, xs.NetworkSignature); err == nil {
+		t.Errorf("network B's node admits %q, signed only into network A", xs.Name)
+	}
+
+	// Nor does B's server record such a signature for a node of its own.
+	y := registerNode(t, b, "y")
+	if err := b.ApplySignature(y.ID, SignNodeKey(priv, a.ServerKey().Public(), y.ID, y.NodeKey)); err == nil {
+		t.Error("network B's server took a signature made for network A")
+	}
+}
+
+// legacyLockedStore is a network as makima v0.3.0 left it: a lock trusting
+// pub, never signed as versions, and every node signed the old way — over its
+// ID and key, naming no network.
+func legacyLockedStore(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey, enabled bool, names ...string) *Store {
+	t.Helper()
+	s := newStore(t)
+	for _, name := range names {
+		registerNode(t, s, name)
+	}
+	s.mu.Lock()
+	s.state.Lock = &Lock{TrustedKeys: []SigningKey{{Public: pub}}, Enabled: enabled}
+	for _, n := range s.state.Nodes {
+		n.KeySignature = ed25519.Sign(priv, legacySigningMaterial(n.ID, n.NodeKey))
+	}
+	s.mu.Unlock()
+	return s
+}
+
+// A network locked under makima v0.3.0 has only old signatures. A node that
+// held a signed lock would refuse every one of them, so the server refuses to
+// seal an enforced lock until each node is signed for this network — and
+// lists them as waiting, with the material that names it.
+func TestAnOldNetworkIsReSignedBeforeItsLockIsSealed(t *testing.T) {
+	pub, priv := signingPair(t)
+	s := legacyLockedStore(t, pub, priv, true, "laptop", "desktop")
+
+	if st := s.LockStatus(); st.Signed != 0 || st.Unsigned != 2 {
+		t.Errorf("status %+v: old signatures counted as signed for this network", st)
+	}
+	pending := s.PendingSignatures()
+	if len(pending) != 2 {
+		t.Fatalf("%d nodes waiting, want 2", len(pending))
+	}
+
+	seal := SignLockStatement(priv, s.ServerKey().Public(), 1, true, [][]byte{pub})
+	if err := s.ApplyLockStatement(seal, nil); err == nil {
+		t.Fatal("an enforced lock was sealed while every node had only an old signature")
+	}
+
+	for _, n := range pending {
+		if err := s.ApplySignature(n.ID, ed25519.Sign(priv, n.Material)); err != nil {
+			t.Fatalf("sign %s: %v", n.Name, err)
+		}
+	}
+	if err := s.ApplyLockStatement(seal, nil); err != nil {
+		t.Fatalf("sealing after re-signing: %v", err)
+	}
+
+	// And the node that pins it admits the re-signed peers.
+	pin := pinAt(t, s)
+	for _, n := range s.Nodes() {
+		if err := VerifyPinned(s.ServerKey().Public(), pin, n.ID, n.NodeKey, n.NetworkSignature); err != nil {
+			t.Errorf("%s after re-signing: %v", n.Name, err)
+		}
+		if len(n.KeySignature) == 0 {
+			t.Errorf("%s lost its old signature, which machines still on v0.3.0 check", n.Name)
+		}
+	}
+}
+
+// The old kind is still honoured where no signed lock is held: that lock is
+// the server's word anyway, and a v0.3.0 network must keep working between
+// upgrading and re-signing.
+func TestAnOldSignatureStillCountsUnderAnUnsignedLock(t *testing.T) {
+	pub, priv := signingPair(t)
+	l := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: pub}}}
+	nodeKey, _ := key.NewPrivate()
+	old := ed25519.Sign(priv, legacySigningMaterial(7, nodeKey.Public()))
+
+	if err := l.VerifyLegacy(testNetwork, 7, nodeKey.Public(), nil, old); err != nil {
+		t.Errorf("an old signature was refused under an unsigned lock: %v", err)
+	}
+	if err := l.VerifyNodeKey(testNetwork, 7, nodeKey.Public(), old); err == nil {
+		t.Error("an old signature, naming no network, passed as one that does")
+	}
+}
+
+// The old kind is what makima v0.3.0 made and still checks: its bytes must
+// not move, or every signature a v0.3.0 network holds stops verifying.
+func TestTheOldSignatureMaterialIsUnchanged(t *testing.T) {
+	var k key.Public
+	for i := range k {
+		k[i] = byte(i)
+	}
+	got := legacySigningMaterial(0x0102030405060708, k)
+	want := append([]byte{1, 1, 2, 3, 4, 5, 6, 7, 8}, k[:]...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("legacy material %x, want %x", got, want)
+	}
+}
+
+// An expired machine may have been stolen. It is not listed for signing — a
+// signed key outlives the expiry and would be admitted again the moment it
+// re-registered — nor counted, nor waited for before the lock is enforced,
+// and a signature for it is refused.
+func TestAnExpiredMachineIsNeitherSignedNorWaitedFor(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	laptop := registerNode(t, s, "laptop")
+	stolen := registerNode(t, s, "stolen")
+	if err := s.ApplySignatures(laptop.ID,
+		SignNodeKey(priv, s.ServerKey().Public(), laptop.ID, laptop.NodeKey),
+		ed25519.Sign(priv, legacySigningMaterial(laptop.ID, laptop.NodeKey))); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ExpireNode("stolen"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, n := range s.PendingSignatures() {
+		if n.Name == "stolen" {
+			t.Error("the expired machine is listed for signing")
+		}
+	}
+	if st := s.LockStatus(); st.Signed != 1 || st.Unsigned != 0 {
+		t.Errorf("status %+v: the expired machine was counted", st)
+	}
+	if err := s.ApplySignature(stolen.ID, SignNodeKey(priv, s.ServerKey().Public(), stolen.ID, stolen.NodeKey)); err == nil {
+		t.Error("a signature for the expired machine was recorded")
+	}
+	if err := changeLock(s, priv, true, pub); err != nil {
+		t.Errorf("enforcing was refused over the expired machine: %v", err)
+	}
+}
+
+// Expiring takes both kinds of signature away, or re-admitting the machine
+// would silently restore whichever was left.
+func TestExpiringDropsBothSignatures(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	n := registerNode(t, s, "laptop")
+	if err := s.ApplySignature(n.ID, SignNodeKey(priv, s.ServerKey().Public(), n.ID, n.NodeKey)); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.state.Nodes[0].KeySignature = ed25519.Sign(priv, legacySigningMaterial(n.ID, n.NodeKey))
+	s.mu.Unlock()
+
+	if err := s.ExpireNode("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if after := s.Nodes()[0]; len(after.KeySignature) != 0 || len(after.NetworkSignature) != 0 {
+		t.Error("a signature survived the expiry")
+	}
+}
+
+// Machines still on makima v0.3.0 check only the old kind of signature. A
+// machine signed after the upgrade used to get only the new kind, so every one
+// of them refused it — and enabling the lock on the new server had them refuse
+// every peer. Both kinds are asked for now, and a machine missing either is
+// still waiting.
+func TestAMachineIsSignedForOldMachinesToo(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	n := registerNode(t, s, "laptop")
+
+	pending := s.PendingSignatures()
+	if len(pending) != 1 || len(pending[0].LegacyMaterial) == 0 {
+		t.Fatalf("pending %+v: no old-kind material asked for", pending)
+	}
+
+	// Only the new kind: still waiting on the old one.
+	if err := s.ApplySignature(n.ID, ed25519.Sign(priv, pending[0].Material)); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.PendingSignatures()) != 1 {
+		t.Error("a machine with no old-kind signature is not waiting for one")
+	}
+	// And status agrees, or it says "every node is signed, enable" while
+	// lock sign still has a machine to sign.
+	if st := s.LockStatus(); st.Signed != 0 || st.Unsigned != 1 {
+		t.Errorf("status %+v with only the new kind signed, want it counted as unsigned", st)
+	}
+
+	// Both, and a wrong old kind is refused.
+	if err := s.ApplySignatures(n.ID, ed25519.Sign(priv, pending[0].Material), ed25519.Sign(priv, []byte("something else"))); err == nil {
+		t.Error("an old-kind signature over the wrong bytes was recorded")
+	}
+	if err := s.ApplySignatures(n.ID, ed25519.Sign(priv, pending[0].Material), ed25519.Sign(priv, pending[0].LegacyMaterial)); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.PendingSignatures()) != 0 {
+		t.Error("a machine with both kinds is still waiting")
+	}
+
+	// What a v0.3.0 machine checks: the old kind, over ID and key.
+	got := s.Nodes()[0]
+	old := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: pub}}}
+	if err := old.VerifyLegacy(key.Public{}, got.ID, got.NodeKey, nil, got.KeySignature); err != nil {
+		t.Errorf("a v0.3.0 machine would refuse it: %v", err)
 	}
 }

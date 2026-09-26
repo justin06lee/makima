@@ -177,6 +177,11 @@ func status(args []string) error {
 
 	switch {
 	case f.Managed():
+		// The key the network lock signs. 'makima-server lock sign' asks
+		// before signing a machine it has not signed before, and this is
+		// what to hold its list up against: a server can name an intruder's
+		// key after a machine you know.
+		fmt.Printf("%-10s %s\n", "node key", f.NodeKey.Public())
 		fmt.Printf("%-10s %s\n", "server", f.LoginServer)
 		for _, u := range f.ControlURLs {
 			if u != f.LoginServer {

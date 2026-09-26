@@ -493,3 +493,64 @@ func TestExitOfferIsAcceptedUntilRevoked(t *testing.T) {
 		t.Fatal("approving after a revoke did not take")
 	}
 }
+
+// Expiring is for a machine that may have been stolen, and the rest of the
+// mesh has to stop treating it as a peer at once. It used to stay in every
+// other node's netmap: they kept its key and its paths, so the machine that
+// could no longer check in could still reach all of them directly.
+func TestAnExpiredMachineLeavesEveryPeersNetmap(t *testing.T) {
+	s := newStore(t)
+	auth, _ := s.MintAuthKey(true, 0)
+
+	register := func(name string) key.Private {
+		t.Helper()
+		machine, _ := key.NewPrivate()
+		node, _ := key.NewPrivate()
+		if _, err := s.Register(machine.Public(), &RegisterRequest{
+			Name: name, NodeKey: node.Public(), AuthKey: auth.Secret,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return machine
+	}
+	register("laptop")
+	desktop := register("desktop")
+
+	if err := s.ExpireNode("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := s.NetMapFor(desktop.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range resp.Peers {
+		if p.Name == "laptop" {
+			t.Error("the expired laptop is still in the desktop's netmap")
+		}
+	}
+}
+
+// Nor does the expired machine itself get anything. Its check-ins used to
+// succeed — its last-seen time kept moving — and it went on being handed
+// every peer's keys and paths.
+func TestAnExpiredMachineIsRefusedItsOwnNetmap(t *testing.T) {
+	s := newStore(t)
+	auth, _ := s.MintAuthKey(true, 0)
+	machine, _ := key.NewPrivate()
+	node, _ := key.NewPrivate()
+	if _, err := s.Register(machine.Public(), &RegisterRequest{Name: "laptop", NodeKey: node.Public(), AuthKey: auth.Secret}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ExpireNode("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Checkin(machine.Public(), Checkin{Running: "v9"}); err == nil {
+		t.Error("the expired machine's check-in was taken")
+	}
+	if _, err := s.NetMapFor(machine.Public()); err == nil {
+		t.Error("the expired machine was served a netmap")
+	}
+	if _, err := s.UpdateEndpoints(machine.Public(), []netip.AddrPort{netip.MustParseAddrPort("192.0.2.1:51820")}); err == nil {
+		t.Error("the expired machine's endpoints were taken")
+	}
+}

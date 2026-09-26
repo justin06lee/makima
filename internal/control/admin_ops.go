@@ -343,6 +343,7 @@ func (s *Store) ExpireNode(name string) error {
 	// A key that can no longer be trusted must not keep its signature, or
 	// re-admitting the machine would silently restore it.
 	n.KeySignature = nil
+	n.NetworkSignature = nil
 
 	if err := s.save(); err != nil {
 		return err

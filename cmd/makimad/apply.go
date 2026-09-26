@@ -55,10 +55,16 @@ func verifyPeers(resp *control.MapResponse, network key.Public, pin *netmap.Lock
 	var check func(p netmap.Node) error
 	switch {
 	case pin != nil:
-		check = func(p netmap.Node) error { return control.VerifyPinned(pin, p.ID, p.Key, p.KeySignature) }
+		// Only a signature naming this network: a peer signed into another
+		// network that trusts the same key is not one of ours.
+		check = func(p netmap.Node) error {
+			return control.VerifyPinned(network, pin, p.ID, p.Key, p.NetworkSignature)
+		}
 	case resp.Lock != nil && resp.Lock.Enabled:
 		legacy := &control.Lock{Enabled: true, TrustedKeys: resp.Lock.TrustedKeys}
-		check = func(p netmap.Node) error { return legacy.VerifyNodeKey(p.ID, p.Key, p.KeySignature) }
+		check = func(p netmap.Node) error {
+			return legacy.VerifyLegacy(network, p.ID, p.Key, p.NetworkSignature, p.KeySignature)
+		}
 	default:
 		return resp.Peers, nil, pin, chainErr
 	}

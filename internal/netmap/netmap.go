@@ -66,10 +66,18 @@ type Node struct {
 	Online bool `json:"online,omitempty"`
 
 	// KeySignature is the network-lock signature over this node's key, empty
-	// when the mesh has no lock enabled. Verified by every peer before the
-	// node is admitted to the data plane, which is what stops a compromised
-	// control server from introducing one.
+	// when the mesh has no lock enabled — the version-1 kind, naming no
+	// network, which makima v0.3.0 makes and checks. Peers check a lock
+	// signature before admitting the node to the data plane, which is what
+	// stops a compromised control server from introducing one; a peer holding
+	// a signed lock checks NetworkSignature instead, and this only where no
+	// signed lock is held.
 	KeySignature []byte `json:"key_signature,omitempty"`
+
+	// NetworkSignature is the lock's signature over this node's key, its ID
+	// and the network's control-plane key, so a machine signed into one
+	// network cannot be shown to another that trusts the same signing key.
+	NetworkSignature []byte `json:"network_signature,omitempty"`
 
 	// Services are the ports this node publishes on the mesh.
 	//

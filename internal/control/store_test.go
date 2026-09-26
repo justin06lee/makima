@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -405,5 +406,31 @@ func TestExitNodeFilterCarriesTheInternet(t *testing.T) {
 	}
 	if !m.Filter.Allow(laptop.Address.Addr(), netip.MustParseAddr("8.8.8.8"), 443) {
 		t.Error("the exit node's filter drops what a peer sends for the internet")
+	}
+}
+
+// A machine's name is its own to choose, and it is shown in terminals — the
+// operator's list of machines to sign among them. Control characters in it
+// could erase or rewrite what was shown there, so nothing unprintable is
+// kept.
+func TestANameCannotRewriteTheTerminal(t *testing.T) {
+	s := newStore(t)
+	auth, _ := s.MintAuthKey(true, 0)
+	machine, _ := key.NewPrivate()
+	node, _ := key.NewPrivate()
+
+	n, err := s.Register(machine.Public(), &RegisterRequest{
+		Name: "laptop\r\x1b[2K\x1b[1A\u202e", NodeKey: node.Public(), AuthKey: auth.Secret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range n.Name {
+		if !unicode.IsPrint(r) {
+			t.Errorf("registered as %q, which keeps %U", n.Name, r)
+		}
+	}
+	if !strings.HasPrefix(n.Name, "laptop") {
+		t.Errorf("registered as %q", n.Name)
 	}
 }
