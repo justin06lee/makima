@@ -941,9 +941,12 @@ The lock itself is not the server's to change either. Every change to it —
 enforcing it, trusting another key, dropping one — is a numbered version signed
 on your machine by a key the lock already trusts, so those commands read your
 signing key (`-key`, default `~/.config/makima/signing.key`). They build each
-change on the lock's signed versions, not on what the server says, and the key
-file remembers the last version it signed for each network: a server that
-rewrote or hid versions gets nothing signed. Each node keeps
+change on the lock's signed versions, not on what the server says, and the
+machine you sign on remembers the last version signed from it for each network
+(`~/.config/makima/lock-pins.json`, beside the default key; key files are never
+rewritten): a server that rewrote or hid versions since gets nothing signed.
+The first change signed from a machine takes the history on trust, as a new
+node does, so it shows what the new version will trust and asks first. Each node keeps
 the latest version it has accepted and moves forward only along signed ones: a
 server that stops sending the lock, sends it switched off, or adds a key of its
 own changes nothing on any node. `makima lock` shows a machine's copy. Every
@@ -962,7 +965,8 @@ older makima was never signed and can still be switched off by the server
 until it is sealed: `makima-server lock seal`, which shows the keys it is about
 to pin — with no signed history, that list is the server's word — and, if the
 lock is enforced, first signs every node again for this network, since its old
-signatures name none. Nothing else changes such a lock until it is sealed.
+signatures name none. `lock enable` and `lock disable` on such a lock seal it
+that way; nothing else changes it until it is sealed.
 
 Lose every signing key and nothing can change the lock again, by design. The
 way out has to be taken on both sides: `makima-server lock forget`, then

@@ -99,7 +99,7 @@ func TestSealingAnOldLockSignsItsNodesForThisNetwork(t *testing.T) {
 	state, keyPath := oldLockedNetwork(t, "laptop", "desktop")
 	sock := filepath.Join(filepath.Dir(state), "nobody.sock")
 	asked := answer(t, true)
-	pinned := answerSeal(t, true)
+	shownKeys := answerSeal(t, true)
 
 	if err := lockSeal([]string{"-state", state, "-socket", sock, "-key", keyPath}); err != nil {
 		t.Fatalf("seal: %v", err)
@@ -112,8 +112,8 @@ func TestSealingAnOldLockSignsItsNodesForThisNetwork(t *testing.T) {
 	if len(*asked) != 2 {
 		t.Errorf("asked about %v, want both machines", *asked)
 	}
-	if len(*pinned) != 1 {
-		t.Errorf("shown %d key(s) to pin, want the one the lock trusts", len(*pinned))
+	if len(*shownKeys) != 1 {
+		t.Errorf("shown %d key(s) to pin, want the one the lock trusts", len(*shownKeys))
 	}
 	st := store.LockStatus()
 	if st.Epoch != 1 || !st.Enabled || st.Signed != 2 || st.Unsigned != 0 {
@@ -189,17 +189,72 @@ func answer(t *testing.T, yes bool) *[]string {
 	return &asked
 }
 
+// TestMain keeps what the lock commands remember out of the home directory
+// of whoever runs the tests.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "makima-lock-pins")
+	if err != nil {
+		panic(err)
+	}
+	lockPinsPath = func() string { return filepath.Join(dir, "lock-pins.json") }
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// pinAt records that version pin of network's lock was signed from here.
+func pinAt(t *testing.T, network key.Public, pin *netmap.LockPin) {
+	t.Helper()
+	p, err := loadPins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Networks[network.String()] = pin
+	if err := writePrivateJSON(lockPinsPath(), p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pinned is what is remembered of network's lock.
+func pinned(t *testing.T, network key.Public) *netmap.LockPin {
+	t.Helper()
+	p, err := pinFor(network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // answerSeal makes confirmSeal say yes or no, and records the keys it was
 // shown.
 func answerSeal(t *testing.T, yes bool) *[]control.SigningKey {
 	t.Helper()
 	var shown []control.SigningKey
 	was := confirmSeal
-	confirmSeal = func(keys []control.SigningKey) (bool, error) {
+	confirmSeal = func(keys []control.SigningKey, own []byte, enabled bool) (bool, error) {
 		shown = append(shown, keys...)
 		return yes, nil
 	}
 	t.Cleanup(func() { confirmSeal = was })
+	return &shown
+}
+
+// answerChange makes confirmChange say yes or no, and records the keys it was
+// shown; nil if it was never asked.
+func answerChange(t *testing.T, yes bool) *[][]byte {
+	t.Helper()
+	var shown [][]byte
+	was := confirmChange
+	confirmChange = func(epoch uint64, keys []control.SigningKey, own []byte, enabled bool) (bool, error) {
+		for _, k := range keys {
+			shown = append(shown, k.Public)
+		}
+		if shown == nil {
+			shown = [][]byte{}
+		}
+		return yes, nil
+	}
+	t.Cleanup(func() { confirmChange = was })
 	return &shown
 }
 
@@ -285,6 +340,24 @@ func TestAServerAskingToSignSomethingElseGetsNothing(t *testing.T) {
 	}
 }
 
+// The old kind of material is checked as closely as the new: bytes that are
+// not the named machine's ID and key — a lock version, say — get nothing
+// signed. Without the check the operator's key signed whatever the server put
+// there.
+func TestAServerSlippingSomethingIntoTheOldKindGetsNothing(t *testing.T) {
+	server, _ := key.NewPrivate()
+	laptop, _ := key.NewPrivate()
+
+	pending := []control.UnsignedNode{{
+		ID: 3, Name: "laptop", NodeKey: laptop.Public(),
+		Material:       control.SigningMaterial(server.Public(), 3, laptop.Public()),
+		LegacyMaterial: []byte("makima lock statement v1\x00 anything the server likes"),
+	}}
+	if lyingServer(t, server.Public(), pending, "something other than") {
+		t.Error("a signature was uploaded")
+	}
+}
+
 // lyingServer runs a fake control plane's admin socket that reports network
 // as its key and pending as the machines to sign, runs lock sign -yes against
 // it, and reports whether anything was uploaded. The error has to contain
@@ -314,6 +387,7 @@ type fake struct {
 	signed atomic.Bool
 	mu     sync.Mutex
 	posted []control.LockStatement
+	ids    []netmap.NodeID
 }
 
 // fakeAdmin starts one answering as the control plane whose key is network.
@@ -345,6 +419,11 @@ func fakeAdmin(t *testing.T, network key.Public) *fake {
 	})
 	mux.HandleFunc("POST /admin/lock/sign", func(w http.ResponseWriter, r *http.Request) {
 		f.signed.Store(true)
+		var req control.SignatureRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		f.ids = append(f.ids, req.NodeID)
+		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("POST /admin/lock/statement", func(w http.ResponseWriter, r *http.Request) {
@@ -371,12 +450,11 @@ func (f *fake) statements() []control.LockStatement {
 	return append([]control.LockStatement(nil), f.posted...)
 }
 
-// signingKeyAt writes a signing key file for priv, with the versions it has
-// signed, and returns its path.
-func signingKeyAt(t *testing.T, priv ed25519.PrivateKey, networks map[string]*netmap.LockPin) string {
+// signingKeyAt writes a signing key file for priv and returns its path.
+func signingKeyAt(t *testing.T, priv ed25519.PrivateKey) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "signing.key")
-	sk := &signingKeyFile{Name: "test", Private: priv, Public: priv.Public().(ed25519.PublicKey), Networks: networks}
+	sk := &signingKeyFile{Name: "test", Private: priv, Public: priv.Public().(ed25519.PublicKey)}
 	if err := writeSigningKey(path, sk); err != nil {
 		t.Fatal(err)
 	}
@@ -396,10 +474,14 @@ func TestALockChangeIsBuiltOnTheSignedHistoryNotTheServersWord(t *testing.T) {
 	f := fakeAdmin(t, server.Public())
 	f.chain = []control.LockStatement{control.SignLockStatement(priv, server.Public(), 1, false, [][]byte{pub})}
 	f.status = control.LockStatus{Epoch: 1, TrustedKeys: []control.SigningKey{{Public: pub}, {Public: attacker}}}
-	keyPath := signingKeyAt(t, priv, nil)
+	keyPath := signingKeyAt(t, priv)
+	shown := answerChange(t, true)
 
 	if err := lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, true); err != nil {
 		t.Fatal(err)
+	}
+	if len(*shown) != 1 || !bytes.Equal((*shown)[0], pub) {
+		t.Errorf("shown %d key(s) for the first change from here, want the one the signed history trusts", len(*shown))
 	}
 	posted := f.statements()
 	if len(posted) != 1 {
@@ -409,13 +491,9 @@ func TestALockChangeIsBuiltOnTheSignedHistoryNotTheServersWord(t *testing.T) {
 		t.Errorf("signed version %d, enabled %v, trusting %d key(s): not the signed history plus enforcement", got.Epoch, got.Enabled, len(got.Keys))
 	}
 
-	// And the key file now remembers it, as a node remembers its pin.
-	sk, err := readSigningKey(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pin := sk.Networks[server.Public().String()]; pin == nil || pin.Epoch != 2 {
-		t.Errorf("the key file remembers %+v, want version 2", pin)
+	// And it is remembered, as a node remembers its pin.
+	if pin := pinned(t, server.Public()); pin == nil || pin.Epoch != 2 {
+		t.Errorf("remembered %+v, want version 2", pin)
 	}
 }
 
@@ -435,9 +513,8 @@ func TestARewrittenHistoryGetsNothingSigned(t *testing.T) {
 		control.SignLockStatement(attacker, server.Public(), 3, false, both),
 	}
 	f.status = control.LockStatus{Epoch: 3, TrustedKeys: []control.SigningKey{{Public: pub}, {Public: attackerPub}}}
-	keyPath := signingKeyAt(t, priv, map[string]*netmap.LockPin{
-		server.Public().String(): {Epoch: 2, Keys: [][]byte{pub}},
-	})
+	keyPath := signingKeyAt(t, priv)
+	pinAt(t, server.Public(), &netmap.LockPin{Epoch: 2, Keys: [][]byte{pub}})
 
 	if err := lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, true); err == nil {
 		t.Error("a change was signed on a history that does not follow from the one this key signed")
@@ -459,9 +536,8 @@ func TestAHiddenVersionGetsNothingSigned(t *testing.T) {
 		control.SignLockStatement(priv, server.Public(), 2, true, [][]byte{pub}),
 	}
 	f.status = control.LockStatus{Epoch: 2, Enabled: true, TrustedKeys: []control.SigningKey{{Public: pub}}}
-	keyPath := signingKeyAt(t, priv, map[string]*netmap.LockPin{
-		server.Public().String(): {Epoch: 3, Enabled: true, Keys: [][]byte{pub}},
-	})
+	keyPath := signingKeyAt(t, priv)
+	pinAt(t, server.Public(), &netmap.LockPin{Epoch: 3, Enabled: true, Keys: [][]byte{pub}})
 
 	if err := lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, false); err == nil {
 		t.Error("a change was signed on a history missing the version this key last signed")
@@ -471,24 +547,37 @@ func TestAHiddenVersionGetsNothingSigned(t *testing.T) {
 	}
 }
 
-// A lock set up by makima v0.3.0 has no signed history to build a change on.
-// It is sealed first, which shows what it is about to pin.
-func TestAnUnsealedLockIsSealedBeforeItIsChanged(t *testing.T) {
+// A lock set up by makima v0.3.0 has no signed history to build a change on,
+// so switching it off or on seals it that way — showing the keys it is about
+// to pin. Switching an enforced one off used to mean sealing it first, which
+// meant signing every machine, just to turn it off.
+func TestAnUnsealedLockIsSwitchedOffBySealingItOff(t *testing.T) {
 	state, keyPath := oldLockedNetwork(t, "laptop")
 	sock := filepath.Join(filepath.Dir(state), "nobody.sock")
 	args := []string{"-state", state, "-socket", sock, "-key", keyPath}
 
-	err := lockEnable(args, false)
-	if err == nil || !strings.Contains(err.Error(), "seal it first") {
-		t.Errorf("disabling an unsealed lock = %v, want to be told to seal it", err)
+	answerSeal(t, false)
+	if err := lockEnable(args, false); err == nil {
+		t.Error("declining to pin the keys still switched the lock off")
+	}
+	if st := mustOpen(t, state).LockStatus(); st.Epoch != 0 || !st.Enabled {
+		t.Errorf("declined, and the lock is %+v", st)
 	}
 
-	answerSeal(t, false)
-	if err := lockSeal(args); err == nil {
-		t.Error("declining to pin the keys still sealed the lock")
+	shown := answerSeal(t, true)
+	asked := answer(t, false)
+	if err := lockEnable(args, false); err != nil {
+		t.Fatal(err)
 	}
-	if st := mustOpen(t, state).LockStatus(); st.Epoch != 0 {
-		t.Errorf("declined, and the lock is at version %d", st.Epoch)
+	if len(*shown) != 1 || len(*asked) != 0 {
+		t.Errorf("shown %d key(s) and asked about machines %v; want the key, and no machine to sign", len(*shown), *asked)
+	}
+	store := mustOpen(t, state)
+	if st := store.LockStatus(); st.Epoch != 1 || st.Enabled {
+		t.Errorf("after switching it off: %+v", st)
+	}
+	if pin := pinned(t, store.ServerKey().Public()); pin == nil || pin.Epoch != 1 {
+		t.Errorf("sealing remembered %+v, want version 1", pin)
 	}
 }
 
@@ -544,12 +633,8 @@ func TestTheLockCommandsFollowOneAnother(t *testing.T) {
 	if st := store.LockStatus(); st.Epoch != 3 || !st.Enabled || len(st.TrustedKeys) != 2 {
 		t.Errorf("after init, add-key and enable: %+v", st)
 	}
-	sk, err := readSigningKey(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pin := sk.Networks[store.ServerKey().Public().String()]; pin == nil || pin.Epoch != 3 || !pin.Enabled {
-		t.Errorf("the key file remembers %+v, want version 3, enforced", pin)
+	if pin := pinned(t, store.ServerKey().Public()); pin == nil || pin.Epoch != 3 || !pin.Enabled {
+		t.Errorf("remembered %+v, want version 3, enforced", pin)
 	}
 }
 
@@ -587,7 +672,7 @@ func TestTheSigningKeyCanBeRotatedWhileEnforced(t *testing.T) {
 	}
 
 	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
-	newKey := signingKeyAt(t, newPriv, nil)
+	newKey := signingKeyAt(t, newPriv)
 	if err := lockAddKey(at(oldKey, "-public", base64.RawURLEncoding.EncodeToString(newPub), "-name", "new")); err != nil {
 		t.Fatal(err)
 	}
@@ -607,5 +692,262 @@ func TestTheSigningKeyCanBeRotatedWhileEnforced(t *testing.T) {
 	st := after.LockStatus()
 	if len(st.TrustedKeys) != 1 || !bytes.Equal(st.TrustedKeys[0].Public, newPub) || st.Signed != 1 || !st.Enabled {
 		t.Errorf("after rotating: %+v", st)
+	}
+}
+
+// The first change signed from this machine takes the lock's history on
+// trust, as a new node does — and a server can make one up that ends where
+// the real one does, trusting a key of its own. That used to be signed on
+// with no word: on the documented rotation it always was, since the new key
+// had no record of its own. What the new version will trust is now shown and
+// agreed to first.
+func TestAFirstChangeFromHereShowsWhatItWillTrust(t *testing.T) {
+	server, _ := key.NewPrivate()
+	network := server.Public()
+	oldPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	serverPub, serverPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	f := fakeAdmin(t, network)
+	f.chain = []control.LockStatement{
+		control.SignLockStatement(serverPriv, network, 3, true, [][]byte{serverPub, oldPub, newPub}),
+	}
+	newKey := signingKeyAt(t, newPriv)
+	shown := answerChange(t, false)
+
+	err := lockRemoveKey([]string{"-state", f.state, "-socket", f.sock, "-key", newKey, "-id", (control.SigningKey{Public: oldPub}).ID()})
+	if err == nil {
+		t.Error("declined, and rm-key reported success")
+	}
+	if n := len(f.statements()); n != 0 {
+		t.Errorf("%d version(s) posted after declining", n)
+	}
+	if !containsKey(*shown, serverPub) {
+		t.Error("the key the new version would trust was not shown")
+	}
+}
+
+// Rotating from one key file to another keeps what the first signed: the
+// record is this machine's, not the key file's, so the new key follows the
+// history from where the old one left it, and nothing is taken on trust.
+func TestRotatingToANewKeyFileKeepsWhatWasSigned(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "control.json")
+	sock := filepath.Join(dir, "nobody.sock")
+	oldKey := filepath.Join(dir, "old.key")
+	at := func(keyPath string, extra ...string) []string {
+		return append([]string{"-state", state, "-socket", sock, "-key", keyPath}, extra...)
+	}
+	if err := lockInit(at(oldKey, "-name", "old")); err != nil {
+		t.Fatal(err)
+	}
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	newKey := signingKeyAt(t, newPriv)
+	if err := lockAddKey(at(oldKey, "-public", base64.RawURLEncoding.EncodeToString(newPub))); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := readSigningKey(oldKey)
+
+	shown := answerChange(t, false)
+	if err := lockRemoveKey(at(newKey, "-id", (control.SigningKey{Public: old.Public}).ID())); err != nil {
+		t.Fatalf("rm-key with the new key: %v", err)
+	}
+	if *shown != nil {
+		t.Error("the new key was asked to take the history on trust; what the old one signed was not kept")
+	}
+}
+
+// Sealing is for a lock never signed. One signed from this machine before is
+// not that, whatever the server says: sealing it again used to sign a first
+// version of the server's choosing and wind what this machine remembered back
+// to it, so the next change built on a history the server made up.
+func TestALockSignedFromHereIsNotSealedAgain(t *testing.T) {
+	server, _ := key.NewPrivate()
+	network := server.Public()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	serverPub, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	f := fakeAdmin(t, network)
+	f.status = control.LockStatus{Epoch: 0, TrustedKeys: []control.SigningKey{{Public: pub, Name: "laptop"}, {Public: serverPub, Name: "laptop"}}}
+	keyPath := signingKeyAt(t, priv)
+	pinAt(t, network, &netmap.LockPin{Epoch: 3, Enabled: true, Keys: [][]byte{pub}})
+
+	if err := lockSeal([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath, "-yes"}); err == nil {
+		t.Error("a lock signed from here was sealed again")
+	}
+	if n := len(f.statements()); n != 0 {
+		t.Errorf("%d version(s) posted", n)
+	}
+	if pin := pinned(t, network); pin == nil || pin.Epoch != 3 {
+		t.Errorf("what was signed from here is now %+v, want version 3", pin)
+	}
+}
+
+// rm-key -yes re-signs the machines the dropped key had signed — checked
+// here, against the dropped key — and nothing else the server lists. It used
+// to sign whatever was listed, a machine the server made up included.
+func TestRemovingAKeyWithYesSignsOnlyWhatThatKeySigned(t *testing.T) {
+	server, _ := key.NewPrivate()
+	network := server.Public()
+	oldPub, oldPriv, _ := ed25519.GenerateKey(rand.Reader)
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	laptop, _ := key.NewPrivate()
+	rogue, _ := key.NewPrivate()
+
+	f := fakeAdmin(t, network)
+	f.chain = []control.LockStatement{
+		control.SignLockStatement(oldPriv, network, 1, true, [][]byte{oldPub}),
+		control.SignLockStatement(oldPriv, network, 2, true, [][]byte{oldPub, newPub}),
+	}
+	entry := func(id netmap.NodeID, name string, k key.Public, sig []byte) control.UnsignedNode {
+		return control.UnsignedNode{ID: id, Name: name, NodeKey: k,
+			Material:         control.SigningMaterial(network, id, k),
+			LegacyMaterial:   control.LegacySigningMaterial(id, k),
+			NetworkSignature: sig}
+	}
+	f.pending = []control.UnsignedNode{
+		entry(1, "laptop", laptop.Public(), control.SignNodeKey(oldPriv, network, 1, laptop.Public())),
+		entry(99, "rogue", rogue.Public(), nil),
+	}
+	newKey := signingKeyAt(t, newPriv)
+	pinAt(t, network, &netmap.LockPin{Epoch: 2, Enabled: true, Keys: [][]byte{oldPub, newPub}})
+
+	if err := lockRemoveKey([]string{"-state", f.state, "-socket", f.sock, "-key", newKey, "-id", (control.SigningKey{Public: oldPub}).ID(), "-yes"}); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	ids := append([]netmap.NodeID(nil), f.ids...)
+	f.mu.Unlock()
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Errorf("signed nodes %v, want only the laptop the dropped key had signed", ids)
+	}
+}
+
+// A mistyped -id is found before anything is signed, not after.
+func TestRemovingAKeyThatIsNotTrustedSignsNothing(t *testing.T) {
+	server, _ := key.NewPrivate()
+	network := server.Public()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	fresh, _ := key.NewPrivate()
+
+	f := fakeAdmin(t, network)
+	both := [][]byte{pub, other}
+	f.chain = []control.LockStatement{control.SignLockStatement(priv, network, 1, true, both)}
+	f.pending = []control.UnsignedNode{{ID: 5, Name: "fresh", NodeKey: fresh.Public(),
+		Material: control.SigningMaterial(network, 5, fresh.Public()), LegacyMaterial: control.LegacySigningMaterial(5, fresh.Public())}}
+	keyPath := signingKeyAt(t, priv)
+	pinAt(t, network, &netmap.LockPin{Epoch: 1, Enabled: true, Keys: both})
+
+	if err := lockRemoveKey([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath, "-id", "nosuchkeyid0", "-yes"}); err == nil {
+		t.Error("removing a key the lock does not trust succeeded")
+	}
+	if f.signed.Load() {
+		t.Error("machines were signed before the -id was found to be wrong")
+	}
+}
+
+// The key signing a change cannot be the one it drops: the machines it would
+// re-sign would be signed by a key that is about to stop counting.
+func TestAKeyDoesNotSignItsOwnRemoval(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "control.json")
+	keyPath := filepath.Join(dir, "signing.key")
+	common := []string{"-state", state, "-socket", filepath.Join(dir, "nobody.sock"), "-key", keyPath}
+	if err := lockInit(common); err != nil {
+		t.Fatal(err)
+	}
+	sk, _ := readSigningKey(keyPath)
+	err := lockRemoveKey(append(common, "-id", (control.SigningKey{Public: sk.Public}).ID()))
+	if err == nil || !strings.Contains(err.Error(), "a key that stays") {
+		t.Errorf("rm-key of the signing key itself = %v", err)
+	}
+}
+
+// 'lock forget' drops what this machine remembers of the lock, so 'lock
+// init' can start a new one. A server that says there is no lock, where one
+// was signed from here and not forgotten, is refused unless told to start
+// over: it may be hiding the lock.
+func TestStartingOverIsForgettingFirst(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "control.json")
+	sock := filepath.Join(dir, "nobody.sock")
+	common := []string{"-state", state, "-socket", sock}
+	keyPath := filepath.Join(dir, "signing.key")
+
+	if err := lockInit(append(common, "-key", keyPath)); err != nil {
+		t.Fatal(err)
+	}
+	network := mustOpen(t, state).ServerKey().Public()
+	if pin := pinned(t, network); pin == nil || pin.Epoch != 1 {
+		t.Fatalf("init remembered %+v, want version 1", pin)
+	}
+
+	if err := lockForget(common); err != nil {
+		t.Fatal(err)
+	}
+	if pin := pinned(t, network); pin != nil {
+		t.Errorf("forget left %+v remembered", pin)
+	}
+	if err := lockInit(append(common, "-key", filepath.Join(dir, "second.key"))); err != nil {
+		t.Fatalf("init after forget: %v", err)
+	}
+
+	// Now pretend the server lost the lock without being told to forget it.
+	store := mustOpen(t, state)
+	if err := store.ForgetLock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockInit(append(common, "-key", filepath.Join(dir, "third.key"))); err == nil {
+		t.Error("init started over on a lock signed from here and never forgotten")
+	}
+	if err := lockInit(append(common, "-key", filepath.Join(dir, "third.key"), "-force")); err != nil {
+		t.Errorf("init -force: %v", err)
+	}
+}
+
+// A key file is written once, by 'lock init', and never again: one behind a
+// symlink stays a symlink, one on read-only media is fine, and a command run
+// under sudo does not leave it root's.
+func TestAKeyFileIsNotRewrittenByAChange(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "control.json")
+	real := filepath.Join(dir, "stick", "signing.key")
+	link := filepath.Join(dir, "signing.key")
+	common := []string{"-state", state, "-socket", filepath.Join(dir, "nobody.sock")}
+
+	if err := lockInit(append(common, "-key", real)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(real)
+	if err := lockEnable(append(common, "-key", link), true); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the symlinked key file was replaced")
+	}
+	if after, _ := os.ReadFile(real); !bytes.Equal(before, after) {
+		t.Error("the key file was rewritten by a lock change")
+	}
+}
+
+// What this machine remembers never goes backwards: a version older than the
+// one signed here is not taken in its place, however it arrives.
+func TestWhatWasSignedHereNeverGoesBackwards(t *testing.T) {
+	server, _ := key.NewPrivate()
+	network := server.Public()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pinAt(t, network, &netmap.LockPin{Epoch: 5, Enabled: true, Keys: [][]byte{pub}})
+
+	rememberPin(network, control.SignLockStatement(priv, network, 3, false, [][]byte{pub}))
+	if pin := pinned(t, network); pin == nil || pin.Epoch != 5 || !pin.Enabled {
+		t.Errorf("remembered %+v after an older version, want version 5 still", pin)
+	}
+	rememberPin(network, control.SignLockStatement(priv, network, 6, false, [][]byte{pub}))
+	if pin := pinned(t, network); pin == nil || pin.Epoch != 6 {
+		t.Errorf("remembered %+v after a newer version, want version 6", pin)
 	}
 }
