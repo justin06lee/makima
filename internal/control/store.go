@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
@@ -381,6 +382,19 @@ func (s *Store) allocate() (netip.Prefix, error) {
 	return netip.Prefix{}, fmt.Errorf("address range %s is exhausted", s.state.Prefix)
 }
 
+// printableName is a machine's name with anything that is not printable taken
+// out. The name is the machine's own to choose, and it is shown in terminals
+// — the operator's list of machines to sign among them — where a control
+// character can move the cursor, erase a line, or rewrite what was shown.
+func printableName(name string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, name))
+}
+
 // Register adds a node, or updates one that already holds this machine key.
 //
 // Re-registration needs no auth key. The request arrived sealed under a
@@ -392,6 +406,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
+	name := printableName(req.Name)
 
 	if existing := s.findByMachineKey(machineKey); existing != nil {
 		// An expired node has to prove itself again before anything else is
@@ -441,8 +456,8 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 			existing.ExitApproved = false
 		}
 
-		if req.Name != "" {
-			existing.Name = req.Name
+		if name != "" {
+			existing.Name = name
 		}
 		if err := s.save(); err != nil {
 			return nil, err
@@ -455,7 +470,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 	if auth == nil || !auth.Valid(now) {
 		return nil, fmt.Errorf("auth key is invalid, expired, or already used")
 	}
-	if req.Name == "" {
+	if name == "" {
 		return nil, fmt.Errorf("node name is required")
 	}
 
@@ -466,7 +481,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 
 	n := &Node{
 		ID:               netmap.NodeID(s.state.NextID),
-		Name:             req.Name,
+		Name:             name,
 		MachineKey:       machineKey,
 		NodeKey:          req.NodeKey,
 		DiscoKey:         req.DiscoKey,

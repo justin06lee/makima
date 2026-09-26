@@ -550,4 +550,7 @@ func TestAnExpiredMachineIsRefusedItsOwnNetmap(t *testing.T) {
 	if _, err := s.NetMapFor(machine.Public()); err == nil {
 		t.Error("the expired machine was served a netmap")
 	}
+	if _, err := s.UpdateEndpoints(machine.Public(), []netip.AddrPort{netip.MustParseAddrPort("192.0.2.1:51820")}); err == nil {
+		t.Error("the expired machine's endpoints were taken")
+	}
 }
