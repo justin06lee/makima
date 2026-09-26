@@ -127,7 +127,16 @@ type Node struct {
 
 	// KeySignature is the network lock's signature over this node's key,
 	// present only once the lock is enabled and the node has been signed.
+	//
+	// The version-1 kind, which names no network: what makima v0.3.0 made,
+	// and what machines still running it check. Kept for them; nothing signs
+	// a new one.
 	KeySignature []byte `json:"key_signature,omitempty"`
+
+	// NetworkSignature is the lock's signature over this node's key, its ID
+	// and this network's control-plane key (see signingMaterial) — what a
+	// node holding a signed lock checks.
+	NetworkSignature []byte `json:"network_signature,omitempty"`
 
 	// KeyRotatedAt records the last node-key change, so an operator can see
 	// which machines are overdue.
@@ -406,6 +415,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		if existing.NodeKey != req.NodeKey && !existing.NodeKey.IsZero() {
 			existing.KeyRotatedAt = now
 			existing.KeySignature = nil
+			existing.NetworkSignature = nil
 		}
 
 		existing.NodeKey = req.NodeKey
@@ -799,6 +809,8 @@ func (s *Store) toNetmapNode(n *Node, relay netmap.Relay) netmap.Node {
 		KeySignature: n.KeySignature,
 		Services:     n.Services,
 		Version:      n.Version,
+
+		NetworkSignature: n.NetworkSignature,
 	}
 	if n.Update != nil {
 		u := *n.Update

@@ -38,8 +38,12 @@ import (
 // write a link of it.
 
 // SignatureVersion prefixes signed material so a signature can never be
-// replayed into a different scheme.
-const SignatureVersion = 1
+// replayed into a different scheme. Version 2 names the network the node was
+// signed into; version 1, which makima v0.3.0 made and still checks, does not.
+const (
+	SignatureVersion       = 2
+	legacySignatureVersion = 1
+)
 
 // Lock is the mesh's signing authority.
 type Lock struct {
@@ -203,9 +207,15 @@ func AdvanceLock(network key.Public, pin *netmap.LockPin, chain []LockStatement)
 	return cur, nil
 }
 
-// VerifyPinned checks a node key's signature against a pinned lock. Nil when
-// the pin does not enforce.
-func VerifyPinned(pin *netmap.LockPin, id netmap.NodeID, nodeKey key.Public, sig []byte) error {
+// VerifyPinned checks a node's network signature against a pinned lock. Nil
+// when the pin does not enforce.
+//
+// Only a signature naming network counts. A node holds a pin only from a
+// signed chain, and a chain is only enforced once every node has such a
+// signature (ApplyLockStatement refuses otherwise), so nothing on the network
+// needs the old kind — and the old kind, naming no network, is exactly what a
+// server of another network sharing the signing key could show this one.
+func VerifyPinned(network key.Public, pin *netmap.LockPin, id netmap.NodeID, nodeKey key.Public, sig []byte) error {
 	if pin == nil || !pin.Enabled {
 		return nil
 	}
@@ -213,7 +223,7 @@ func VerifyPinned(pin *netmap.LockPin, id netmap.NodeID, nodeKey key.Public, sig
 	for _, k := range pin.Keys {
 		l.TrustedKeys = append(l.TrustedKeys, SigningKey{Public: k})
 	}
-	return l.VerifyNodeKey(id, nodeKey, sig)
+	return l.VerifyNodeKey(network, id, nodeKey, sig)
 }
 
 // SigningKey is one trusted authority.
@@ -241,56 +251,102 @@ func (s SigningKey) ID() string {
 // have.
 var ErrLockDisabled = errors.New("network lock is not enabled on this mesh")
 
-// signingMaterial is the exact bytes a node-key signature covers.
+// signingMaterial is the exact bytes a node's signature covers: the network
+// it was signed into — its control plane's public key — the node ID, and the
+// node key.
 //
 // The node ID is included alongside the key, and that pairing is the whole
 // point: signing a bare key would let a compromised server move a legitimately
 // signed key onto a different node record and reassign its address, so the
 // signature has to bind the key to the identity it was issued for.
 //
+// The network is there for the same reason one level up. Without it — as in
+// the version-1 signatures makima v0.3.0 made — an operator who trusted one
+// signing key in two networks let either network's server show its nodes a
+// machine signed only into the other, under the same ID, and have it
+// admitted.
+//
 // A version prefix and a fixed-length, unambiguous encoding mean two different
-// (id, key) pairs can never produce the same message to sign.
-func signingMaterial(id netmap.NodeID, nodeKey key.Public) []byte {
-	b := make([]byte, 0, 1+8+key.Size)
+// (network, id, key) triples can never produce the same message to sign.
+func signingMaterial(network key.Public, id netmap.NodeID, nodeKey key.Public) []byte {
+	b := make([]byte, 0, 1+key.Size+8+key.Size)
 	b = append(b, byte(SignatureVersion))
-	for i := 7; i >= 0; i-- {
-		b = append(b, byte(id>>(uint(i)*8)))
-	}
+	b = append(b, network[:]...)
+	b = binary.BigEndian.AppendUint64(b, uint64(id))
 	b = append(b, nodeKey[:]...)
 	return b
 }
 
-// SignNodeKey produces a signature binding a node key to a node ID.
+// legacySigningMaterial is what a version-1 signature covers: the node ID and
+// key, and no network. Still checked where no signed lock is held, so a
+// network locked under makima v0.3.0 keeps working until it is re-signed.
+func legacySigningMaterial(id netmap.NodeID, nodeKey key.Public) []byte {
+	b := make([]byte, 0, 1+8+key.Size)
+	b = append(b, byte(legacySignatureVersion))
+	b = binary.BigEndian.AppendUint64(b, uint64(id))
+	b = append(b, nodeKey[:]...)
+	return b
+}
+
+// SignNodeKey produces a signature binding a node key to a node ID in the
+// network whose control plane holds network.
 //
 // Run wherever the private key lives, which is deliberately not here: the
 // signing key's whole value is that the control server never holds it.
-func SignNodeKey(priv ed25519.PrivateKey, id netmap.NodeID, nodeKey key.Public) []byte {
-	return ed25519.Sign(priv, signingMaterial(id, nodeKey))
+func SignNodeKey(priv ed25519.PrivateKey, network key.Public, id netmap.NodeID, nodeKey key.Public) []byte {
+	return ed25519.Sign(priv, signingMaterial(network, id, nodeKey))
 }
 
-// VerifyNodeKey checks a signature against every trusted key.
+// VerifyNodeKey checks a node's network signature against every trusted key.
 //
 // Returns nil when the lock is disabled: a mesh that has not opted in is not
 // broken, it has simply chosen to trust its control plane, which is the
 // situation every mesh starts in.
-func (l *Lock) VerifyNodeKey(id netmap.NodeID, nodeKey key.Public, sig []byte) error {
+func (l *Lock) VerifyNodeKey(network key.Public, id netmap.NodeID, nodeKey key.Public, sig []byte) error {
 	if l == nil || !l.Enabled {
 		return nil
 	}
 	if len(sig) == 0 {
+		return fmt.Errorf("node %d has no signature for this network and the network lock is enabled", id)
+	}
+	if l.verifies(signingMaterial(network, id, nodeKey), sig) {
+		return nil
+	}
+	return fmt.Errorf("node %d's signature is not from a trusted key for this network", id)
+}
+
+// VerifyLegacy checks a node against a lock that was never signed — one set
+// up by makima v0.3.0 and not yet sealed — taking a network signature or,
+// failing that, the version-1 signature that makima made. Such a lock is the
+// server's word anyway: the server can switch it off, so the older kind costs
+// nothing there, and a network that has not been re-signed keeps working.
+func (l *Lock) VerifyLegacy(network key.Public, id netmap.NodeID, nodeKey key.Public, sig, legacySig []byte) error {
+	if l == nil || !l.Enabled {
+		return nil
+	}
+	if len(sig) > 0 && l.verifies(signingMaterial(network, id, nodeKey), sig) {
+		return nil
+	}
+	if len(legacySig) > 0 && l.verifies(legacySigningMaterial(id, nodeKey), legacySig) {
+		return nil
+	}
+	if len(sig) == 0 && len(legacySig) == 0 {
 		return fmt.Errorf("node %d has no key signature and the network lock is enabled", id)
 	}
+	return fmt.Errorf("node %d's key signature is not from any trusted key", id)
+}
 
-	msg := signingMaterial(id, nodeKey)
+// verifies reports whether any trusted key signed msg.
+func (l *Lock) verifies(msg, sig []byte) bool {
 	for _, k := range l.TrustedKeys {
 		if len(k.Public) != ed25519.PublicKeySize {
 			continue
 		}
 		if ed25519.Verify(ed25519.PublicKey(k.Public), msg, sig) {
-			return nil
+			return true
 		}
 	}
-	return fmt.Errorf("node %d's key signature is not from any trusted key", id)
+	return false
 }
 
 // Trusts reports whether a public key is already trusted.
@@ -345,15 +401,17 @@ func (s *Store) LockStatus() LockStatus {
 	return st
 }
 
-// signedLocked reports whether a node's signature is one the lock's current
-// keys verify — not merely present: one left from a lock that was forgotten,
-// or from a key since dropped, signs nothing now. Callers hold s.mu.
+// signedLocked reports whether a node has a signature for this network that
+// the lock's current keys verify — not merely one present: one left from a
+// lock that was forgotten, or from a key since dropped, signs nothing now,
+// and one made by makima v0.3.0 names no network, so a node holding a signed
+// lock does not accept it. Callers hold s.mu.
 func (s *Store) signedLocked(n *Node) bool {
-	if len(n.KeySignature) == 0 || s.state.Lock == nil {
+	if len(n.NetworkSignature) == 0 || s.state.Lock == nil {
 		return false
 	}
 	l := &Lock{Enabled: true, TrustedKeys: s.state.Lock.TrustedKeys}
-	return l.VerifyNodeKey(n.ID, n.NodeKey, n.KeySignature) == nil
+	return l.VerifyNodeKey(s.state.ServerKey.Public(), n.ID, n.NodeKey, n.NetworkSignature) == nil
 }
 
 // ApplyLockStatement makes st the lock's next version.
@@ -408,12 +466,12 @@ func (s *Store) ApplyLockStatement(st LockStatement, names map[string]string) er
 		pin := &netmap.LockPin{Epoch: st.Epoch, Enabled: true, Keys: st.Keys}
 		var rejected []string
 		for _, n := range s.state.Nodes {
-			if VerifyPinned(pin, n.ID, n.NodeKey, n.KeySignature) != nil {
+			if VerifyPinned(s.state.ServerKey.Public(), pin, n.ID, n.NodeKey, n.NetworkSignature) != nil {
 				rejected = append(rejected, n.Name)
 			}
 		}
 		if len(rejected) > 0 {
-			return fmt.Errorf("these nodes have no signature from a key this version trusts, and would be rejected by the whole mesh: %v\nsign them first with 'makima-server lock sign'", rejected)
+			return fmt.Errorf("these nodes have no signature for this network from a key this version trusts, and would be rejected by the whole mesh: %v\nsign them first with 'makima-server lock sign'", rejected)
 		}
 	}
 
@@ -509,7 +567,7 @@ func (s *Store) PendingSignatures() []UnsignedNode {
 			ID:       n.ID,
 			Name:     n.Name,
 			NodeKey:  n.NodeKey,
-			Material: signingMaterial(n.ID, n.NodeKey),
+			Material: signingMaterial(s.state.ServerKey.Public(), n.ID, n.NodeKey),
 		})
 	}
 	return out
@@ -541,19 +599,12 @@ func (s *Store) ApplySignature(id netmap.NodeID, sig []byte) error {
 		return fmt.Errorf("no node with id %d", id)
 	}
 
-	msg := signingMaterial(target.ID, target.NodeKey)
-	ok := false
-	for _, k := range s.state.Lock.TrustedKeys {
-		if len(k.Public) == ed25519.PublicKeySize && ed25519.Verify(ed25519.PublicKey(k.Public), msg, sig) {
-			ok = true
-			break
-		}
-	}
-	if !ok {
-		return fmt.Errorf("signature for node %d does not verify against any trusted key", id)
+	l := &Lock{Enabled: true, TrustedKeys: s.state.Lock.TrustedKeys}
+	if err := l.VerifyNodeKey(s.state.ServerKey.Public(), target.ID, target.NodeKey, sig); err != nil {
+		return fmt.Errorf("signature for node %d does not verify against any trusted key for this network", id)
 	}
 
-	target.KeySignature = sig
+	target.NetworkSignature = sig
 	if err := s.save(); err != nil {
 		return err
 	}

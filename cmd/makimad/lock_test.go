@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"testing"
 
 	"github.com/justin06lee/makima/internal/control"
@@ -10,7 +11,9 @@ import (
 	"github.com/justin06lee/makima/internal/netmap"
 )
 
-func signedPeer(t *testing.T, id netmap.NodeID, name string, signer ed25519.PrivateKey) netmap.Node {
+// signedPeer is a peer signed into the network whose control plane holds
+// net, or unsigned when signer is nil.
+func signedPeer(t *testing.T, net key.Public, id netmap.NodeID, name string, signer ed25519.PrivateKey) netmap.Node {
 	t.Helper()
 	k, err := key.NewPrivate()
 	if err != nil {
@@ -18,7 +21,7 @@ func signedPeer(t *testing.T, id netmap.NodeID, name string, signer ed25519.Priv
 	}
 	p := netmap.Node{ID: id, Name: name, Key: k.Public()}
 	if signer != nil {
-		p.KeySignature = control.SignNodeKey(signer, id, p.Key)
+		p.NetworkSignature = control.SignNodeKey(signer, net, id, p.Key)
 	}
 	return p
 }
@@ -40,10 +43,11 @@ func network(t *testing.T) key.Public {
 // either move admitted anyone.
 func TestPinnedLockOutlivesTheServerSayingOtherwise(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ours := network(t)
 	pin := &netmap.LockPin{Epoch: 2, Enabled: true, Keys: [][]byte{pub}}
 
-	real := signedPeer(t, 1, "laptop", priv)
-	invented := signedPeer(t, 2, "intruder", nil)
+	real := signedPeer(t, ours, 1, "laptop", priv)
+	invented := signedPeer(t, ours, 2, "intruder", nil)
 
 	for name, lock := range map[string]*control.LockConfig{
 		"no lock":        nil,
@@ -51,7 +55,7 @@ func TestPinnedLockOutlivesTheServerSayingOtherwise(t *testing.T) {
 		"rogue key only": {Enabled: true, TrustedKeys: []control.SigningKey{{Public: make([]byte, 32)}}},
 	} {
 		resp := &control.MapResponse{Peers: []netmap.Node{real, invented}, Lock: lock}
-		kept, rejected, after, _ := verifyPeers(resp, network(t), pin)
+		kept, rejected, after, _ := verifyPeers(resp, ours, pin)
 		if len(kept) != 1 || kept[0].Name != "laptop" || len(rejected) != 1 {
 			t.Errorf("%s: kept %v", name, kept)
 		}
@@ -71,7 +75,7 @@ func TestFirstLockIsPinned(t *testing.T) {
 		control.SignLockStatement(priv, ours, 2, true, [][]byte{pub}),
 	}
 	resp := &control.MapResponse{
-		Peers: []netmap.Node{signedPeer(t, 1, "laptop", priv), signedPeer(t, 2, "intruder", nil)},
+		Peers: []netmap.Node{signedPeer(t, ours, 1, "laptop", priv), signedPeer(t, ours, 2, "intruder", nil)},
 		Lock:  &control.LockConfig{Enabled: true, Chain: chain},
 	}
 	kept, _, pin, err := verifyPeers(resp, ours, nil)
@@ -101,7 +105,7 @@ func TestAnotherNetworksLockDoesNotMoveThePin(t *testing.T) {
 		control.SignLockStatement(priv, theirs, 3, false, [][]byte{pub}),
 	}
 	resp := &control.MapResponse{
-		Peers: []netmap.Node{signedPeer(t, 1, "laptop", priv), signedPeer(t, 2, "intruder", nil)},
+		Peers: []netmap.Node{signedPeer(t, ours, 1, "laptop", priv), signedPeer(t, ours, 2, "intruder", nil)},
 		Lock:  &control.LockConfig{Enabled: false, Chain: replayed},
 	}
 	kept, _, after, err := verifyPeers(resp, ours, pin)
@@ -118,9 +122,64 @@ func TestAnotherNetworksLockDoesNotMoveThePin(t *testing.T) {
 
 // A mesh without a lock is unchanged: everyone is admitted.
 func TestNoLockAdmitsEveryone(t *testing.T) {
-	resp := &control.MapResponse{Peers: []netmap.Node{signedPeer(t, 1, "a", nil), signedPeer(t, 2, "b", nil)}}
-	kept, rejected, pin, err := verifyPeers(resp, network(t), nil)
+	ours := network(t)
+	resp := &control.MapResponse{Peers: []netmap.Node{signedPeer(t, ours, 1, "a", nil), signedPeer(t, ours, 2, "b", nil)}}
+	kept, rejected, pin, err := verifyPeers(resp, ours, nil)
 	if len(kept) != 2 || len(rejected) != 0 || pin != nil || err != nil {
 		t.Errorf("kept %d, rejected %d, pin %v, err %v", len(kept), len(rejected), pin, err)
 	}
+}
+
+// A peer signed into another network that trusts the same signing key is not
+// one of ours. It used to be admitted: a node's signature covered its ID and
+// key and nothing else, so this network's server could show its nodes a
+// machine the operator only ever signed into the other one.
+func TestAPeerSignedIntoAnotherNetworkIsRefused(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ours, theirs := network(t), network(t)
+	pin := &netmap.LockPin{Epoch: 2, Enabled: true, Keys: [][]byte{pub}}
+
+	resp := &control.MapResponse{Peers: []netmap.Node{
+		signedPeer(t, ours, 1, "laptop", priv),
+		signedPeer(t, theirs, 2, "from next door", priv),
+	}}
+	kept, rejected, _, _ := verifyPeers(resp, ours, pin)
+	if len(kept) != 1 || kept[0].Name != "laptop" || len(rejected) != 1 {
+		t.Errorf("kept %v, want only the peer signed into this network", kept)
+	}
+}
+
+// A signature made by makima v0.3.0 names no network. A node holding a
+// signed lock does not take it — that is the kind another network could
+// show — but where the lock was never signed, and is the server's word
+// anyway, it still counts, so a network locked under v0.3.0 keeps working
+// until it is re-signed.
+func TestAnOldSignatureCountsOnlyWhereNoLockIsHeld(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ours := network(t)
+
+	old := signedPeer(t, ours, 1, "laptop", nil)
+	old.KeySignature = legacySignature(priv, old.ID, old.Key)
+
+	unsealed := &control.MapResponse{
+		Peers: []netmap.Node{old},
+		Lock:  &control.LockConfig{Enabled: true, TrustedKeys: []control.SigningKey{{Public: pub}}},
+	}
+	if kept, _, _, _ := verifyPeers(unsealed, ours, nil); len(kept) != 1 {
+		t.Error("an old signature was refused under a lock that was never signed")
+	}
+
+	pin := &netmap.LockPin{Epoch: 2, Enabled: true, Keys: [][]byte{pub}}
+	if kept, _, _, _ := verifyPeers(&control.MapResponse{Peers: []netmap.Node{old}}, ours, pin); len(kept) != 0 {
+		t.Error("an old signature, naming no network, was taken under a signed lock")
+	}
+}
+
+// legacySignature is a signature as makima v0.3.0 made it: over the node ID
+// and key, and nothing else.
+func legacySignature(priv ed25519.PrivateKey, id netmap.NodeID, k key.Public) []byte {
+	msg := []byte{1}
+	msg = binary.BigEndian.AppendUint64(msg, uint64(id))
+	msg = append(msg, k[:]...)
+	return ed25519.Sign(priv, msg)
 }

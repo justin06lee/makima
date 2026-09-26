@@ -69,7 +69,15 @@ type Node struct {
 	// when the mesh has no lock enabled. Verified by every peer before the
 	// node is admitted to the data plane, which is what stops a compromised
 	// control server from introducing one.
+	//
+	// The version-1 kind, naming no network, which makima v0.3.0 made and
+	// checks. A node holding a signed lock checks NetworkSignature instead.
 	KeySignature []byte `json:"key_signature,omitempty"`
+
+	// NetworkSignature is the lock's signature over this node's key, its ID
+	// and the network's control-plane key, so a machine signed into one
+	// network cannot be shown to another that trusts the same signing key.
+	NetworkSignature []byte `json:"network_signature,omitempty"`
 
 	// Services are the ports this node publishes on the mesh.
 	//

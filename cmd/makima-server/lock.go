@@ -119,7 +119,12 @@ func lockStatus(args []string) error {
 
 	fmt.Printf("\n%d node(s) signed, %d unsigned\n", st.Signed, st.Unsigned)
 	if st.Unsigned > 0 {
-		fmt.Print("\nsign the rest before enabling, or they will be rejected by the whole mesh:\n")
+		if st.Enabled {
+			fmt.Print("\nthe unsigned ones have no signature naming this network — none at all, or one\n")
+			fmt.Print("made by makima v0.3.0 — and a node holding a signed lock will not take them:\n")
+		} else {
+			fmt.Print("\nsign the rest before enabling, or they will be rejected by the whole mesh:\n")
+		}
 		fmt.Print("  makima-server lock sign\n")
 	} else if !st.Enabled {
 		fmt.Print("\nevery node is signed. enable enforcement with:\n  makima-server lock enable\n")
@@ -277,6 +282,21 @@ func lockSeal(args []string) error {
 		fmt.Printf("the lock is already signed, at version %d\n", st.Epoch)
 		return nil
 	}
+
+	// A node holding a signed lock takes only signatures that name this
+	// network, and a lock from before versions were signed has nodes signed
+	// the older way. So they are signed again first; an enforced lock could
+	// not be sealed otherwise, since every node would be rejected.
+	sk, err := readSigningKey(*keyPath)
+	if err != nil {
+		return err
+	}
+	if n, err := t.signPending(sk); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Print("\n")
+	}
+
 	if err := t.changeLock(*keyPath, nil, func(keys [][]byte, enabled bool) ([][]byte, bool, error) {
 		return keys, enabled, nil
 	}); err != nil {
@@ -397,19 +417,33 @@ func lockSign(args []string) error {
 		return err
 	}
 
-	var pending []control.UnsignedNode
+	n, err := t.signPending(sk)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		fmt.Print("every node is already signed\n")
+		return nil
+	}
+	fmt.Printf("\n%d node(s) signed\n", n)
+	return nil
+}
+
+// signPending signs every node the server says needs it — no signature, one
+// from a key no longer trusted, or one from makima v0.3.0, which names no
+// network — and reports how many it signed.
+func (t *target) signPending(sk *signingKeyFile) (int, error) {
+	var (
+		pending []control.UnsignedNode
+		err     error
+	)
 	if t.live() {
 		pending, err = t.admin.PendingSignatures()
 	} else {
 		pending = t.store.PendingSignatures()
 	}
 	if err != nil {
-		return err
-	}
-
-	if len(pending) == 0 {
-		fmt.Print("every node is already signed\n")
-		return nil
+		return 0, err
 	}
 
 	for _, n := range pending {
@@ -421,13 +455,11 @@ func lockSign(args []string) error {
 			err = t.store.ApplySignature(n.ID, sig)
 		}
 		if err != nil {
-			return fmt.Errorf("sign %s: %w", n.Name, err)
+			return 0, fmt.Errorf("sign %s: %w", n.Name, err)
 		}
 		fmt.Printf("signed %s (node %d)\n", n.Name, n.ID)
 	}
-
-	fmt.Printf("\n%d node(s) signed\n", len(pending))
-	return nil
+	return len(pending), nil
 }
 
 func lockEnable(args []string, on bool) error {
