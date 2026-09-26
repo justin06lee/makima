@@ -453,6 +453,10 @@ func Label(name string) string { return normaliseName(name) }
 // not allow. Rewriting rather than rejecting means a machine called
 // "Justin's MacBook Pro" still gets a working name instead of silently having
 // none.
+//
+// For the same reason a name too long for one label is cut to the 63 bytes a
+// label holds. Left whole, no query could carry it, and the reverse answer
+// dropped it and named the bare domain.
 func normaliseName(name string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(name) {
@@ -465,8 +469,15 @@ func normaliseName(name string) string {
 			b.WriteRune('-')
 		}
 	}
-	return strings.Trim(b.String(), "-")
+	label := strings.Trim(b.String(), "-")
+	if len(label) > maxLabel {
+		label = strings.TrimRight(label[:maxLabel], "-")
+	}
+	return label
 }
+
+// maxLabel is the longest a DNS label may be (RFC 1035).
+const maxLabel = 63
 
 // arpaToAddr decodes a reverse-lookup name back into an address.
 func arpaToAddr(name string) (netip.Addr, bool) {

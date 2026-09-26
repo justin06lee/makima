@@ -334,3 +334,36 @@ func TestArpaToAddr(t *testing.T) {
 		}
 	}
 }
+
+// A DNS label holds at most 63 bytes, and a hostname can be longer. The label
+// used to be the whole name, which no query can carry, so the machine had no
+// working name — and its reverse answer dropped the label and named the bare
+// domain. It is cut to fit instead.
+func TestALongNameStillGetsAWorkingLabel(t *testing.T) {
+	long := "the-build-machine-in-the-back-office-that-nobody-remembers-setting-up"
+	s := &Server{}
+	s.SetRecords("makima",
+		netmap.Node{Name: long, Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.9/32")}},
+		nil)
+
+	label := Label(long)
+	if len(label) > 63 || !strings.HasPrefix(long, label) || strings.HasSuffix(label, "-") {
+		t.Fatalf("label %q (%d bytes) is not the name cut to fit", label, len(label))
+	}
+
+	resp, err := s.respond(askFor(label+".makima", typeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answerCount(resp) != 1 || firstAnswerA(t, resp).String() != "100.64.0.9" {
+		t.Errorf("%s.makima did not resolve to the machine", label)
+	}
+
+	resp, err = s.respond(askFor("9.0.64.100.in-addr.arpa", typePTR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := firstAnswerName(t, resp); got != label+".makima" {
+		t.Errorf("100.64.0.9 reverses to %q, want %s.makima", got, label)
+	}
+}
