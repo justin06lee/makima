@@ -18,11 +18,13 @@ import (
 //	register*   how fast one address may attempt to register. Auth keys are not
 //	            guessable, but an unbounded endpoint is still a free way to make
 //	            the server write its state file.
+//	limiterMax  how many addresses are tracked at once. See buckets.allow.
 const (
 	maxPolls       = 512
 	registerBurst  = 10
 	registerEvery  = 6 * time.Second
 	limiterIdleTTL = 10 * time.Minute
+	limiterMax     = 4096
 )
 
 // polls bounds concurrent long polls.
@@ -50,10 +52,15 @@ func (p *polls) done() { <-p.slots }
 type buckets struct {
 	burst int
 	every time.Duration
+	max   int // addresses tracked at once; past it, new ones share overflow
 
 	mu sync.Mutex
 	at map[string]*bucket
 }
+
+// overflow is the one budget every address past the table's limit shares.
+// Not a valid address, so no client can be counted against it by name.
+const overflow = "*"
 
 type bucket struct {
 	tokens float64
@@ -61,7 +68,7 @@ type bucket struct {
 }
 
 func newBuckets(burst int, every time.Duration) *buckets {
-	return &buckets{burst: burst, every: every, at: map[string]*bucket{}}
+	return &buckets{burst: burst, every: every, max: limiterMax, at: map[string]*bucket{}}
 }
 
 // allow reports whether one attempt from addr may proceed.
@@ -81,8 +88,20 @@ func (b *buckets) allow(addr string, now time.Time) bool {
 				delete(b.at, k)
 			}
 		}
-		e = &bucket{tokens: float64(b.burst), last: now}
-		b.at[key] = e
+		// A full table does not grow. Every address is a row for ten
+		// minutes, and addresses are cheap to come by: a scan, an IPv6 host
+		// walking its /64, or a client behind a trusted proxy that passes
+		// X-Forwarded-For through from the client instead of setting it.
+		// Past the limit new arrivals share one budget, and the addresses
+		// already held — the nodes that were there first — keep theirs.
+		if len(b.at) >= b.max {
+			key = overflow
+			e = b.at[key]
+		}
+		if e == nil {
+			e = &bucket{tokens: float64(b.burst), last: now}
+			b.at[key] = e
+		}
 	}
 
 	e.tokens += now.Sub(e.last).Seconds() / b.every.Seconds()

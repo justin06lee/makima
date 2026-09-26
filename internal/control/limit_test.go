@@ -176,3 +176,36 @@ func TestTrustedProxiesCanBeNamed(t *testing.T) {
 		t.Error("loopback was still believed after the trusted list was replaced")
 	}
 }
+
+// Addresses are cheap to come by — a scan, an IPv6 host walking its /64, a
+// client behind a proxy that passes X-Forwarded-For through untouched — and
+// every one used to be a row for ten minutes, however many arrived. A full
+// table now puts new arrivals on one shared budget, and the addresses it
+// already holds keep theirs.
+func TestAFullTableSharesOneBudgetAndKeepsItsOwn(t *testing.T) {
+	b := newBuckets(2, time.Minute)
+	b.max = 2
+	now := time.Now()
+
+	b.allow("10.0.0.1", now)
+	b.allow("10.0.0.2", now)
+
+	// Past the limit, new arrivals spend one shared budget of two.
+	if !b.allow("198.51.100.1", now) || !b.allow("198.51.100.2", now) {
+		t.Fatal("arrivals past a full table were refused before the shared budget ran out")
+	}
+	if b.allow("198.51.100.3", now) {
+		t.Error("a new address got a budget of its own past a full table")
+	}
+	b.mu.Lock()
+	n := len(b.at)
+	b.mu.Unlock()
+	if n > b.max+1 {
+		t.Errorf("the table grew to %d rows past a limit of %d", n, b.max)
+	}
+
+	// The address already held still has the token it did not spend.
+	if !b.allow("10.0.0.1", now) {
+		t.Error("a address the table already held lost its budget to the newcomers")
+	}
+}
