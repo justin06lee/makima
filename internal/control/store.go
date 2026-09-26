@@ -129,8 +129,8 @@ type Node struct {
 	// present only once the lock is enabled and the node has been signed.
 	//
 	// The version-1 kind, which names no network: what makima v0.3.0 made,
-	// and what machines still running it check. Kept for them; nothing signs
-	// a new one.
+	// and what machines still running it check. Signed beside
+	// NetworkSignature for them; a node holding a signed lock ignores it.
 	KeySignature []byte `json:"key_signature,omitempty"`
 
 	// NetworkSignature is the lock's signature over this node's key, its ID

@@ -212,9 +212,11 @@ func AdvanceLock(network key.Public, pin *netmap.LockPin, chain []LockStatement)
 //
 // Only a signature naming network counts. A node holds a pin only from a
 // signed chain, and a chain is only enforced once every node has such a
-// signature (ApplyLockStatement refuses otherwise), so nothing on the network
+// signature (ApplyLockStatement refuses otherwise), so no node holding one
 // needs the old kind — and the old kind, naming no network, is exactly what a
 // server of another network sharing the signing key could show this one.
+// Machines still on makima v0.3.0 check the old kind, which is why it goes
+// on being signed (see PendingSignatures).
 func VerifyPinned(network key.Public, pin *netmap.LockPin, id netmap.NodeID, nodeKey key.Public, sig []byte) error {
 	if pin == nil || !pin.Enabled {
 		return nil
@@ -606,10 +608,10 @@ type UnsignedNode struct {
 
 // PendingSignatures reports every node whose current key is unsigned.
 //
-// Includes the exact bytes to sign rather than expecting the signing tool to
-// reconstruct them. Two implementations of "what does the signature cover"
-// that drift apart would produce signatures that verify nowhere, and the
-// failure would look like a key problem rather than an encoding one.
+// Includes the exact bytes to sign. The signing tool rebuilds them too — with
+// SigningMaterial, the same function — and signs nothing if they differ, so
+// a server cannot pass off one machine's material as another's. They are
+// still handed over because an older signing tool signs them as given.
 func (s *Store) PendingSignatures() []UnsignedNode {
 	return s.PendingSignaturesWithout("")
 }

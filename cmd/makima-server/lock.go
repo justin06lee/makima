@@ -544,12 +544,8 @@ func containsKey(keys [][]byte, k []byte) bool {
 	return false
 }
 
-// lockSign signs every node that needs it.
-//
-// The server hands over the exact bytes to sign rather than the fields to
-// reconstruct them from. Two implementations of "what does a signature cover"
-// that drift apart would produce signatures verifying nowhere, and the failure
-// would look like a key problem rather than an encoding one.
+// lockSign signs every node that needs it, once somebody has agreed to the
+// list; see signPending.
 func lockSign(args []string) error {
 	af := newAdminFlags("lock sign")
 	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "path to the signing key")
