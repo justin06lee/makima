@@ -183,8 +183,10 @@ func TestSignThenEnable(t *testing.T) {
 		t.Fatalf("%d nodes pending, want 1", len(pending))
 	}
 
+	// Both kinds, as lock sign signs them.
 	sig := ed25519.Sign(priv, pending[0].Material)
-	if err := s.ApplySignature(pending[0].ID, sig); err != nil {
+	legacy := ed25519.Sign(priv, pending[0].LegacyMaterial)
+	if err := s.ApplySignatures(pending[0].ID, sig, legacy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -758,7 +760,9 @@ func TestAnExpiredMachineIsNeitherSignedNorWaitedFor(t *testing.T) {
 	startLock(t, s, pub, priv)
 	laptop := registerNode(t, s, "laptop")
 	stolen := registerNode(t, s, "stolen")
-	if err := s.ApplySignature(laptop.ID, SignNodeKey(priv, s.ServerKey().Public(), laptop.ID, laptop.NodeKey)); err != nil {
+	if err := s.ApplySignatures(laptop.ID,
+		SignNodeKey(priv, s.ServerKey().Public(), laptop.ID, laptop.NodeKey),
+		ed25519.Sign(priv, legacySigningMaterial(laptop.ID, laptop.NodeKey))); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ExpireNode("stolen"); err != nil {
@@ -825,6 +829,11 @@ func TestAMachineIsSignedForOldMachinesToo(t *testing.T) {
 	}
 	if len(s.PendingSignatures()) != 1 {
 		t.Error("a machine with no old-kind signature is not waiting for one")
+	}
+	// And status agrees, or it says "every node is signed, enable" while
+	// lock sign still has a machine to sign.
+	if st := s.LockStatus(); st.Signed != 0 || st.Unsigned != 1 {
+		t.Errorf("status %+v with only the new kind signed, want it counted as unsigned", st)
 	}
 
 	// Both, and a wrong old kind is refused.

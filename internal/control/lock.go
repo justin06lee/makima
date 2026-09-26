@@ -412,7 +412,9 @@ func (s *Store) LockStatus() LockStatus {
 		switch {
 		case n.Expired:
 			// Out of the mesh until it rejoins; neither signed nor waiting.
-		case s.signedLocked(n):
+		case s.signedLocked(n) && s.legacySignedLocked(n):
+			// Both kinds, as PendingSignatures asks for: signed only for
+			// this network, a machine is refused by any still on v0.3.0.
 			st.Signed++
 		default:
 			st.Unsigned++
