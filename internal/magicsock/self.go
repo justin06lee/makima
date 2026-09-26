@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"sort"
 	"time"
+
+	"github.com/justin06lee/makima/internal/hostaddr"
 )
 
 // observationTTL is how long an address this node was observed at is still
@@ -36,10 +38,11 @@ func (c *Conn) noteSelfObservation(addr netip.AddrPort) {
 	if !addr.IsValid() || addr.Port() == 0 {
 		return
 	}
-	// An address inside the mesh range would mean a peer saw us through
-	// another tunnel. Advertising it tells peers to reach us through a tunnel
-	// to reach a tunnel.
-	if isMeshAddr(addr.Addr()) {
+	// An address inside the mesh range — makima's, or 100.64.0.0/10, which
+	// older makima networks and Tailscale use — would mean a peer saw us
+	// through another tunnel. Advertising it tells peers to reach us through
+	// a tunnel to reach a tunnel.
+	if hostaddr.IsMeshAddr(addr.Addr()) {
 		return
 	}
 
@@ -98,11 +101,6 @@ func (c *Conn) SelfEndpoints() []netip.AddrPort {
 	return out
 }
 
-// isMeshAddr reports whether an address is inside a tunnel's range: makima's
-// own, or 100.64.0.0/10, which older makima networks and Tailscale use.
-//
-// Duplicated from netcfg rather than imported, because netcfg shells out to
-// platform tools and magicsock must stay usable in a unit test.
 // PeerSawUsPublicly reports whether a peer has recently told this node the
 // public address its packets arrive from.
 //
@@ -120,15 +118,5 @@ func (c *Conn) PeerSawUsPublicly() bool {
 // send to: not private, not loopback or link-local, and not a mesh address.
 func isPublic(a netip.Addr) bool {
 	a = a.Unmap()
-	return a.IsGlobalUnicast() && !a.IsPrivate() && !isMeshAddr(a)
+	return a.IsGlobalUnicast() && !a.IsPrivate() && !hostaddr.IsMeshAddr(a)
 }
-
-func isMeshAddr(a netip.Addr) bool {
-	a = a.Unmap()
-	return meshRange.Contains(a) || legacyMeshRange.Contains(a)
-}
-
-var (
-	meshRange       = netip.MustParsePrefix("10.77.0.0/16")
-	legacyMeshRange = netip.MustParsePrefix("100.64.0.0/10")
-)
