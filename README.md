@@ -941,8 +941,10 @@ the latest version it has accepted and moves forward only along signed ones: a
 server that stops sending the lock, sends it switched off, or adds a key of its
 own changes nothing on any node. `makima lock` shows a machine's copy. Each
 version is signed for one network — its control server's key is part of what
-is signed — so a signing key trusted by two networks cannot have one network's
-versions replayed into the other's.
+is signed — so one network's versions cannot be replayed into another's. A
+node's signature does not name its network yet, though: give each network a
+signing key of its own, or a machine signed into one could be shown to the
+other by that network's server.
 
 A node takes the first version it is shown on trust — the same trust it placed
 in the server when it joined. Rotating a key is two signed steps: `lock add-key`
