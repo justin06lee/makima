@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -783,10 +784,11 @@ func TestALockSignedFromHereIsNotSealedAgain(t *testing.T) {
 	}
 }
 
-// rm-key -yes re-signs the machines the dropped key had signed — checked
-// here, against the dropped key — and nothing else the server lists. It used
-// to sign whatever was listed, a machine the server made up included.
-func TestRemovingAKeyWithYesSignsOnlyWhatThatKeySigned(t *testing.T) {
+// rm-key lists every machine it would sign again and asks, like lock sign:
+// the list is the server's, and whether the dropped key once signed a
+// machine says nothing about whether it is still yours — the server can keep
+// an old signature for one expired or forgotten since.
+func TestRemovingAKeyAsksAboutTheMachinesItWouldSign(t *testing.T) {
 	server, _ := key.NewPrivate()
 	network := server.Public()
 	oldPub, oldPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -799,27 +801,71 @@ func TestRemovingAKeyWithYesSignsOnlyWhatThatKeySigned(t *testing.T) {
 		control.SignLockStatement(oldPriv, network, 1, true, [][]byte{oldPub}),
 		control.SignLockStatement(oldPriv, network, 2, true, [][]byte{oldPub, newPub}),
 	}
-	entry := func(id netmap.NodeID, name string, k key.Public, sig []byte) control.UnsignedNode {
+	entry := func(id netmap.NodeID, name string, k key.Public) control.UnsignedNode {
 		return control.UnsignedNode{ID: id, Name: name, NodeKey: k,
-			Material:         control.SigningMaterial(network, id, k),
-			LegacyMaterial:   control.LegacySigningMaterial(id, k),
-			NetworkSignature: sig}
+			Material:       control.SigningMaterial(network, id, k),
+			LegacyMaterial: control.LegacySigningMaterial(id, k)}
 	}
-	f.pending = []control.UnsignedNode{
-		entry(1, "laptop", laptop.Public(), control.SignNodeKey(oldPriv, network, 1, laptop.Public())),
-		entry(99, "rogue", rogue.Public(), nil),
-	}
+	f.pending = []control.UnsignedNode{entry(1, "laptop", laptop.Public()), entry(99, "rogue", rogue.Public())}
 	newKey := signingKeyAt(t, newPriv)
 	pinAt(t, network, &netmap.LockPin{Epoch: 2, Enabled: true, Keys: [][]byte{oldPub, newPub}})
 
-	if err := lockRemoveKey([]string{"-state", f.state, "-socket", f.sock, "-key", newKey, "-id", (control.SigningKey{Public: oldPub}).ID(), "-yes"}); err != nil {
-		t.Fatal(err)
+	asked := answer(t, false)
+	if err := lockRemoveKey([]string{"-state", f.state, "-socket", f.sock, "-key", newKey, "-id", (control.SigningKey{Public: oldPub}).ID()}); err == nil {
+		t.Error("declined, and rm-key reported success")
 	}
-	f.mu.Lock()
-	ids := append([]netmap.NodeID(nil), f.ids...)
-	f.mu.Unlock()
-	if len(ids) != 1 || ids[0] != 1 {
-		t.Errorf("signed nodes %v, want only the laptop the dropped key had signed", ids)
+	if len(*asked) != 2 {
+		t.Errorf("asked about %v, want every machine listed", *asked)
+	}
+	if f.signed.Load() || len(f.statements()) != 0 {
+		t.Error("declined, and something was signed")
+	}
+}
+
+// -yes on rm-key agrees to the machines listed, and to nothing else: with no
+// record of the lock here, what the new version will trust is still shown.
+// It used to skip that too, and the documented rotation — rm-key with the new
+// key, often from another machine — signed a history the server made up.
+func TestRemovingAKeyWithYesStillShowsWhatTheLockWillTrust(t *testing.T) {
+	server, _ := key.NewPrivate()
+	network := server.Public()
+	oldPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	newPub, newPriv, _ := ed25519.GenerateKey(rand.Reader)
+	serverPub, serverPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	f := fakeAdmin(t, network)
+	f.chain = []control.LockStatement{
+		control.SignLockStatement(serverPriv, network, 3, true, [][]byte{serverPub, oldPub, newPub}),
+	}
+	newKey := signingKeyAt(t, newPriv)
+	shown := answerChange(t, false)
+
+	_ = lockRemoveKey([]string{"-state", f.state, "-socket", f.sock, "-key", newKey, "-id", (control.SigningKey{Public: oldPub}).ID(), "-yes"})
+	if *shown == nil {
+		t.Error("-yes skipped showing what the new version would trust")
+	}
+	if n := len(f.statements()); n != 0 {
+		t.Errorf("%d version(s) posted after declining", n)
+	}
+}
+
+// Enabling a lock that was never sealed seals it enforced, which signs every
+// machine — and they are asked about. enable had a -yes that signed whatever
+// the server listed, unshown.
+func TestEnablingAnUnsealedLockAsksAboutEveryMachine(t *testing.T) {
+	state, keyPath := oldLockedNetwork(t, "laptop")
+	sock := filepath.Join(filepath.Dir(state), "nobody.sock")
+
+	answerSeal(t, true)
+	asked := answer(t, false)
+	if err := lockEnable([]string{"-state", state, "-socket", sock, "-key", keyPath}, true); err == nil {
+		t.Error("declined the machines, and enable reported success")
+	}
+	if len(*asked) != 1 {
+		t.Errorf("asked about %v, want the laptop", *asked)
+	}
+	if st := mustOpen(t, state).LockStatus(); st.Epoch != 0 {
+		t.Errorf("declined, and the lock is at version %d", st.Epoch)
 	}
 }
 
@@ -893,17 +939,52 @@ func TestStartingOverIsForgettingFirst(t *testing.T) {
 		t.Fatalf("init after forget: %v", err)
 	}
 
-	// Now pretend the server lost the lock without being told to forget it.
+	// Now the server loses the lock without being told to forget it. Not
+	// even -force starts over — -force is about the key file, and starting
+	// over would overwrite the key the nodes holding the lock trust.
 	store := mustOpen(t, state)
 	if err := store.ForgetLock(); err != nil {
 		t.Fatal(err)
 	}
-	if err := lockInit(append(common, "-key", filepath.Join(dir, "third.key"))); err == nil {
-		t.Error("init started over on a lock signed from here and never forgotten")
+	second := filepath.Join(dir, "second.key")
+	before, _ := os.ReadFile(second)
+	if err := lockInit(append(common, "-key", second, "-force")); err == nil {
+		t.Error("init -force started over on a lock signed from here and never forgotten")
 	}
-	if err := lockInit(append(common, "-key", filepath.Join(dir, "third.key"), "-force")); err != nil {
-		t.Errorf("init -force: %v", err)
+	if after, _ := os.ReadFile(second); !bytes.Equal(before, after) {
+		t.Error("the refused init overwrote the key file")
 	}
+	if out := capture(t, func() { lockStatus(common) }); !strings.Contains(out, "hiding it") {
+		t.Errorf("status said %q, want to be told the server lost or is hiding the lock", out)
+	}
+
+	// Letting go of this machine's record is its own, deliberate step.
+	if err := lockForget(append(common, "-local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockInit(append(common, "-key", filepath.Join(dir, "third.key"))); err != nil {
+		t.Errorf("init after forget -local: %v", err)
+	}
+}
+
+// capture runs fn and returns what it printed.
+func capture(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := os.Stdout
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	w.Close()
+	os.Stdout = was
+	return <-done
 }
 
 // A key file is written once, by 'lock init', and never again: one behind a
@@ -972,7 +1053,29 @@ func TestADifferentVersionAtTheOneSignedHereIsRefused(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rewritten") {
 		t.Errorf("lock disable over a rewritten version 2 = %v", err)
 	}
+
+	// The same number and state, but other keys, is as much a rewrite.
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	pinAt(t, network, &netmap.LockPin{Epoch: 2, Enabled: false, Keys: [][]byte{pub, other}})
+	err = lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, true)
+	if err == nil || !strings.Contains(err.Error(), "rewritten") {
+		t.Errorf("lock enable over a version 2 with other keys = %v", err)
+	}
 	if n := len(f.statements()); n != 0 {
 		t.Errorf("%d version(s) posted", n)
+	}
+}
+
+// Names shown in the lock prompts are the server's, and a control character
+// in one could erase or rewrite the lines the prompt asks to be checked.
+func TestNamesInPromptsCannotRewriteThem(t *testing.T) {
+	if got := printable("laptop\r\x1b[2K\x1b[1A‮"); got != "laptop[2K[1A" {
+		t.Errorf("printable kept %q", got)
+	}
+	out := capture(t, func() {
+		printKeys([]control.SigningKey{{Public: make([]byte, 32), Name: "evil\x1b[1A\x1b[2K"}}, nil)
+	})
+	if strings.ContainsRune(out, '\x1b') {
+		t.Errorf("printKeys wrote an escape: %q", out)
 	}
 }

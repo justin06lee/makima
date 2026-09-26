@@ -933,9 +933,10 @@ with the server, and every node verifies its peers itself before admitting them
 to the data plane. A server that invents a peer has to forge a signature it
 holds no key for, and the invention is rejected by the entire mesh. Nor can it
 slip one into your next `lock sign`: the machines to sign are the server's
-list, so each is shown with its node key and signed only once you say yes
-(`-yes` for a script that has checked some other way). `makima status` on each
-machine shows its node key.
+list, so each is shown with its node key and signed only once you say yes.
+`makima status` on each machine shows its node key. `-yes` on `lock sign`,
+`lock seal` and `lock rm-key` agrees to the list unseen — for a script that
+has checked it some other way — and to nothing else.
 
 The lock itself is not the server's to change either. Every change to it —
 enforcing it, trusting another key, dropping one — is a numbered version signed
@@ -946,7 +947,9 @@ machine you sign on remembers the last version signed from it for each network
 (`~/.config/makima/lock-pins.json`, beside the default key; key files are never
 rewritten): a server that rewrote or hid versions since gets nothing signed.
 The first change signed from a machine takes the history on trust, as a new
-node does, so it shows what the new version will trust and asks first. Each node keeps
+node does, so it shows what the new version will trust and asks first; no flag
+skips that. If the record itself is what is wrong, `lock forget -local` lets
+go of it. Each node keeps
 the latest version it has accepted and moves forward only along signed ones: a
 server that stops sending the lock, sends it switched off, or adds a key of its
 own changes nothing on any node. `makima lock` shows a machine's copy. Every

@@ -606,12 +606,6 @@ type UnsignedNode struct {
 	// machines still on makima v0.3.0 check. Signed as well, so a machine
 	// admitted after the upgrade is not refused by every one of them.
 	LegacyMaterial []byte `json:"legacy_material,omitempty"`
-
-	// NetworkSignature is the signature for this network the node has now,
-	// if any — one from a key about to be dropped, when a key is. It lets
-	// rm-key -yes re-sign exactly the machines the dropped key had signed,
-	// checked on the signing side rather than taken on the server's word.
-	NetworkSignature []byte `json:"network_signature,omitempty"`
 }
 
 // PendingSignatures reports every node whose current key is unsigned.
@@ -660,8 +654,6 @@ func (s *Store) PendingSignaturesWithout(without string) []UnsignedNode {
 			NodeKey:        n.NodeKey,
 			Material:       signingMaterial(s.state.ServerKey.Public(), n.ID, n.NodeKey),
 			LegacyMaterial: legacySigningMaterial(n.ID, n.NodeKey),
-
-			NetworkSignature: n.NetworkSignature,
 		})
 	}
 	return out
