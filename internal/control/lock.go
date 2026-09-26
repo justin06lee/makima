@@ -419,6 +419,17 @@ func (s *Store) LockStatus() LockStatus {
 	return st
 }
 
+// legacySignedLocked reports whether a node has the old kind of signature
+// from a key the lock trusts now — what machines on makima v0.3.0 check.
+// Callers hold s.mu.
+func (s *Store) legacySignedLocked(n *Node) bool {
+	if len(n.KeySignature) == 0 || s.state.Lock == nil {
+		return false
+	}
+	l := &Lock{TrustedKeys: s.state.Lock.TrustedKeys}
+	return l.verifies(legacySigningMaterial(n.ID, n.NodeKey), n.KeySignature)
+}
+
 // signedLocked reports whether a node has a signature for this network that
 // the lock's current keys verify — not merely one present: one left from a
 // lock that was forgotten, or from a key since dropped, signs nothing now,
@@ -569,6 +580,11 @@ type UnsignedNode struct {
 	Name     string        `json:"name"`
 	NodeKey  key.Public    `json:"node_key"`
 	Material []byte        `json:"material"`
+
+	// LegacyMaterial is what the old kind of signature covers, the one
+	// machines still on makima v0.3.0 check. Signed as well, so a machine
+	// admitted after the upgrade is not refused by every one of them.
+	LegacyMaterial []byte `json:"legacy_material,omitempty"`
 }
 
 // PendingSignatures reports every node whose current key is unsigned.
@@ -586,27 +602,39 @@ func (s *Store) PendingSignatures() []UnsignedNode {
 		// An expired machine may have been stolen. Listing it would invite
 		// signing it back in, and a signed key outlives the expiry: it
 		// would be admitted again the moment it re-registered.
-		if n.Expired || s.signedLocked(n) {
+		//
+		// Waiting means missing either kind: the one naming this network,
+		// which nodes holding the signed lock check, or the old one, which
+		// machines still on v0.3.0 check. Both are asked for either way.
+		if n.Expired || (s.signedLocked(n) && s.legacySignedLocked(n)) {
 			continue
 		}
 		out = append(out, UnsignedNode{
-			ID:       n.ID,
-			Name:     n.Name,
-			NodeKey:  n.NodeKey,
-			Material: signingMaterial(s.state.ServerKey.Public(), n.ID, n.NodeKey),
+			ID:             n.ID,
+			Name:           n.Name,
+			NodeKey:        n.NodeKey,
+			Material:       signingMaterial(s.state.ServerKey.Public(), n.ID, n.NodeKey),
+			LegacyMaterial: legacySigningMaterial(n.ID, n.NodeKey),
 		})
 	}
 	return out
 }
 
-// ApplySignature records a signature for a node, rejecting one that does not
-// verify.
+// ApplySignature records a node's signature for this network, rejecting one
+// that does not verify.
+func (s *Store) ApplySignature(id netmap.NodeID, sig []byte) error {
+	return s.ApplySignatures(id, sig, nil)
+}
+
+// ApplySignatures records a node's signature for this network and, if given,
+// the old kind for machines still on makima v0.3.0, rejecting either if it
+// does not verify.
 //
 // Verification happens here even though the server is not the party the
 // signature protects against. A signature that does not verify is a mistake
 // somebody wants to hear about now, rather than a node that silently drops off
 // the mesh the moment the lock is enabled.
-func (s *Store) ApplySignature(id netmap.NodeID, sig []byte) error {
+func (s *Store) ApplySignatures(id netmap.NodeID, sig, legacy []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -632,8 +660,14 @@ func (s *Store) ApplySignature(id netmap.NodeID, sig []byte) error {
 	if err := l.VerifyNodeKey(s.state.ServerKey.Public(), target.ID, target.NodeKey, sig); err != nil {
 		return fmt.Errorf("signature for node %d does not verify against any trusted key for this network", id)
 	}
+	if len(legacy) > 0 && !l.verifies(legacySigningMaterial(target.ID, target.NodeKey), legacy) {
+		return fmt.Errorf("the old-style signature for node %d does not verify against any trusted key", id)
+	}
 
 	target.NetworkSignature = sig
+	if len(legacy) > 0 {
+		target.KeySignature = legacy
+	}
 	if err := s.save(); err != nil {
 		return err
 	}

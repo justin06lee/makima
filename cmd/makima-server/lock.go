@@ -482,6 +482,9 @@ func (t *target) signPending(sk *signingKeyFile, yes bool) (int, error) {
 		if !bytes.Equal(n.Material, control.SigningMaterial(network, n.ID, n.NodeKey)) {
 			return 0, fmt.Errorf("the server asked to sign something other than %s's key in this network; nothing was signed", n.Name)
 		}
+		if len(n.LegacyMaterial) > 0 && !bytes.Equal(n.LegacyMaterial, control.LegacySigningMaterial(n.ID, n.NodeKey)) {
+			return 0, fmt.Errorf("the server asked to sign something other than %s's key; nothing was signed", n.Name)
+		}
 	}
 	if !yes {
 		ok, err := confirmSigning(pending)
@@ -495,11 +498,17 @@ func (t *target) signPending(sk *signingKeyFile, yes bool) (int, error) {
 
 	for _, n := range pending {
 		sig := ed25519.Sign(ed25519.PrivateKey(sk.Private), n.Material)
+		// The old kind too, for machines still on makima v0.3.0, which
+		// check nothing else and would refuse this one otherwise.
+		var legacy []byte
+		if len(n.LegacyMaterial) > 0 {
+			legacy = ed25519.Sign(ed25519.PrivateKey(sk.Private), n.LegacyMaterial)
+		}
 
 		if t.live() {
-			err = t.admin.ApplySignature(n.ID, sig)
+			err = t.admin.ApplySignatures(n.ID, sig, legacy)
 		} else {
-			err = t.store.ApplySignature(n.ID, sig)
+			err = t.store.ApplySignatures(n.ID, sig, legacy)
 		}
 		if err != nil {
 			return 0, fmt.Errorf("sign %s: %w", n.Name, err)

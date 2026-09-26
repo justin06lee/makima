@@ -81,6 +81,10 @@ type LockStatementRequest struct {
 type SignatureRequest struct {
 	NodeID    netmap.NodeID `json:"node_id"`
 	Signature []byte        `json:"signature"`
+
+	// LegacySignature is the old kind, for machines still on makima v0.3.0.
+	// Optional: a signing tool from before it existed sends none.
+	LegacySignature []byte `json:"legacy_signature,omitempty"`
 }
 
 // registerAdminRoutes attaches everything beyond the original three.
@@ -350,7 +354,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		if err := json.Unmarshal(body, &req); err != nil {
 			return err
 		}
-		if err := s.store.ApplySignature(req.NodeID, req.Signature); err != nil {
+		if err := s.store.ApplySignatures(req.NodeID, req.Signature, req.LegacySignature); err != nil {
 			return err
 		}
 		writeJSON(w, http.StatusOK, okResponse())

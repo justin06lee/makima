@@ -802,3 +802,46 @@ func TestExpiringDropsBothSignatures(t *testing.T) {
 		t.Error("a signature survived the expiry")
 	}
 }
+
+// Machines still on makima v0.3.0 check only the old kind of signature. A
+// machine signed after the upgrade used to get only the new kind, so every one
+// of them refused it — and enabling the lock on the new server had them refuse
+// every peer. Both kinds are asked for now, and a machine missing either is
+// still waiting.
+func TestAMachineIsSignedForOldMachinesToo(t *testing.T) {
+	s := newStore(t)
+	pub, priv := signingPair(t)
+	startLock(t, s, pub, priv)
+	n := registerNode(t, s, "laptop")
+
+	pending := s.PendingSignatures()
+	if len(pending) != 1 || len(pending[0].LegacyMaterial) == 0 {
+		t.Fatalf("pending %+v: no old-kind material asked for", pending)
+	}
+
+	// Only the new kind: still waiting on the old one.
+	if err := s.ApplySignature(n.ID, ed25519.Sign(priv, pending[0].Material)); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.PendingSignatures()) != 1 {
+		t.Error("a machine with no old-kind signature is not waiting for one")
+	}
+
+	// Both, and a wrong old kind is refused.
+	if err := s.ApplySignatures(n.ID, ed25519.Sign(priv, pending[0].Material), ed25519.Sign(priv, []byte("something else"))); err == nil {
+		t.Error("an old-kind signature over the wrong bytes was recorded")
+	}
+	if err := s.ApplySignatures(n.ID, ed25519.Sign(priv, pending[0].Material), ed25519.Sign(priv, pending[0].LegacyMaterial)); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.PendingSignatures()) != 0 {
+		t.Error("a machine with both kinds is still waiting")
+	}
+
+	// What a v0.3.0 machine checks: the old kind, over ID and key.
+	got := s.Nodes()[0]
+	old := &Lock{Enabled: true, TrustedKeys: []SigningKey{{Public: pub}}}
+	if err := old.VerifyLegacy(key.Public{}, got.ID, got.NodeKey, nil, got.KeySignature); err != nil {
+		t.Errorf("a v0.3.0 machine would refuse it: %v", err)
+	}
+}

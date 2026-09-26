@@ -206,8 +206,13 @@ func TestANewMachineIsSignedOnlyOnceSomebodyAgrees(t *testing.T) {
 	if err := lockSign(args); err != nil {
 		t.Fatal(err)
 	}
-	if st := mustOpen(t, state).LockStatus(); st.Signed != 1 {
+	store := mustOpen(t, state)
+	if st := store.LockStatus(); st.Signed != 1 {
 		t.Errorf("agreed, and %d machine(s) signed, want 1", st.Signed)
+	}
+	// And the old kind, for machines still on v0.3.0.
+	if n := store.Nodes()[0]; len(n.KeySignature) == 0 || len(store.PendingSignatures()) != 0 {
+		t.Error("the machine was not signed the old way too")
 	}
 }
 

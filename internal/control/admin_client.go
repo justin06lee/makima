@@ -174,7 +174,13 @@ func (c *AdminClient) ApplyLockStatement(st LockStatement, names map[string]stri
 	return c.call(http.MethodPost, "/admin/lock/statement", LockStatementRequest{Statement: st, Names: names}, nil)
 }
 
-// ApplySignature records a signature for a node.
+// ApplySignature records a node's signature for this network.
 func (c *AdminClient) ApplySignature(id netmap.NodeID, sig []byte) error {
-	return c.call(http.MethodPost, "/admin/lock/sign", SignatureRequest{NodeID: id, Signature: sig}, nil)
+	return c.ApplySignatures(id, sig, nil)
+}
+
+// ApplySignatures records a node's signature for this network and the old
+// kind, for machines still on makima v0.3.0.
+func (c *AdminClient) ApplySignatures(id netmap.NodeID, sig, legacy []byte) error {
+	return c.call(http.MethodPost, "/admin/lock/sign", SignatureRequest{NodeID: id, Signature: sig, LegacySignature: legacy}, nil)
 }
