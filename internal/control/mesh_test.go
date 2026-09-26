@@ -493,3 +493,39 @@ func TestExitOfferIsAcceptedUntilRevoked(t *testing.T) {
 		t.Fatal("approving after a revoke did not take")
 	}
 }
+
+// Expiring is for a machine that may have been stolen, and the rest of the
+// mesh has to stop treating it as a peer at once. It used to stay in every
+// other node's netmap: they kept its key and its paths, so the machine that
+// could no longer check in could still reach all of them directly.
+func TestAnExpiredMachineLeavesEveryPeersNetmap(t *testing.T) {
+	s := newStore(t)
+	auth, _ := s.MintAuthKey(true, 0)
+
+	register := func(name string) key.Private {
+		t.Helper()
+		machine, _ := key.NewPrivate()
+		node, _ := key.NewPrivate()
+		if _, err := s.Register(machine.Public(), &RegisterRequest{
+			Name: name, NodeKey: node.Public(), AuthKey: auth.Secret,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return machine
+	}
+	register("laptop")
+	desktop := register("desktop")
+
+	if err := s.ExpireNode("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := s.NetMapFor(desktop.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range resp.Peers {
+		if p.Name == "laptop" {
+			t.Error("the expired laptop is still in the desktop's netmap")
+		}
+	}
+}

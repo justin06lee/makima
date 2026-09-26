@@ -702,6 +702,13 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 		if n.ID == self.ID {
 			continue
 		}
+		// An expired machine is one that may have been stolen. It can no
+		// longer check in, and it must not stay in anybody else's netmap
+		// either: they would keep its key and paths, and it could go on
+		// reaching every one of them directly.
+		if n.Expired {
+			continue
+		}
 		if !pol.CanSee(selfNode, n.policyNode()) {
 			continue
 		}
