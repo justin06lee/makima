@@ -390,8 +390,12 @@ func nodes(args []string) error {
 		if len(n.Endpoints) > 0 {
 			eps = n.Endpoints[0].String()
 		}
+		seen := humanAge(n.LastSeen)
+		if n.Expired {
+			seen = "expired"
+		}
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n",
-			n.ID, n.Name, n.Address.Addr(), eps, humanAge(n.LastSeen), versionColumn(n.Version, n.Update))
+			n.ID, n.Name, n.Address.Addr(), eps, seen, versionColumn(n.Version, n.Update))
 	}
 	return w.Flush()
 }

@@ -515,6 +515,9 @@ func (s *Store) UpdateEndpoints(machineKey key.Public, eps []netip.AddrPort) (bo
 	if n == nil {
 		return false, fmt.Errorf("unknown machine key")
 	}
+	if n.Expired {
+		return false, errExpired
+	}
 	n.LastSeen = time.Now().UTC()
 
 	if sameEndpoints(n.Endpoints, eps) {
@@ -535,6 +538,9 @@ type Checkin struct {
 	Update    *netmap.UpdateStatus
 }
 
+// errExpired is what an expired machine hears when it checks in.
+var errExpired = errors.New("this machine was expired by the network's operator; it has to rejoin with a fresh invite")
+
 // Checkin records a polling node's report: where it can be reached, what it
 // runs, and how an update is going. Returns whether anything changed; like
 // UpdateEndpoints, a report that changes nothing must not wake every other
@@ -550,6 +556,9 @@ func (s *Store) Checkin(machineKey key.Public, c Checkin) (bool, error) {
 	n := s.findByMachineKey(machineKey)
 	if n == nil {
 		return false, fmt.Errorf("unknown machine key")
+	}
+	if n.Expired {
+		return false, errExpired
 	}
 	n.LastSeen = time.Now().UTC()
 
@@ -668,6 +677,12 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 	self := s.findByMachineKey(machineKey)
 	if self == nil {
 		return nil, fmt.Errorf("unknown machine key")
+	}
+	// An expired machine gets nothing: not its peers' keys and paths, not
+	// word of who is on the network. Being dropped from every other netmap
+	// kept it from reaching them; this keeps it from learning about them.
+	if self.Expired {
+		return nil, errExpired
 	}
 
 	relay := s.activeRelayLocked()

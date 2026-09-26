@@ -453,7 +453,7 @@ func expireCmd(args []string) error {
 		return err
 	}
 
-	fmt.Printf("expired %s: every other machine drops it now, and it keeps its address but must\npresent a new auth key to rejoin\n", *name)
+	fmt.Printf("expired %s; it keeps its address but must present a new auth key to rejoin\n", *name)
 	fmt.Print("every other node drops it on its next netmap\n")
 	return nil
 }

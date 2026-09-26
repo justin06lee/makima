@@ -529,3 +529,25 @@ func TestAnExpiredMachineLeavesEveryPeersNetmap(t *testing.T) {
 		}
 	}
 }
+
+// Nor does the expired machine itself get anything. Its check-ins used to
+// succeed — its last-seen time kept moving — and it went on being handed
+// every peer's keys and paths.
+func TestAnExpiredMachineIsRefusedItsOwnNetmap(t *testing.T) {
+	s := newStore(t)
+	auth, _ := s.MintAuthKey(true, 0)
+	machine, _ := key.NewPrivate()
+	node, _ := key.NewPrivate()
+	if _, err := s.Register(machine.Public(), &RegisterRequest{Name: "laptop", NodeKey: node.Public(), AuthKey: auth.Secret}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ExpireNode("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Checkin(machine.Public(), Checkin{Running: "v9"}); err == nil {
+		t.Error("the expired machine's check-in was taken")
+	}
+	if _, err := s.NetMapFor(machine.Public()); err == nil {
+		t.Error("the expired machine was served a netmap")
+	}
+}
