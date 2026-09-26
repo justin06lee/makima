@@ -940,7 +940,10 @@ machine shows its node key.
 The lock itself is not the server's to change either. Every change to it —
 enforcing it, trusting another key, dropping one — is a numbered version signed
 on your machine by a key the lock already trusts, so those commands read your
-signing key (`-key`, default `~/.config/makima/signing.key`). Each node keeps
+signing key (`-key`, default `~/.config/makima/signing.key`). They build each
+change on the lock's signed versions, not on what the server says, and the key
+file remembers the last version it signed for each network: a server that
+rewrote or hid versions gets nothing signed. Each node keeps
 the latest version it has accepted and moves forward only along signed ones: a
 server that stops sending the lock, sends it switched off, or adds a key of its
 own changes nothing on any node. `makima lock` shows a machine's copy. Every
@@ -952,8 +955,10 @@ A node takes the first version it is shown on trust — the same trust it placed
 in the server when it joined. Rotating a key is two signed steps: `lock add-key`
 with the old key, then `lock rm-key` with the new one. A lock set up by an
 older makima was never signed and can still be switched off by the server
-until it is sealed: `makima-server lock seal`, which first signs every node
-again for this network, since its old signatures name none.
+until it is sealed: `makima-server lock seal`, which shows the keys it is about
+to pin — with no signed history, that list is the server's word — and, if the
+lock is enforced, first signs every node again for this network, since its old
+signatures name none. Nothing else changes such a lock until it is sealed.
 
 Lose every signing key and nothing can change the lock again, by design. The
 way out has to be taken on both sides: `makima-server lock forget`, then

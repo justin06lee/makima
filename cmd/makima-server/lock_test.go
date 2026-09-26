@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"net"
@@ -10,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netmap"
 )
 
 // oldLockedNetwork writes a control plane's state as makima v0.3.0 left it
@@ -95,6 +98,7 @@ func TestSealingAnOldLockSignsItsNodesForThisNetwork(t *testing.T) {
 	state, keyPath := oldLockedNetwork(t, "laptop", "desktop")
 	sock := filepath.Join(filepath.Dir(state), "nobody.sock")
 	asked := answer(t, true)
+	pinned := answerSeal(t, true)
 
 	if err := lockSeal([]string{"-state", state, "-socket", sock, "-key", keyPath}); err != nil {
 		t.Fatalf("seal: %v", err)
@@ -106,6 +110,9 @@ func TestSealingAnOldLockSignsItsNodesForThisNetwork(t *testing.T) {
 	}
 	if len(*asked) != 2 {
 		t.Errorf("asked about %v, want both machines", *asked)
+	}
+	if len(*pinned) != 1 {
+		t.Errorf("shown %d key(s) to pin, want the one the lock trusts", len(*pinned))
 	}
 	st := store.LockStatus()
 	if st.Epoch != 1 || !st.Enabled || st.Signed != 2 || st.Unsigned != 0 {
@@ -179,6 +186,20 @@ func answer(t *testing.T, yes bool) *[]string {
 	}
 	t.Cleanup(func() { confirmSigning = was })
 	return &asked
+}
+
+// answerSeal makes confirmSeal say yes or no, and records the keys it was
+// shown.
+func answerSeal(t *testing.T, yes bool) *[]control.SigningKey {
+	t.Helper()
+	var shown []control.SigningKey
+	was := confirmSeal
+	confirmSeal = func(keys []control.SigningKey) (bool, error) {
+		shown = append(shown, keys...)
+		return yes, nil
+	}
+	t.Cleanup(func() { confirmSeal = was })
+	return &shown
 }
 
 // The list of machines to sign is the server's, and the server is what the
@@ -269,43 +290,205 @@ func TestAServerAskingToSignSomethingElseGetsNothing(t *testing.T) {
 // want.
 func lyingServer(t *testing.T, network key.Public, pending []control.UnsignedNode, want string) bool {
 	t.Helper()
+	fake := fakeAdmin(t, network)
+	fake.pending = pending
+
+	_, keyPath := newLockedNetwork(t, "unused")
+	err := lockSign([]string{"-state", fake.state, "-socket", fake.sock, "-key", keyPath, "-yes"})
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("lock sign = %v, want a refusal saying %q", err, want)
+	}
+	return fake.signed.Load()
+}
+
+// fake is a control plane's admin socket that says what a test tells it to,
+// and records what the signing tool sends it.
+type fake struct {
+	sock, state string
+
+	status  control.LockStatus
+	chain   []control.LockStatement
+	pending []control.UnsignedNode
+
+	signed atomic.Bool
+	mu     sync.Mutex
+	posted []control.LockStatement
+}
+
+// fakeAdmin starts one answering as the control plane whose key is network.
+// Its -state names a throwaway file, so a socket that failed to answer could
+// never fall through to the machine's own control plane.
+func fakeAdmin(t *testing.T, network key.Public) *fake {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "mk")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "admin.sock")
+	f := &fake{sock: filepath.Join(dir, "admin.sock"), state: filepath.Join(dir, "control.json")}
 
-	var signed atomic.Bool
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /admin/lock/pending", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(pending)
-	})
 	mux.HandleFunc("GET /admin/key", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(struct {
 			ServerKey key.Public `json:"server_key"`
 		}{network})
 	})
+	mux.HandleFunc("GET /admin/lock", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(f.status)
+	})
+	mux.HandleFunc("GET /admin/lock/chain", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(f.chain)
+	})
+	mux.HandleFunc("GET /admin/lock/pending", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(f.pending)
+	})
 	mux.HandleFunc("POST /admin/lock/sign", func(w http.ResponseWriter, r *http.Request) {
-		signed.Store(true)
+		f.signed.Store(true)
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
-	ln, err := net.Listen("unix", sock)
+	mux.HandleFunc("POST /admin/lock/statement", func(w http.ResponseWriter, r *http.Request) {
+		var req control.LockStatementRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		f.posted = append(f.posted, req.Statement)
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	})
+	ln, err := net.Listen("unix", f.sock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
+	return f
+}
 
-	// -state names a throwaway file, so a socket that failed to answer could
-	// never fall through to the machine's own control plane.
-	_, keyPath := newLockedNetwork(t, "unused")
-	err = lockSign([]string{"-state", filepath.Join(dir, "control.json"), "-socket", sock, "-key", keyPath, "-yes"})
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("lock sign = %v, want a refusal saying %q", err, want)
+func (f *fake) statements() []control.LockStatement {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]control.LockStatement(nil), f.posted...)
+}
+
+// signingKeyAt writes a signing key file for priv, with the versions it has
+// signed, and returns its path.
+func signingKeyAt(t *testing.T, priv ed25519.PrivateKey, networks map[string]*netmap.LockPin) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "signing.key")
+	sk := &signingKeyFile{Name: "test", Private: priv, Public: priv.Public().(ed25519.PublicKey), Networks: networks}
+	if err := writeSigningKey(path, sk); err != nil {
+		t.Fatal(err)
 	}
-	return signed.Load()
+	return path
+}
+
+// A lock change is built on the lock's signed versions, not on what the
+// server says they add up to. Before, lock enable signed whatever key list
+// the server reported: a compromised one reported a key of its own beside
+// the operator's, and the operator's next change signed it in — a version
+// every node would take, since the operator's key signed it.
+func TestALockChangeIsBuiltOnTheSignedHistoryNotTheServersWord(t *testing.T) {
+	server, _ := key.NewPrivate()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	attacker, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	f := fakeAdmin(t, server.Public())
+	f.chain = []control.LockStatement{control.SignLockStatement(priv, server.Public(), 1, false, [][]byte{pub})}
+	f.status = control.LockStatus{Epoch: 1, TrustedKeys: []control.SigningKey{{Public: pub}, {Public: attacker}}}
+	keyPath := signingKeyAt(t, priv, nil)
+
+	if err := lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, true); err != nil {
+		t.Fatal(err)
+	}
+	posted := f.statements()
+	if len(posted) != 1 {
+		t.Fatalf("%d versions posted, want 1", len(posted))
+	}
+	if got := posted[0]; got.Epoch != 2 || !got.Enabled || len(got.Keys) != 1 || !containsKey(got.Keys, pub) {
+		t.Errorf("signed version %d, enabled %v, trusting %d key(s): not the signed history plus enforcement", got.Epoch, got.Enabled, len(got.Keys))
+	}
+
+	// And the key file now remembers it, as a node remembers its pin.
+	sk, err := readSigningKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin := sk.Networks[server.Public().String()]; pin == nil || pin.Epoch != 2 {
+		t.Errorf("the key file remembers %+v, want version 2", pin)
+	}
+}
+
+// Once this key has signed a version of a network's lock, a history that does
+// not follow from it — one the server wrote itself, starting over with its own
+// key beside the operator's — gets nothing signed.
+func TestARewrittenHistoryGetsNothingSigned(t *testing.T) {
+	server, _ := key.NewPrivate()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	attackerPub, attacker, _ := ed25519.GenerateKey(rand.Reader)
+
+	f := fakeAdmin(t, server.Public())
+	both := [][]byte{pub, attackerPub}
+	f.chain = []control.LockStatement{
+		control.SignLockStatement(attacker, server.Public(), 1, false, both),
+		control.SignLockStatement(attacker, server.Public(), 2, false, both),
+		control.SignLockStatement(attacker, server.Public(), 3, false, both),
+	}
+	f.status = control.LockStatus{Epoch: 3, TrustedKeys: []control.SigningKey{{Public: pub}, {Public: attackerPub}}}
+	keyPath := signingKeyAt(t, priv, map[string]*netmap.LockPin{
+		server.Public().String(): {Epoch: 2, Keys: [][]byte{pub}},
+	})
+
+	if err := lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, true); err == nil {
+		t.Error("a change was signed on a history that does not follow from the one this key signed")
+	}
+	if n := len(f.statements()); n != 0 {
+		t.Errorf("%d version(s) posted", n)
+	}
+}
+
+// Nor is a history cut short: a server hiding the versions after one it
+// would rather the next change were built on.
+func TestAHiddenVersionGetsNothingSigned(t *testing.T) {
+	server, _ := key.NewPrivate()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+
+	f := fakeAdmin(t, server.Public())
+	f.chain = []control.LockStatement{
+		control.SignLockStatement(priv, server.Public(), 1, false, [][]byte{pub}),
+		control.SignLockStatement(priv, server.Public(), 2, true, [][]byte{pub}),
+	}
+	f.status = control.LockStatus{Epoch: 2, Enabled: true, TrustedKeys: []control.SigningKey{{Public: pub}}}
+	keyPath := signingKeyAt(t, priv, map[string]*netmap.LockPin{
+		server.Public().String(): {Epoch: 3, Enabled: true, Keys: [][]byte{pub}},
+	})
+
+	if err := lockEnable([]string{"-state", f.state, "-socket", f.sock, "-key", keyPath}, false); err == nil {
+		t.Error("a change was signed on a history missing the version this key last signed")
+	}
+	if n := len(f.statements()); n != 0 {
+		t.Errorf("%d version(s) posted", n)
+	}
+}
+
+// A lock set up by makima v0.3.0 has no signed history to build a change on.
+// It is sealed first, which shows what it is about to pin.
+func TestAnUnsealedLockIsSealedBeforeItIsChanged(t *testing.T) {
+	state, keyPath := oldLockedNetwork(t, "laptop")
+	sock := filepath.Join(filepath.Dir(state), "nobody.sock")
+	args := []string{"-state", state, "-socket", sock, "-key", keyPath}
+
+	err := lockEnable(args, false)
+	if err == nil || !strings.Contains(err.Error(), "seal it first") {
+		t.Errorf("disabling an unsealed lock = %v, want to be told to seal it", err)
+	}
+
+	answerSeal(t, false)
+	if err := lockSeal(args); err == nil {
+		t.Error("declining to pin the keys still sealed the lock")
+	}
+	if st := mustOpen(t, state).LockStatus(); st.Epoch != 0 {
+		t.Errorf("declined, and the lock is at version %d", st.Epoch)
+	}
 }
 
 func mustOpen(t *testing.T, state string) *control.Store {
@@ -333,5 +516,38 @@ func TestWithNobodyToAskNothingIsSigned(t *testing.T) {
 	ok, err := confirmSigning([]control.UnsignedNode{{ID: 3, Name: "laptop", NodeKey: laptop.Public()}})
 	if ok || err == nil || !strings.Contains(err.Error(), "-yes") {
 		t.Errorf("with no terminal: %v, %v; want a refusal that mentions -yes", ok, err)
+	}
+}
+
+// The ordinary run of commands, against a store: each change builds on the
+// version the one before signed, and the key file keeps up.
+func TestTheLockCommandsFollowOneAnother(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "control.json")
+	keyPath := filepath.Join(dir, "signing.key")
+	sock := filepath.Join(dir, "nobody.sock")
+	common := []string{"-state", state, "-socket", sock, "-key", keyPath}
+
+	if err := lockInit(append(common, "-name", "laptop")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	if err := lockAddKey(append(common, "-public", base64.RawURLEncoding.EncodeToString(other), "-name", "backup")); err != nil {
+		t.Fatalf("add-key: %v", err)
+	}
+	if err := lockEnable(common, true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	store := mustOpen(t, state)
+	if st := store.LockStatus(); st.Epoch != 3 || !st.Enabled || len(st.TrustedKeys) != 2 {
+		t.Errorf("after init, add-key and enable: %+v", st)
+	}
+	sk, err := readSigningKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin := sk.Networks[store.ServerKey().Public().String()]; pin == nil || pin.Epoch != 3 || !pin.Enabled {
+		t.Errorf("the key file remembers %+v, want version 3, enforced", pin)
 	}
 }

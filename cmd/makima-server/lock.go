@@ -16,6 +16,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/netmap"
 	"golang.org/x/term"
 )
 
@@ -47,6 +48,26 @@ type signingKeyFile struct {
 	Name    string `json:"name"`
 	Private []byte `json:"private"`
 	Public  []byte `json:"public"`
+
+	// Networks is, for each network whose lock this key has changed — by its
+	// control plane's key — the version it last signed there. A node keeps
+	// the lock it has accepted so the server cannot tell it otherwise; this
+	// is the same for the signing side, so the server cannot get this key to
+	// sign a change to a lock it has quietly rewritten.
+	Networks map[string]*netmap.LockPin `json:"networks,omitempty"`
+}
+
+// remember records next as the version this key last signed in network, so
+// the next change starts from it. A key file that cannot be written is only
+// warned about: the version is already on the server.
+func (sk *signingKeyFile) remember(path string, network key.Public, next control.LockStatement) {
+	if sk.Networks == nil {
+		sk.Networks = map[string]*netmap.LockPin{}
+	}
+	sk.Networks[network.String()] = &netmap.LockPin{Epoch: next.Epoch, Enabled: next.Enabled, Keys: next.Keys}
+	if err := writeSigningKey(path, sk); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record lock version %d in %s: %v\n", next.Epoch, path, err)
+	}
 }
 
 func lockCmd(args []string) error {
@@ -174,7 +195,8 @@ func lockInit(args []string) error {
 		return fmt.Errorf("generate signing key: %w", err)
 	}
 
-	if err := writeSigningKey(*keyPath, &signingKeyFile{Name: *name, Private: priv, Public: pub}); err != nil {
+	sk := &signingKeyFile{Name: *name, Private: priv, Public: pub}
+	if err := writeSigningKey(*keyPath, sk); err != nil {
 		return err
 	}
 
@@ -187,6 +209,7 @@ func lockInit(args []string) error {
 	if err := t.applyLock(first, map[string]string{(control.SigningKey{Public: pub}).ID(): *name}); err != nil {
 		return err
 	}
+	sk.remember(*keyPath, network, first)
 
 	fmt.Printf("signing key written to %s\n", *keyPath)
 	fmt.Printf("public  %s\n\n", base64.RawURLEncoding.EncodeToString(pub))
@@ -274,7 +297,7 @@ func lockRemoveKey(args []string) error {
 func lockSeal(args []string) error {
 	af := newAdminFlags("lock seal")
 	keyPath := af.fs.String("key", DefaultSigningKeyPath(), "a signing key the lock trusts")
-	yes := af.fs.Bool("yes", false, "sign machines this key has never signed without asking")
+	yes := af.fs.Bool("yes", false, "pin the keys and sign the machines without asking")
 
 	t, err := af.open(args)
 	if err != nil {
@@ -284,32 +307,78 @@ func lockSeal(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(st.TrustedKeys) == 0 {
+		return fmt.Errorf("network lock is not set up; start one with 'makima-server lock init'")
+	}
 	if st.Epoch > 0 {
 		fmt.Printf("the lock is already signed, at version %d\n", st.Epoch)
 		return nil
 	}
-
-	// A node holding a signed lock takes only signatures that name this
-	// network, and a lock from before versions were signed has nodes signed
-	// the older way. So they are signed again first; an enforced lock could
-	// not be sealed otherwise, since every node would be rejected.
 	sk, err := readSigningKey(*keyPath)
 	if err != nil {
 		return err
 	}
-	if n, err := t.signPending(sk, *yes); err != nil {
-		return err
-	} else if n > 0 {
-		fmt.Print("\n")
+	var keys [][]byte
+	for _, k := range st.TrustedKeys {
+		keys = append(keys, k.Public)
+	}
+	if !containsKey(keys, sk.Public) {
+		return fmt.Errorf("the signing key in %s is not one the lock trusts, so no node would accept a version signed with it", *keyPath)
 	}
 
-	if err := t.changeLock(*keyPath, nil, func(keys [][]byte, enabled bool) ([][]byte, bool, error) {
-		return keys, enabled, nil
-	}); err != nil {
+	// A lock that was never signed has no history to check what it trusts
+	// against: the server's word is all there is, and sealing pins it on
+	// every node for good. So it is shown first.
+	if !*yes {
+		ok, err := confirmSeal(st.TrustedKeys)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("not sealed")
+		}
+	}
+
+	// A node holding a signed lock takes only signatures that name this
+	// network, and a lock from before versions were signed has nodes signed
+	// the older way. So an enforced one has them signed again first; it
+	// could not be sealed otherwise, since every node would be rejected. One
+	// not enforced yet can wait for 'lock sign' before 'lock enable'.
+	if st.Enabled {
+		if n, err := t.signPending(sk, *yes); err != nil {
+			return err
+		} else if n > 0 {
+			fmt.Print("\n")
+		}
+	}
+
+	network, err := t.serverKey()
+	if err != nil {
 		return err
 	}
+	first := control.SignLockStatement(ed25519.PrivateKey(sk.Private), network, 1, st.Enabled, keys)
+	if err := t.applyLock(first, nil); err != nil {
+		return err
+	}
+	sk.remember(*keyPath, network, first)
 	fmt.Print("sealed: every node now holds this server to the lock as it stands\n")
 	return nil
+}
+
+// confirmSeal shows the keys a lock that was never signed is about to be
+// pinned to, and asks. A variable so tests can answer.
+var confirmSeal = func(keys []control.SigningKey) (bool, error) {
+	fmt.Print("this lock was never signed, so which keys it trusts is the server's word.\n")
+	fmt.Print("sealing pins these on every node:\n\n")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprint(w, "ID\tNAME\n")
+	for _, k := range keys {
+		fmt.Fprintf(w, "%s\t%s\n", k.ID(), k.Name)
+	}
+	if err := w.Flush(); err != nil {
+		return false, err
+	}
+	return ask("\nare these all yours? [y/N] ")
 }
 
 // lockForget throws the lock away, for when every key that could sign a
@@ -339,35 +408,84 @@ func lockForget(args []string) error {
 // changeLock signs and applies the lock's next version: the current one,
 // changed by edit, signed with the key at keyPath — which the current
 // version has to trust, since that is what every node will check.
+//
+// Where the lock stands is read from its signed versions, not from what the
+// server says about them. The server is what the lock defends against, and
+// building on its word let a compromised one report a key of its own among
+// the trusted and have the operator's next change sign it in — every node
+// would take that version, since the operator's key signed it. The versions
+// are followed from the one this key last signed here, as a node follows them
+// from its pin, so a history the server rewrote gets nothing signed.
 func (t *target) changeLock(keyPath string, names map[string]string, edit func(keys [][]byte, enabled bool) ([][]byte, bool, error)) error {
 	sk, err := readSigningKey(keyPath)
 	if err != nil {
 		return err
 	}
-	st, err := t.lockStatus()
+	network, cur, err := t.currentLock(sk)
 	if err != nil {
 		return err
 	}
-	if len(st.TrustedKeys) == 0 {
-		return fmt.Errorf("network lock is not set up; start one with 'makima-server lock init'")
-	}
-	var keys [][]byte
-	for _, k := range st.TrustedKeys {
-		keys = append(keys, k.Public)
-	}
-	if !containsKey(keys, sk.Public) {
+	if !containsKey(cur.Keys, sk.Public) {
 		return fmt.Errorf("the signing key in %s is not one the lock trusts, so no node would accept a change signed with it", keyPath)
 	}
-	keys, enabled, err := edit(keys, st.Enabled)
+	keys, enabled, err := edit(cur.Keys, cur.Enabled)
 	if err != nil {
 		return err
 	}
+	next := control.SignLockStatement(ed25519.PrivateKey(sk.Private), network, cur.Epoch+1, enabled, keys)
+	if err := t.applyLock(next, names); err != nil {
+		return err
+	}
+	sk.remember(keyPath, network, next)
+	return nil
+}
+
+// currentLock is the lock as its signed versions leave it, followed from the
+// version sk last signed in this network — or, the first time sk changes it,
+// from the beginning, as a node that has never seen the lock would.
+func (t *target) currentLock(sk *signingKeyFile) (key.Public, *netmap.LockPin, error) {
 	network, err := t.serverKey()
 	if err != nil {
-		return err
+		return key.Public{}, nil, err
 	}
-	next := control.SignLockStatement(ed25519.PrivateKey(sk.Private), network, st.Epoch+1, enabled, keys)
-	return t.applyLock(next, names)
+	chain, err := t.lockChain()
+	if err != nil {
+		return key.Public{}, nil, err
+	}
+	if len(chain) == 0 {
+		st, err := t.lockStatus()
+		if err != nil {
+			return key.Public{}, nil, err
+		}
+		if len(st.TrustedKeys) == 0 {
+			return key.Public{}, nil, fmt.Errorf("network lock is not set up; start one with 'makima-server lock init'")
+		}
+		return key.Public{}, nil, fmt.Errorf("this lock was set up by an older makima and has no signed history to change; seal it first:\n  makima-server lock seal")
+	}
+
+	pin := sk.Networks[network.String()]
+	cur, err := control.AdvanceLock(network, pin, chain)
+	if err != nil {
+		return key.Public{}, nil, fmt.Errorf("the lock this server holds does not follow, by signed versions, from the one this key last signed here — nothing was signed: %w", err)
+	}
+	if last := chain[len(chain)-1].Epoch; cur == nil || last != cur.Epoch {
+		return key.Public{}, nil, fmt.Errorf("the server's lock is at version %d, but this key last signed version %d here; it has lost or hidden versions — nothing was signed", last, pinEpoch(cur))
+	}
+	return network, cur, nil
+}
+
+func pinEpoch(p *netmap.LockPin) uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.Epoch
+}
+
+func (t *target) lockChain() ([]control.LockStatement, error) {
+	if t.live() {
+		return t.admin.LockChain()
+	}
+	return t.store.LockChain(), nil
 }
 
 func (t *target) lockStatus() (control.LockStatus, error) {
@@ -563,7 +681,16 @@ var confirmSigning = func(fresh []control.UnsignedNode) (bool, error) {
 		return false, fmt.Errorf("no terminal to ask at: check each of these is yours ('makima status' on it shows its node key), then run again with -yes")
 	}
 	fmt.Print("\nthe server chose this list, so a machine you do not recognise may be its own.\n")
-	fmt.Print("each machine's 'makima status' shows its node key. sign them? [y/N] ")
+	return ask("each machine's 'makima status' shows its node key. sign them? [y/N] ")
+}
+
+// ask puts a yes-or-no question to whoever is at the terminal; no terminal
+// is an error that says to pass -yes, never a yes.
+func ask(question string) (bool, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return false, errors.New("no terminal to ask at; check the list above, then run again with -yes")
+	}
+	fmt.Print(question)
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return false, nil

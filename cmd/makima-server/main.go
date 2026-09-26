@@ -144,7 +144,7 @@ not trusting this server about membership:
   makima-server lock sign      sign the nodes that need it (lists them and asks first; -yes)
   makima-server lock enable    start enforcing (signed with your key)
   makima-server lock add-key -public KEY   trust another key (signed with yours)
-  makima-server lock seal      sign a lock set up by an older makima
+  makima-server lock seal      pin a lock set up by an older makima (shows its keys first; -yes)
   makima-server lock forget    every key is lost: start over (then 'makima lock reset' on each machine)
   makima-server lock status
 
