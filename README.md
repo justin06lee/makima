@@ -206,8 +206,12 @@ makima up -advertise https://makima.example.dev
 
 A proxy on the same machine — cloudflared, Caddy, nginx — is believed about
 whom it forwards for (`X-Forwarded-For`), so the server's rate limits count
-machines rather than the proxy. A proxy anywhere else has to be named, or every
-machine behind it shares one budget:
+machines rather than the proxy. nginx only says so when told to
+(`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Something
+that copies the connection without setting the header — socat, `ssh -R`,
+haproxy in TCP mode — passes on whatever the client wrote in it, so behind one
+of those run the server with `-trusted-proxies ""`. A proxy anywhere else has
+to be named, or every machine behind it shares one budget:
 `makima-server serve -trusted-proxies 127.0.0.0/8,::1/128,192.0.2.10`.
 
 Or put it on anything with a public address; a small VPS is plenty.
