@@ -557,9 +557,12 @@ the network lock's signing key in `~/.config/makima`, which a network that
 outlives this machine may still trust. Taking makima off the machine entirely
 is `make uninstall`.
 
-A server older than this makima cannot be asked to forget a machine. The reset
-goes ahead regardless, and prints the `makima-server forget` to run on the
-machine holding the network instead.
+When the server cannot be asked — it is out of reach, older than this makima,
+the machine was expired by the network's operator, or the two clocks are more
+than five minutes apart — the reset goes ahead regardless, and prints the
+`makima-server forget` to run on the machine holding the network instead. It
+refuses a `-config` that is not a makima config, and a makima directory that is
+a symlink, rather than delete through either.
 
 ### Administering a mesh
 

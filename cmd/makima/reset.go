@@ -46,22 +46,26 @@ func resetCmd(args []string) error {
 	}
 
 	r := surveyReset(defaultResetPaths(*path))
-	daemons := []supervise.Daemon{daemonFor(*path), controlDaemon(), relayDaemon()}
-	running := false
-	for _, d := range daemons {
-		running = running || d.Running()
+	if err := r.refusal(); err != nil {
+		return err
+	}
+	daemons := []resetDaemon{
+		{proc: daemonFor(*path), name: "the tunnel",
+			stopped: "Stopped the tunnel, and put the interface, routes, resolver and firewall back."},
+		{proc: controlDaemon(), name: "the network's server"},
+		// Found by its port, which is STUN's and TURN's too: something else
+		// answering there is not the relay, and not the reset's to stop.
+		{proc: relayDaemon(), name: "the relay", byPort: true},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	if len(r.doomed) == 0 && !running {
+	if len(r.doomed) == 0 {
 		// Stopped all the same: a registration whose files were deleted by
 		// hand would still start something at the next boot.
-		for _, d := range daemons {
-			if err := d.Stop(ctx, stopWait); err != nil {
-				return err
-			}
+		if err := stopAll(ctx, daemons); err != nil {
+			return err
 		}
 		fmt.Println("Nothing of makima's is on this machine to reset. It is on no network.")
 		return nil
@@ -79,47 +83,79 @@ func resetCmd(args []string) error {
 	}
 	fmt.Println()
 
-	// The tunnel first, the way `makima down` stops it: the daemon puts the
-	// interface, routes, resolver and firewall back on its way out, and it
-	// cannot once its config is gone. Stopping it before telling the server
-	// also means the request goes out over the machine's own network, not
-	// into a tunnel or through an exit node that is about to disappear.
-	node := daemons[0]
-	was := node.Running()
-	if err := node.Stop(ctx, stopWait); err != nil {
-		return fmt.Errorf("%w; nothing was deleted", err)
-	}
-	if was {
-		fmt.Println("Stopped the tunnel, and put the interface, routes, resolver and firewall back.")
-	}
-
-	if r.leaves() {
-		r.leave(ctx)
-	}
-
-	for _, d := range daemons[1:] {
-		was := d.Running()
-		if err := d.Stop(ctx, stopWait); err != nil {
-			return fmt.Errorf("%w; nothing was deleted", err)
-		}
-		if was {
-			fmt.Printf("Stopped %s.\n", strings.TrimPrefix(d.Service.Description, "makima: "))
-		}
-	}
-
-	r.list()
-	kept, err := r.wipe()
+	kept, err := r.run(ctx, daemons, r.leave)
 	if err != nil {
 		return err
 	}
-	fmt.Println("Deleted everything it listed.")
-
 	fmt.Println()
 	fmt.Println("Reset. This machine is on no network: 'makima up' starts a new one, and 'makima join' joins one.")
 	if kept != "" {
 		fmt.Printf("A copy of the network it held is in %s, root's alone, until the machine restarts.\n", kept)
 	}
 	return nil
+}
+
+// resetDaemon is one of makima's long-running processes, as a reset stops it.
+type resetDaemon struct {
+	proc interface {
+		Running() bool
+		Stop(ctx context.Context, wait time.Duration) error
+	}
+	name    string
+	stopped string // said once it stops, when it was running; "Stopped <name>." otherwise
+	byPort  bool   // found by a TCP port, where something else may be answering
+}
+
+// stopAll stops each daemon, and unregisters it so nothing starts at boot.
+func stopAll(ctx context.Context, daemons []resetDaemon) error {
+	for _, d := range daemons {
+		was := d.proc.Running()
+		err := d.proc.Stop(ctx, stopWait)
+		switch {
+		case err != nil && d.byPort && errors.Is(err, supervise.ErrNoProcess):
+			fmt.Printf("Something that is not makima's answers where %s would; it is left alone.\n", d.name)
+		case err != nil:
+			return err
+		case was && d.stopped != "":
+			fmt.Println(d.stopped)
+		case was:
+			fmt.Printf("Stopped %s.\n", d.name)
+		}
+	}
+	return nil
+}
+
+// run does the reset, in an order that keeps a failure harmless for as long as
+// it can: everything stopped, then the held network copied aside — and until
+// both have worked, the machine is still on its network with nothing deleted.
+// Only then is the server asked to forget it, and the files deleted.
+//
+// The tunnel stops before the server is asked, too: the daemon puts the
+// interface, routes, resolver and firewall back on its way out, which it
+// cannot once its config is gone, and with it stopped the request goes out
+// over the machine's own network rather than into a tunnel, or through an exit
+// node, that is about to disappear.
+func (r *resetState) run(ctx context.Context, daemons []resetDaemon, leave func(context.Context)) (string, error) {
+	if err := stopAll(ctx, daemons); err != nil {
+		return "", fmt.Errorf("%w; nothing was deleted, and this machine has not left its network", err)
+	}
+
+	// Again, now that nothing is running: stopping writes and removes files
+	// of its own.
+	r.list()
+	kept, err := r.copyAside()
+	if err != nil {
+		return "", fmt.Errorf("keep a copy of the network before deleting it: %w; nothing was deleted, and this machine has not left its network", err)
+	}
+
+	if r.leaves() {
+		leave(ctx)
+	}
+	if err := r.remove(); err != nil {
+		return kept, err
+	}
+	fmt.Println("Deleted everything it listed.")
+	return kept, nil
 }
 
 // resetPaths are the places a reset clears. They are fields, not the
@@ -178,15 +214,22 @@ func (p resetPaths) nodeFiles() []string {
 	if p.wholeDir {
 		return existing(filepath.Dir(p.config))
 	}
-	out := []string{p.config}
+	files := []string{p.config, filepath.Join(filepath.Dir(p.config), "update.json")}
 	baks, _ := filepath.Glob(p.config + ".v*.bak")
-	out = append(out, baks...)
-	out = append(out,
-		localapi.SocketPath(p.config),
-		localapi.GUISocketPath(p.config),
-		filepath.Join(filepath.Dir(p.config), "update.json"),
-	)
-	return existing(out...)
+	files = append(files, baks...)
+
+	var out []string
+	for _, f := range files {
+		if fi, err := os.Lstat(f); err == nil && fi.Mode().IsRegular() {
+			out = append(out, f)
+		}
+	}
+	for _, sock := range []string{localapi.SocketPath(p.config), localapi.GUISocketPath(p.config)} {
+		if fi, err := os.Lstat(sock); err == nil && fi.Mode()&fs.ModeSocket != 0 {
+			out = append(out, sock)
+		}
+	}
+	return out
 }
 
 // runFiles is everything in the run directory — the network's server, the
@@ -301,12 +344,46 @@ func surveyReset(p resetPaths) *resetState {
 // whatever the stopping itself wrote.
 func (r *resetState) list() {
 	p := r.paths
-	nodeFiles, runFiles := p.nodeFiles(), p.runFiles()
+	runFiles := p.runFiles()
+	var nodeFiles []string
+	if p.wholeDir || r.node != nil {
+		// A chosen config makima cannot read as its own is somebody else's
+		// file — see refusal — and so is what is beside it.
+		nodeFiles = p.nodeFiles()
+	}
 	r.doomed = slices.Concat(nodeFiles, runFiles, existing(p.log), p.resolverFiles())
 	r.backup = nil
 	if r.held != nil {
 		r.backup = slices.Concat(nodeFiles, runFiles)
 	}
+}
+
+// refusal is why a reset will not go ahead here, or nil.
+//
+// A config somewhere of the person's choosing that is not makima's is not
+// deleted, nor anything beside it: -config naming a directory, or the wrong
+// file, would otherwise take it with everything in it. And a directory of
+// makima's that is a symlink is not followed — deleting the link would leave
+// the network's keys where it points while saying they were gone, and
+// deleting where it points is deleting wherever somebody pointed it.
+func (r *resetState) refusal() error {
+	p := r.paths
+	if !p.wholeDir && r.node == nil {
+		if _, err := os.Lstat(p.config); err == nil {
+			return fmt.Errorf("%s is not a makima config, so reset leaves it, and everything beside it, alone", p.config)
+		}
+	}
+	dirs := []string{p.run, p.log}
+	if p.wholeDir {
+		dirs = append(dirs, filepath.Dir(p.config))
+	}
+	for _, d := range dirs {
+		if fi, err := os.Lstat(d); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			to, _ := os.Readlink(d)
+			return fmt.Errorf("%s is a symlink to %s, which reset does not follow; delete what is there by hand, or put the directory back where it was", d, to)
+		}
+	}
+	return nil
 }
 
 // ownNetwork says whether the network this machine is on is the one it
@@ -448,25 +525,29 @@ func (r *resetState) leave(ctx context.Context) {
 	}
 }
 
-// wipe deletes what the reset found, having first copied a held network aside
-// — a reset run on the wrong machine is otherwise every machine on the
-// network joining again. It returns where that copy is, or "" when there is
+// copyAside copies a held network to the temporary directory, root's alone —
+// a reset run on the wrong machine is otherwise every machine on the network
+// joining again — and says where. Nothing, and "", for a machine holding
 // none.
-func (r *resetState) wipe() (string, error) {
-	kept := ""
-	if len(r.backup) > 0 {
-		dir := filepath.Join(r.paths.tmp, "makima-reset-"+time.Now().Format("20060102-150405"))
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			return "", fmt.Errorf("keep a copy of the network before deleting it: %w; nothing was deleted", err)
-		}
-		for _, p := range r.backup {
-			if err := copyTree(p, filepath.Join(dir, p)); err != nil {
-				return "", fmt.Errorf("keep a copy of the network before deleting it: %w; nothing was deleted", err)
-			}
-		}
-		kept = dir
+func (r *resetState) copyAside() (string, error) {
+	if len(r.backup) == 0 {
+		return "", nil
 	}
+	dir := filepath.Join(r.paths.tmp, "makima-reset-"+time.Now().Format("20060102-150405"))
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return "", err
+	}
+	for _, p := range r.backup {
+		if err := copyTree(p, filepath.Join(dir, p)); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
 
+// remove deletes everything the reset listed, going on past what it cannot
+// delete so that as much as possible is gone, and saying what that was.
+func (r *resetState) remove() error {
 	var failed []string
 	for _, p := range r.doomed {
 		if err := os.RemoveAll(p); err != nil {
@@ -474,9 +555,9 @@ func (r *resetState) wipe() (string, error) {
 		}
 	}
 	if len(failed) > 0 {
-		return kept, fmt.Errorf("could not delete everything: %s", strings.Join(failed, "; "))
+		return fmt.Errorf("could not delete everything: %s", strings.Join(failed, "; "))
 	}
-	return kept, nil
+	return nil
 }
 
 // copyTree copies the regular files and directories under src to dst, modes

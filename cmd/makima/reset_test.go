@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -12,11 +14,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
+	"github.com/justin06lee/makima/internal/supervise"
 )
 
 // resetTree is a machine's makima laid out under a temporary root, where the
@@ -103,6 +107,160 @@ func holding(t *testing.T, p resetPaths, names ...string) *control.Store {
 	return s
 }
 
+// runReset runs a reset with nothing running and nobody to ask to forget
+// the machine, for a test about what is deleted and kept.
+func runReset(r *resetState) (string, error) {
+	return r.run(context.Background(), nil, func(context.Context) {})
+}
+
+// fakeDaemon stands in for one of makima's processes, and writes down when it
+// was stopped among everything else a reset does.
+type fakeDaemon struct {
+	running bool
+	err     error
+	name    string
+	log     *[]string
+}
+
+func (f *fakeDaemon) Running() bool { return f.running }
+func (f *fakeDaemon) Stop(context.Context, time.Duration) error {
+	*f.log = append(*f.log, "stop "+f.name)
+	if f.err != nil {
+		return f.err
+	}
+	f.running = false
+	return nil
+}
+
+// Every step that can fail comes before the machine leaves its network and
+// before anything is deleted, so that a failure leaves it as it was. Review
+// found the relay's stop failing after the leave, on a machine with something
+// else on 3478: every run after that failed the same way, with the machine
+// holding keys to a network that had already forgotten it.
+func TestAResetThatCannotStopEverythingChangesNothing(t *testing.T) {
+	p := resetTree(t)
+	joinedAs(t, p.config, "laptop", "http://192.168.1.253:8081", key.Public{1})
+
+	var log []string
+	r := surveyReset(p)
+	_, err := r.run(context.Background(), []resetDaemon{
+		{proc: &fakeDaemon{running: true, name: "node", log: &log}, name: "the tunnel"},
+		{proc: &fakeDaemon{running: true, name: "server", log: &log, err: errors.New("did not stop")}, name: "the network's server"},
+	}, func(context.Context) { log = append(log, "leave") })
+
+	if err == nil {
+		t.Fatal("a server that would not stop did not stop the reset")
+	}
+	if slices.Contains(log, "leave") {
+		t.Errorf("left the network before everything had stopped: %v", log)
+	}
+	if !there(p.config) {
+		t.Error("deleted the config though a stop failed")
+	}
+
+	// The same for a copy of a held network that cannot be made: this Mac,
+	// on tenet's network with an idle server of its own, and nowhere to put
+	// the copy.
+	log = nil
+	p = resetTree(t)
+	joinedAs(t, p.config, "laptop", "http://192.168.1.253:8081", key.Public{1})
+	holding(t, p)
+	p.tmp = filepath.Join(p.tmp, "not", "there")
+	r = surveyReset(p)
+	if _, err := r.run(context.Background(), nil, func(context.Context) { log = append(log, "leave") }); err == nil {
+		t.Fatal("a copy that could not be made did not stop the reset")
+	}
+	if len(log) > 0 || !there(p.config) || !there(filepath.Join(p.run, "control.json")) {
+		t.Errorf("went on after the copy failed: did %v, config there %v", log, there(p.config))
+	}
+}
+
+// Something else on the relay's port — a STUN or TURN server; 3478 is theirs
+// too — is not the relay, and not a reason to fail: it is left alone and the
+// reset goes on, in order: everything stopped, then the leave, then the files.
+func TestSomethingElseOnTheRelaysPortIsLeftAlone(t *testing.T) {
+	p := resetTree(t)
+	joinedAs(t, p.config, "laptop", "http://192.168.1.253:8081", key.Public{1})
+
+	var log []string
+	notOurs := fmt.Errorf("makima-relay is running but %w; stop it by hand", supervise.ErrNoProcess)
+	r := surveyReset(p)
+	_, err := r.run(context.Background(), []resetDaemon{
+		{proc: &fakeDaemon{running: true, name: "node", log: &log}, name: "the tunnel"},
+		{proc: &fakeDaemon{running: true, name: "relay", log: &log, err: notOurs}, name: "the relay", byPort: true},
+	}, func(context.Context) {
+		log = append(log, "leave")
+		if !there(p.config) {
+			t.Error("the config was deleted before the server was asked to forget the machine")
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stop node", "stop relay", "leave"}; !slices.Equal(log, want) {
+		t.Errorf("did %v, want %v", log, want)
+	}
+	if there(p.config) {
+		t.Error("the config survived")
+	}
+
+	// The tunnel is found by its own socket, which nothing else has: there
+	// the same error is a reason to stop.
+	log = nil
+	p = resetTree(t)
+	joinedAs(t, p.config, "laptop", "http://192.168.1.253:8081", key.Public{1})
+	if _, err := surveyReset(p).run(context.Background(), []resetDaemon{
+		{proc: &fakeDaemon{running: true, name: "node", log: &log, err: notOurs}, name: "the tunnel"},
+	}, func(context.Context) {}); err == nil {
+		t.Error("a tunnel whose process could not be found was taken as stopped")
+	}
+}
+
+// A config somewhere of the person's choosing that makima cannot read as its
+// own is not deleted, and neither is anything beside it: -config naming a
+// directory, or the wrong file, would otherwise take it all.
+func TestResetRefusesAChosenConfigThatIsNotMakimas(t *testing.T) {
+	for name, lay := range map[string]func(t *testing.T, path string){
+		"a directory":               func(t *testing.T, path string) { put(t, filepath.Join(path, "thesis.tex"), "mine") },
+		"a file of somebody else's": func(t *testing.T, path string) { put(t, path, "mine") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := resetTree(t)
+			p.config = filepath.Join(t.TempDir(), "chosen")
+			p.wholeDir = false
+			lay(t, p.config)
+
+			r := surveyReset(p)
+			if r.refusal() == nil {
+				t.Fatal("reset would go ahead on something that is not a makima config")
+			}
+			for _, d := range r.doomed {
+				if strings.HasPrefix(d, filepath.Dir(p.config)) {
+					t.Errorf("listed %s to delete", d)
+				}
+			}
+		})
+	}
+}
+
+// A directory of makima's that is a symlink is not followed: deleting the
+// link would leave the keys where it points while saying they were gone, and
+// deleting where it points is deleting wherever somebody pointed it.
+func TestResetDoesNotFollowASymlinkedDirectory(t *testing.T) {
+	p := resetTree(t)
+	elsewhere := filepath.Join(t.TempDir(), "disk", "makima")
+	put(t, filepath.Join(elsewhere, "control.json"), "{}")
+	if err := os.MkdirAll(filepath.Dir(p.run), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, p.run); err != nil {
+		t.Fatal(err)
+	}
+	if surveyReset(p).refusal() == nil {
+		t.Error("reset would go ahead through a symlinked /var/lib/makima")
+	}
+}
+
 // Everything makima keeps goes — the node's keys, the server's network, the
 // relay, the logs, a resolver file a dead daemon left — and nothing else does:
 // not a file somebody sent here, not a resolver file that is not makima's.
@@ -122,7 +280,7 @@ func TestResetDeletesEveryTraceButTheInbox(t *testing.T) {
 	put(t, filepath.Join(p.resolver, "corp.example"), "nameserver 10.0.0.1\n")
 
 	r := surveyReset(p)
-	if _, err := r.wipe(); err != nil {
+	if _, err := runReset(r); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,7 +310,7 @@ func TestAnEmptyInboxGoesWithTheRest(t *testing.T) {
 	if !slices.Contains(r.doomed, p.run) {
 		t.Fatalf("doomed = %v, want the run directory itself", r.doomed)
 	}
-	if _, err := r.wipe(); err != nil {
+	if _, err := runReset(r); err != nil {
 		t.Fatal(err)
 	}
 	if there(p.run) {
@@ -174,8 +332,10 @@ func TestResetBesideAChosenConfigTouchesOnlyMakimasFiles(t *testing.T) {
 	put(t, filepath.Join(home, "update.json"), "{}")
 	put(t, filepath.Join(home, "authorized_keys"), "ssh-ed25519 AAAA")
 	put(t, filepath.Join(home, "notes.txt"), "mine")
+	// A name makima uses, on something that is not the file makima makes.
+	put(t, filepath.Join(home, "node.json.v1.bak", "draft.txt"), "mine")
 
-	if _, err := surveyReset(p).wipe(); err != nil {
+	if _, err := runReset(surveyReset(p)); err != nil {
 		t.Fatal(err)
 	}
 	for _, gone := range []string{p.config, p.config + ".v2.bak", filepath.Join(home, "update.json")} {
@@ -183,7 +343,8 @@ func TestResetBesideAChosenConfigTouchesOnlyMakimasFiles(t *testing.T) {
 			t.Errorf("%s survived the reset", gone)
 		}
 	}
-	for _, kept := range []string{home, filepath.Join(home, "authorized_keys"), filepath.Join(home, "notes.txt")} {
+	for _, kept := range []string{home, filepath.Join(home, "authorized_keys"), filepath.Join(home, "notes.txt"),
+		filepath.Join(home, "node.json.v1.bak", "draft.txt")} {
 		if !there(kept) {
 			t.Errorf("%s was deleted, and was not makima's to delete", kept)
 		}
@@ -337,7 +498,7 @@ func TestAHeldNetworkIsCopiedAsideFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	kept, err := surveyReset(p).wipe()
+	kept, err := runReset(surveyReset(p))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +520,7 @@ func TestAHeldNetworkIsCopiedAsideFirst(t *testing.T) {
 
 	member := resetTree(t)
 	joinedAs(t, member.config, "laptop", "http://192.168.1.253:8081", key.Public{1})
-	if kept, err := surveyReset(member).wipe(); err != nil || kept != "" {
+	if kept, err := runReset(surveyReset(member)); err != nil || kept != "" {
 		t.Errorf("a machine holding nothing kept a copy at %q (%v)", kept, err)
 	}
 }
