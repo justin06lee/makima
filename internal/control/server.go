@@ -1,7 +1,9 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -108,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /machine/register", s.handleRegister)
 	mux.HandleFunc("POST /machine/map", s.handleMap)
 	mux.HandleFunc("POST /machine/update", s.handleUpdate)
+	mux.HandleFunc("POST /machine/leave", s.handleLeave)
 	if s.relay != nil {
 		mux.Handle("GET "+relay.Path, s.relay)
 	}
@@ -268,6 +271,56 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Printf("update: %s asked every node to move to %s (order %d)", by, order.Tag, order.ID)
 	s.reply(w, env.MachineKey, &UpdateResponse{Order: order})
+}
+
+// leaveWindow is how far a request to leave may be from the server's clock
+// and still be taken as meant now. A machine sends one only on its way to
+// deleting its keys, so a copy replayed later finds nobody to remove — unless
+// the reset failed after asking, and this bounds that too. Wide enough for
+// clocks that drift; a machine outside it is told, and the reset says what to
+// run instead.
+const leaveWindow = 5 * time.Minute
+
+// handleLeave forgets the machine that asks, at its own request.
+//
+// Only the holder of a machine key can seal a request as that machine, and
+// removing itself is all it can ask for. The request is read strictly — it
+// must say it is a request to leave, and nothing else — because the envelope
+// does not say which endpoint it was sealed for: without that, any poll the
+// machine ever made could be posted here to take it off the network. A
+// machine the network does not have is told so as a success, since it asked
+// to be somewhere it already is.
+func (s *Server) handleLeave(w http.ResponseWriter, r *http.Request) {
+	if !s.registers.allow(s.clientAddr(r), time.Now()) {
+		tooMany(w, registerEvery)
+		return
+	}
+	env, raw, ok := decode[json.RawMessage](s, w, r)
+	if !ok {
+		return
+	}
+	var req LeaveRequest
+	dec := json.NewDecoder(bytes.NewReader(*raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || !req.Leave {
+		s.reply(w, env.MachineKey, &LeaveResponse{Error: "that is not a request to leave"})
+		return
+	}
+	if skew := time.Since(req.At); skew > leaveWindow || skew < -leaveWindow {
+		s.reply(w, env.MachineKey, &LeaveResponse{Error: fmt.Sprintf(
+			"this request to leave says it was made at %s, and the server's clock says %s — too far apart to tell it from a copy of an old one",
+			req.At.UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))})
+		return
+	}
+	name, err := s.store.ForgetMachine(env.MachineKey)
+	if err != nil {
+		s.reply(w, env.MachineKey, &LeaveResponse{Error: err.Error()})
+		return
+	}
+	if name != "" {
+		s.log.Printf("leave: %s took itself off the network", name)
+	}
+	s.reply(w, env.MachineKey, &LeaveResponse{Name: name})
 }
 
 // decode reads and opens a sealed request.

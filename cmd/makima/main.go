@@ -56,6 +56,8 @@ func main() {
 		err = inviteCmd(os.Args[2:])
 	case "down":
 		err = downCmd(os.Args[2:])
+	case "reset":
+		err = resetCmd(os.Args[2:])
 	case "ssh", "possess":
 		err = sshCmd(os.Args[2:])
 	case "cp":
@@ -143,6 +145,8 @@ getting started:
   makima invite                    print an invite for the next machine
   makima join <invite>             run this on that machine
   makima down                      stop, and put this machine back
+  makima reset                     leave the network, and delete everything
+                                   makima keeps here, to start over
 
 coming from Tailscale:
   makima migrate                   move every machine on your tailnet to makima

@@ -171,6 +171,32 @@ type UpdateResponse struct {
 	Error string      `json:"error,omitempty"`
 }
 
+// LeaveRequest is a node taking itself off the network: forgotten by the
+// control plane, and so dropped from every other node's netmap.
+//
+// It has to say so, and say when. A sealed envelope does not name the
+// endpoint it was sealed for, and nothing tracks nonces, so any message a
+// node ever sent — a routine poll, recorded off the wire — would otherwise
+// open here as a request to remove it. Leave is set by nothing else; At
+// bounds how long a genuine one can be replayed, see leaveWindow.
+//
+// Nothing else the protocol seals — no request and no reply — may ever have a
+// field named leave. A box opens in either direction, so a reply the server
+// sealed to a machine opens here as that machine's request just as well; that
+// no message but this one can say leave is the whole of what keeps them out.
+// TestOnlyALeaveSaysLeave holds the line.
+type LeaveRequest struct {
+	Leave bool      `json:"leave"`
+	At    time.Time `json:"at"`
+}
+
+// LeaveResponse names the machine the control plane forgot, or nothing when
+// it had no machine with that key — which is the same outcome, already had.
+type LeaveResponse struct {
+	Name  string `json:"name,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
 // stripServerSuppliedSecrets clears the fields a control plane has no business
 // setting, before anything downstream can act on them.
 //

@@ -197,6 +197,12 @@ func lastLogLine(path string) string {
 	return last
 }
 
+// ErrNoProcess is something answering where a daemon would — its socket, or
+// its port — with no pid file for it and no process by its name. For a daemon
+// found by a TCP port, that is likely not makima's at all: the relay's 3478 is
+// STUN's and TURN's too.
+var ErrNoProcess = errors.New("its process could not be found")
+
 // Stop asks the daemon to exit and waits for it to let go of its socket.
 //
 // SIGTERM rather than SIGKILL, always: the daemon's shutdown path is what puts
@@ -233,7 +239,7 @@ func (d Daemon) Stop(ctx context.Context, wait time.Duration) error {
 		pid, ok = pidByName(d.Name)
 	}
 	if !ok {
-		return fmt.Errorf("%s is running but its process could not be found; stop it by hand", d.Name)
+		return fmt.Errorf("%s is running but %w; stop it by hand", d.Name, ErrNoProcess)
 	}
 
 	if err := terminate(pid); err != nil {

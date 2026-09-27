@@ -114,7 +114,8 @@ would quietly make it a different machine.
 registration, and deletes the network this machine was on or held, the logs,
 the resolver file, the app and its data. The old network's keys are copied to
 `/tmp/makima-uninstalled-*` first; `/tmp` is cleared on reboot, so that is a
-safety net for the next hour, not a backup.
+safety net for the next hour, not a backup. To start over rather than take
+makima away, there is `makima reset` — see [Starting over](#starting-over).
 
 </details>
 
@@ -247,6 +248,7 @@ invisible.
 makima invite        # another one, for the next machine
 makima status        # what this machine can see, and anything wrong
 makima down          # stop, and stay stopped across restarts, until up again
+makima reset         # leave the network, and delete everything makima keeps here
 ```
 
 Each node is handed an address from `10.77.0.0/16` and learns about the others
@@ -530,6 +532,37 @@ rather than at the next restart.
 `makima up` adds a `die` alias to your shell as a shortcut for `makima down`.
 It is a fenced block in your own startup file; delete it if you would rather
 not have it.
+
+### Starting over
+
+```sh
+makima reset
+```
+
+This takes the machine back to how a fresh install leaves it. It stops the
+tunnel and everything of makima's that starts at boot, asks the network's
+server to forget this machine — so the others drop it now rather than list it
+as offline for good — and deletes its keys and settings, the server's and the
+relay's state if it held the network, and the logs. Afterwards `makima up`
+starts a new network and `makima join` joins one.
+
+It says what it is about to do, and asks. On a machine holding a network
+other machines are on, it names them and wants the word `reset` typed rather
+than a `y`, because every one of them has to join again; the network is copied
+to `/tmp/makima-reset-*` first, root's alone, until the machine restarts.
+`-yes` goes ahead without asking, for when nobody is there to answer.
+
+It keeps makima itself and the app, the files other machines sent here, and
+the network lock's signing key in `~/.config/makima`, which a network that
+outlives this machine may still trust. Taking makima off the machine entirely
+is `make uninstall`.
+
+When the server cannot be asked — it is out of reach, older than this makima,
+the machine was expired by the network's operator, or the two clocks are more
+than five minutes apart — the reset goes ahead regardless, and prints the
+`makima-server forget` to run on the machine holding the network instead. It
+refuses a `-config` that is not a makima config, and any of makima's
+directories or keys that is a symlink, rather than delete through either.
 
 ### Administering a mesh
 
@@ -1281,7 +1314,12 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   distribute them, by design.
 - **No replay protection on the control channel.** Messages are sealed and
   authenticated, but nonces are not tracked, so a captured registration could
-  be replayed to revert a node's key and endpoints to older values.
+  be replayed to revert a node's key and endpoints to older values. Nor does an
+  envelope say which request it was sealed for. The one request that removes
+  anything — a machine leaving, from `makima reset` — is read strictly, must
+  say it is a leave, and is refused five minutes either side of when it says it
+  was made, so no other captured message opens as one and a captured leave
+  cannot be kept for later.
 - **The app remembers your password for Connect and Disconnect only.** Saying
   yes once writes a sudoers rule for the handful of commands that change
   nothing about who this machine trusts. Adding a device, joining a network,
