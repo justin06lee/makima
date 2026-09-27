@@ -245,7 +245,7 @@ func (p resetPaths) runFiles() []string {
 	for _, e := range entries {
 		full := filepath.Join(p.run, e.Name())
 		if e.Name() == inboxName {
-			if inside, _ := os.ReadDir(full); len(inside) > 0 {
+			if inside, _ := os.ReadDir(full); len(inside) > 0 || e.Type()&fs.ModeSymlink != 0 {
 				keep = true
 				continue
 			}
@@ -314,8 +314,10 @@ type resetState struct {
 	held       *control.State
 	heldUnread bool
 
-	// doomed is every path the reset deletes; backup is the part of it
-	// copied aside first, when this machine holds a network.
+	// state is what holds this machine's keys and the networks' state;
+	// doomed is every path the reset deletes, state among them; backup is
+	// state again, when this machine holds a network, to copy aside first.
+	state  []string
 	doomed []string
 	backup []string
 }
@@ -351,10 +353,11 @@ func (r *resetState) list() {
 		// file — see refusal — and so is what is beside it.
 		nodeFiles = p.nodeFiles()
 	}
-	r.doomed = slices.Concat(nodeFiles, runFiles, existing(p.log), p.resolverFiles())
+	r.state = slices.Concat(nodeFiles, runFiles)
+	r.doomed = slices.Concat(r.state, existing(p.log), p.resolverFiles())
 	r.backup = nil
 	if r.held != nil {
-		r.backup = slices.Concat(nodeFiles, runFiles)
+		r.backup = r.state
 	}
 }
 
@@ -368,8 +371,11 @@ func (r *resetState) list() {
 // deleting where it points is deleting wherever somebody pointed it.
 func (r *resetState) refusal() error {
 	p := r.paths
-	if !p.wholeDir && r.node == nil {
-		if _, err := os.Lstat(p.config); err == nil {
+	if !p.wholeDir {
+		if isSymlink(p.config) {
+			return symlinked(p.config)
+		}
+		if r.node == nil && len(existing(p.config)) > 0 {
 			return fmt.Errorf("%s is not a makima config, so reset leaves it, and everything beside it, alone", p.config)
 		}
 	}
@@ -378,12 +384,36 @@ func (r *resetState) refusal() error {
 		dirs = append(dirs, filepath.Dir(p.config))
 	}
 	for _, d := range dirs {
-		if fi, err := os.Lstat(d); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
-			to, _ := os.Readlink(d)
-			return fmt.Errorf("%s is a symlink to %s, which reset does not follow; delete what is there by hand, or put the directory back where it was", d, to)
+		if isSymlink(d) {
+			return symlinked(d)
+		}
+	}
+	// Nor one anywhere among the keys and the networks' state: the copy
+	// aside would lack what it points to, and deleting would leave that.
+	for _, root := range r.state {
+		var link string
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type()&fs.ModeSymlink != 0 {
+				link = path
+				return fs.SkipAll
+			}
+			return nil
+		})
+		if link != "" {
+			return symlinked(link)
 		}
 	}
 	return nil
+}
+
+func isSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&fs.ModeSymlink != 0
+}
+
+func symlinked(path string) error {
+	to, _ := os.Readlink(path)
+	return fmt.Errorf("%s is a symlink to %s, which reset does not follow; delete what is there by hand, or put it back where it was", path, to)
 }
 
 // ownNetwork says whether the network this machine is on is the one it

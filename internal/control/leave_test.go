@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,6 +176,43 @@ func TestOnlyARequestThatSaysLeaveIsOne(t *testing.T) {
 	}
 	if n := len(store.Nodes()); n != 1 {
 		t.Errorf("something that was not a request to leave took the laptop off the network")
+	}
+}
+
+// A box opens in either direction, so a reply the server sealed to a machine
+// opens at /machine/leave as that machine's own request. What keeps every
+// other sealed message out is that none of them can say leave — and
+// encoding/json matches a name without regard to its case.
+func TestOnlyALeaveSaysLeave(t *testing.T) {
+	var says func(reflect.Type) string
+	says = func(typ reflect.Type) string {
+		for i := range typ.NumField() {
+			f := typ.Field(i)
+			if f.Anonymous && f.Type.Kind() == reflect.Struct {
+				if s := says(f.Type); s != "" {
+					return s
+				}
+				continue
+			}
+			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			if name == "" {
+				name = f.Name
+			}
+			if strings.EqualFold(name, "leave") {
+				return f.Name
+			}
+		}
+		return ""
+	}
+	for _, v := range []any{
+		RegisterRequest{}, RegisterResponse{},
+		MapRequest{}, MapResponse{},
+		UpdateRequest{}, UpdateResponse{},
+		LeaveResponse{},
+	} {
+		if f := says(reflect.TypeOf(v)); f != "" {
+			t.Errorf("%T.%s reads as leave: sealed to or from a machine, it would open as that machine leaving", v, f)
+		}
 	}
 }
 

@@ -259,6 +259,53 @@ func TestResetDoesNotFollowASymlinkedDirectory(t *testing.T) {
 	if surveyReset(p).refusal() == nil {
 		t.Error("reset would go ahead through a symlinked /var/lib/makima")
 	}
+
+	// Nor through one inside it, where the network's keys are.
+	p = resetTree(t)
+	s := holding(t, p)
+	joinedAs(t, p.config, "tenet", "http://192.168.1.253:8081", s.ServerKey().Public())
+	state := filepath.Join(p.run, "control.json")
+	moved := filepath.Join(t.TempDir(), "control.json")
+	if err := os.Rename(state, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, state); err != nil {
+		t.Fatal(err)
+	}
+	if surveyReset(p).refusal() == nil {
+		t.Error("reset would go ahead with the network's state behind a symlink")
+	}
+
+	// Nor through a chosen config that is a symlink, which makima reads
+	// through and would otherwise leave behind, keys and all.
+	p = resetTree(t)
+	real := filepath.Join(t.TempDir(), "node.json")
+	joinedAs(t, real, "laptop", "http://192.168.1.253:8081", key.Public{1})
+	p.config = filepath.Join(t.TempDir(), "node.json")
+	p.wholeDir = false
+	if err := os.Symlink(real, p.config); err != nil {
+		t.Fatal(err)
+	}
+	if surveyReset(p).refusal() == nil {
+		t.Error("reset would go ahead with a chosen config behind a symlink")
+	}
+
+	// An inbox that points somewhere is the person's: kept, not a refusal.
+	p = resetTree(t)
+	put(t, filepath.Join(p.run, "makimad.pid"), "1")
+	if err := os.Symlink(t.TempDir(), filepath.Join(p.run, "inbox")); err != nil {
+		t.Fatal(err)
+	}
+	r := surveyReset(p)
+	if err := r.refusal(); err != nil {
+		t.Errorf("a symlinked inbox stopped the reset: %v", err)
+	}
+	if _, err := runReset(r); err != nil {
+		t.Fatal(err)
+	}
+	if !there(filepath.Join(p.run, "inbox")) {
+		t.Error("the symlinked inbox was deleted")
+	}
 }
 
 // Everything makima keeps goes — the node's keys, the server's network, the

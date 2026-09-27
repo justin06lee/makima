@@ -179,6 +179,12 @@ type UpdateResponse struct {
 // node ever sent — a routine poll, recorded off the wire — would otherwise
 // open here as a request to remove it. Leave is set by nothing else; At
 // bounds how long a genuine one can be replayed, see leaveWindow.
+//
+// Nothing else the protocol seals — no request and no reply — may ever have a
+// field named leave. A box opens in either direction, so a reply the server
+// sealed to a machine opens here as that machine's request just as well; that
+// no message but this one can say leave is the whole of what keeps them out.
+// TestOnlyALeaveSaysLeave holds the line.
 type LeaveRequest struct {
 	Leave bool      `json:"leave"`
 	At    time.Time `json:"at"`
