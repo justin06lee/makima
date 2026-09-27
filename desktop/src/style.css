@@ -1,97 +1,123 @@
 @import "tailwindcss";
+@import "@fontsource-variable/instrument-sans/standard.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
 
-/* The palette is the platform's, not makima's. A menu bar app lives next to
-   Finder and System Settings and should look like it came from the same
-   place: white, one blue for the thing that is on, green for the thing that
-   is reachable, and grey for everything else. It follows the system's
-   appearance because every other window on the screen does. */
+/* makima's own look, taken from its icon: a ringed iris drawn in ink.
+   Everything is graphite and paper, and one vermilion marks the thing that is
+   live — the switch that is on, the route in use, the button that does the
+   job. Green still means reachable and amber still means "through a relay",
+   because those are read at a glance and every other window agrees on them.
+   The window follows the system's appearance, as every window beside it does.
+
+   Fonts are bundled: the webview loads nothing from elsewhere. Instrument Sans
+   carries the interface, narrowed for the small capitals that label things;
+   JetBrains Mono carries every address, port and latency, because those are
+   read character by character. */
 :root {
-  --bg: #ffffff;
-  --sidebar: #f4f4f6;
-  --card: #f5f5f7;
-  --card-2: #ececef;
-  --ink: #1d1d1f;
-  --dim: #6e6e73;
-  --dimmer: #a3a3a8;
-  --line: #e6e6ea;
-  --line-2: #d2d2d7;
-  --accent: #3b6fe0;
+  --bg: #f4f4f2;
+  --panel: #ebebe8;
+  --raised: #ffffff;
+  --raised-2: #f3f3f1;
+  --tab: #ffffff;
+  --sunken: #e6e6e2;
+  --line: #e0e0dc;
+  --line-2: #cbcbc6;
+  --ink: #131312;
+  --dim: #5f5f5b;
+  --dimmer: #979792;
+  --accent: #e0402f;
+  --accent-2: #c9331f;
   --accent-ink: #ffffff;
-  --green: #34c759;
-  --grey: #c7c7cc;
-  --red: #e5484d;
-  --amber: #f0a020;
-  --focus: rgba(59, 111, 224, 0.35);
-  --shadow: 0 10px 40px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --green: #1d9a5a;
+  --grey: #c2c2bd;
+  --red: #d4382a;
+  --amber: #c27c0e;
+  --focus: rgba(224, 64, 47, 0.28);
+  --shadow: 0 24px 60px -12px rgba(20, 20, 18, 0.28), 0 0 0 1px rgba(20, 20, 18, 0.07);
+  --shadow-sm: 0 1px 2px rgba(20, 20, 18, 0.06), 0 0 0 1px rgba(20, 20, 18, 0.05);
+  --grain: 0.035;
   color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d0d0e;
+    --panel: #111112;
+    --raised: #161617;
+    --raised-2: #1d1d1f;
+    --tab: #2c2c2f;
+    --sunken: #0a0a0b;
+    --line: #232325;
+    --line-2: #323235;
+    --ink: #ededea;
+    --dim: #9d9d98;
+    --dimmer: #62625f;
+    --accent: #f04d39;
+    --accent-2: #d93f2c;
+    --accent-ink: #ffffff;
+    --green: #3fcf8a;
+    --grey: #4a4a4d;
+    --red: #ff6252;
+    --amber: #f0aa3c;
+    --focus: rgba(240, 77, 57, 0.4);
+    --shadow: 0 24px 70px -10px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.07);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --grain: 0.05;
+    color-scheme: dark;
+  }
 }
 
 /* `.dark` on <html> forces the dark palette; the app never sets it, but the
    browser preview does with ?dark=1 so both appearances can be looked at
    without changing the system. */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e1e20;
-    --sidebar: #29292c;
-    --card: #2b2b2e;
-    --card-2: #353538;
-    --ink: #f2f2f4;
-    --dim: #9a9aa0;
-    --dimmer: #6c6c72;
-    --line: #38383c;
-    --line-2: #47474c;
-    --accent: #4f7ce8;
-    --accent-ink: #ffffff;
-    --green: #30d158;
-    --grey: #5a5a5f;
-    --red: #ff5d62;
-    --amber: #ffb340;
-    --focus: rgba(79, 124, 232, 0.45);
-    --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
-    color-scheme: dark;
-  }
-}
-
 :root.dark {
-  --bg: #1e1e20;
-  --sidebar: #29292c;
-  --card: #2b2b2e;
-  --card-2: #353538;
-  --ink: #f2f2f4;
-  --dim: #9a9aa0;
-  --dimmer: #6c6c72;
-  --line: #38383c;
-  --line-2: #47474c;
-  --accent: #4f7ce8;
+  --bg: #0d0d0e;
+  --panel: #111112;
+  --raised: #161617;
+  --raised-2: #1d1d1f;
+  --tab: #2c2c2f;
+  --sunken: #0a0a0b;
+  --line: #232325;
+  --line-2: #323235;
+  --ink: #ededea;
+  --dim: #9d9d98;
+  --dimmer: #62625f;
+  --accent: #f04d39;
+  --accent-2: #d93f2c;
   --accent-ink: #ffffff;
-  --green: #30d158;
-  --grey: #5a5a5f;
-  --red: #ff5d62;
-  --amber: #ffb340;
-  --focus: rgba(79, 124, 232, 0.45);
-  --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --green: #3fcf8a;
+  --grey: #4a4a4d;
+  --red: #ff6252;
+  --amber: #f0aa3c;
+  --focus: rgba(240, 77, 57, 0.4);
+  --shadow: 0 24px 70px -10px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --grain: 0.05;
   color-scheme: dark;
 }
 
 @theme inline {
   --color-bg: var(--bg);
-  --color-sidebar: var(--sidebar);
-  --color-card: var(--card);
-  --color-card-2: var(--card-2);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-raised-2: var(--raised-2);
+  --color-tab: var(--tab);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
   --color-ink: var(--ink);
   --color-dim: var(--dim);
   --color-dimmer: var(--dimmer);
-  --color-line: var(--line);
-  --color-line-2: var(--line-2);
   --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
   --color-accent-ink: var(--accent-ink);
   --color-green: var(--green);
   --color-grey: var(--grey);
   --color-red: var(--red);
   --color-amber: var(--amber);
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", monospace;
+  --font-sans: "Instrument Sans Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 html, body, #root {
@@ -103,6 +129,8 @@ body {
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: 13px;
+  line-height: 1.45;
+  font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   /* A desktop app is not a document: dragging the background around like a
      web page makes it feel like a web page. */
@@ -129,14 +157,67 @@ body {
 /* In the base layer, so a utility on the element still wins: an unlayered
    rule here would outrank every text-* class on every button. */
 @layer base {
-  input, button {
+  input, button, select, textarea {
     font: inherit;
     color: inherit;
   }
 
-  button:focus-visible, input:focus-visible, [role="radio"]:focus-visible, [role="option"]:focus-visible {
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible,
+  [role="radio"]:focus-visible, [role="option"]:focus-visible, [role="tab"]:focus-visible {
     outline: none;
     box-shadow: 0 0 0 3px var(--focus);
+  }
+}
+
+@layer components {
+  /* The small capitals that label things: narrowed, spaced, quiet. */
+  .caps {
+    font-stretch: 82%;
+    font-weight: 600;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  /* Headings are the same face, drawn tighter. */
+  .display {
+    font-stretch: 88%;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  /* Addresses are read character by character: no ligature may turn the
+     "://" of a URL or the "->" of a route into one glyph. */
+  .font-mono, code, kbd {
+    font-variant-ligatures: none;
+  }
+
+  /* Numbers that change in place should not make their neighbours dance. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A faint grain over the window's ground, so large empty areas read as a
+     surface rather than a blank. */
+  .grain {
+    position: relative;
+  }
+  .grain::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--grain);
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    mix-blend-mode: multiply;
+  }
+  :root.dark .grain::before {
+    mix-blend-mode: screen;
+  }
+  @media (prefers-color-scheme: dark) {
+    .grain::before {
+      mix-blend-mode: screen;
+    }
   }
 }
 
@@ -144,7 +225,25 @@ body {
   from { opacity: 0; transform: translateY(4px) }
   to   { opacity: 1; transform: none }
 }
-.fade-in { animation: fade-in 160ms ease-out both }
+.fade-in { animation: fade-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.985) }
+  to   { opacity: 1; transform: none }
+}
+.rise { animation: rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both }
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(24px) }
+  to   { opacity: 1; transform: none }
+}
+.slide-in { animation: slide-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both }
+
+@keyframes scrim-in {
+  from { opacity: 0 }
+  to   { opacity: 1 }
+}
+.scrim-in { animation: scrim-in 160ms ease-out both }
 
 @keyframes spin {
   to { transform: rotate(360deg) }
@@ -152,11 +251,43 @@ body {
 .spin { animation: spin 0.9s linear infinite }
 
 @keyframes pulse {
-  0%, 100% { opacity: 0.4 }
+  0%, 100% { opacity: 0.35 }
   50%      { opacity: 1 }
 }
 .pulse { animation: pulse 2s ease-in-out infinite }
 
+/* A ring breathing outward from a live dot. */
+@keyframes ping-ring {
+  0%   { transform: scale(1); opacity: 0.55 }
+  80%, 100% { transform: scale(2.6); opacity: 0 }
+}
+.ping-ring { animation: ping-ring 2.4s cubic-bezier(0, 0, 0.2, 1) infinite }
+
+/* The iris turning: each ring at its own pace, so it never looks like one
+   picture rotating. */
+@keyframes turn { to { transform: rotate(360deg) } }
+@keyframes turn-back { to { transform: rotate(-360deg) } }
+.turn-slow  { animation: turn 60s linear infinite; transform-origin: center; transform-box: fill-box }
+.turn-mid   { animation: turn-back 40s linear infinite; transform-origin: center; transform-box: fill-box }
+.turn-fast  { animation: turn 24s linear infinite; transform-origin: center; transform-box: fill-box }
+.turn-busy  { animation: turn 1.6s linear infinite; transform-origin: center; transform-box: fill-box }
+
+/* Packets moving along a path, drawn as a dash travelling down a line. */
+@keyframes flow { to { stroke-dashoffset: -40 } }
+.flow { animation: flow 1.4s linear infinite }
+.flow-slow { animation: flow 3.2s linear infinite }
+
+@keyframes shake {
+  10%, 90% { transform: translateX(-1px) }
+  20%, 80% { transform: translateX(2px) }
+  30%, 50%, 70% { transform: translateX(-3px) }
+  40%, 60% { transform: translateX(3px) }
+}
+.shake { animation: shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both }
+
 @media (prefers-reduced-motion: reduce) {
-  .fade-in, .pulse { animation: none }
+  .fade-in, .rise, .slide-in, .scrim-in, .pulse, .ping-ring,
+  .turn-slow, .turn-mid, .turn-fast, .flow, .flow-slow, .shake {
+    animation: none;
+  }
 }
