@@ -1004,7 +1004,26 @@ func (s *Store) ForgetNode(name string, id netmap.NodeID) error {
 		return errors.New(b.String())
 	}
 
-	gone := matches[0]
+	return s.remove(matches[0])
+}
+
+// ForgetMachine removes the node holding a machine key — a machine taking
+// itself off the network — and says what it was called: "" when there was no
+// such node, which leaves the network as the caller wanted it.
+func (s *Store) ForgetMachine(k key.Public) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	gone := s.findByMachineKey(k)
+	if gone == nil {
+		return "", nil
+	}
+	return gone.Name, s.remove(gone)
+}
+
+// remove takes one node out, and tells every other node. Called with s.mu
+// held.
+func (s *Store) remove(gone *Node) error {
 	kept := s.state.Nodes[:0]
 	for _, n := range s.state.Nodes {
 		if n != gone {

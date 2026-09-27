@@ -171,6 +171,18 @@ type UpdateResponse struct {
 	Error string      `json:"error,omitempty"`
 }
 
+// LeaveRequest is a node taking itself off the network: forgotten by the
+// control plane, and so dropped from every other node's netmap. The sealed
+// envelope it travels in is the whole of what it needs to say.
+type LeaveRequest struct{}
+
+// LeaveResponse names the machine the control plane forgot, or nothing when
+// it had no machine with that key — which is the same outcome, already had.
+type LeaveResponse struct {
+	Name  string `json:"name,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
 // stripServerSuppliedSecrets clears the fields a control plane has no business
 // setting, before anything downstream can act on them.
 //

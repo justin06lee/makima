@@ -108,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /machine/register", s.handleRegister)
 	mux.HandleFunc("POST /machine/map", s.handleMap)
 	mux.HandleFunc("POST /machine/update", s.handleUpdate)
+	mux.HandleFunc("POST /machine/leave", s.handleLeave)
 	if s.relay != nil {
 		mux.Handle("GET "+relay.Path, s.relay)
 	}
@@ -268,6 +269,33 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Printf("update: %s asked every node to move to %s (order %d)", by, order.Tag, order.ID)
 	s.reply(w, env.MachineKey, &UpdateResponse{Order: order})
+}
+
+// handleLeave forgets the machine that asks, at its own request.
+//
+// The sealed envelope is the whole of the authorization: only the holder of a
+// machine key can ask to remove that machine, and removing itself is all it
+// can ask for. An expired machine may leave too — being expired is no reason
+// to stay listed. A machine the network does not have is told so as a
+// success, since it asked to be somewhere it already is.
+func (s *Server) handleLeave(w http.ResponseWriter, r *http.Request) {
+	if !s.registers.allow(s.clientAddr(r), time.Now()) {
+		tooMany(w, registerEvery)
+		return
+	}
+	env, _, ok := decode[LeaveRequest](s, w, r)
+	if !ok {
+		return
+	}
+	name, err := s.store.ForgetMachine(env.MachineKey)
+	if err != nil {
+		s.reply(w, env.MachineKey, &LeaveResponse{Error: err.Error()})
+		return
+	}
+	if name != "" {
+		s.log.Printf("leave: %s took itself off the network", name)
+	}
+	s.reply(w, env.MachineKey, &LeaveResponse{Name: name})
 }
 
 // decode reads and opens a sealed request.

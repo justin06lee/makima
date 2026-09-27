@@ -251,6 +251,26 @@ func (c *Client) RequestUpdate(ctx context.Context, tag string) (UpdateOrder, er
 	return resp.Order, nil
 }
 
+// ErrNoLeave is a control plane too old to let a machine take itself off.
+var ErrNoLeave = errors.New("the control plane runs a makima from before machines could leave on their own")
+
+// Leave asks the control plane to forget this machine, so that every other
+// node drops it. It names the machine that was forgotten, or returns "" when
+// the control plane had no machine with this key.
+func (c *Client) Leave(ctx context.Context) (string, error) {
+	var resp LeaveResponse
+	if err := c.roundTrip(ctx, "machine/leave", &LeaveRequest{}, &resp); err != nil {
+		if errors.Is(err, errNoSuchEndpoint) {
+			return "", ErrNoLeave
+		}
+		return "", err
+	}
+	if resp.Error != "" {
+		return "", errors.New(resp.Error)
+	}
+	return resp.Name, nil
+}
+
 // roundTrip seals req, posts it, and opens the reply into resp — at the
 // address in use, and then at each of the others until one answers.
 //
