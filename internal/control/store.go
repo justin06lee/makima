@@ -1010,28 +1010,36 @@ func (s *Store) ForgetNode(name string, id netmap.NodeID) error {
 // ForgetMachine removes the node holding a machine key — a machine taking
 // itself off the network — and says what it was called: "" when there was no
 // such node, which leaves the network as the caller wanted it.
+//
+// Not an expired one. Expiring is what an operator does to a machine that may
+// be stolen, and the record it leaves is theirs to remove, not the machine's.
 func (s *Store) ForgetMachine(k key.Public) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	gone := s.findByMachineKey(k)
-	if gone == nil {
+	switch {
+	case gone == nil:
 		return "", nil
+	case gone.Expired:
+		return "", errors.New("the network's operator expired this machine, so only they can remove it")
 	}
 	return gone.Name, s.remove(gone)
 }
 
 // remove takes one node out, and tells every other node. Called with s.mu
-// held.
+// held. Nothing changes unless the change is saved.
 func (s *Store) remove(gone *Node) error {
-	kept := s.state.Nodes[:0]
-	for _, n := range s.state.Nodes {
+	was := s.state.Nodes
+	kept := make([]*Node, 0, len(was))
+	for _, n := range was {
 		if n != gone {
 			kept = append(kept, n)
 		}
 	}
 	s.state.Nodes = kept
 	if err := s.save(); err != nil {
+		s.state.Nodes = was
 		return err
 	}
 	s.bump()

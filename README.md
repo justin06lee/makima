@@ -1311,7 +1311,12 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   distribute them, by design.
 - **No replay protection on the control channel.** Messages are sealed and
   authenticated, but nonces are not tracked, so a captured registration could
-  be replayed to revert a node's key and endpoints to older values.
+  be replayed to revert a node's key and endpoints to older values. Nor does an
+  envelope say which request it was sealed for. The one request that removes
+  anything — a machine leaving, from `makima reset` — is read strictly, must
+  say it is a leave, and is refused five minutes either side of when it says it
+  was made, so no other captured message opens as one and a captured leave
+  cannot be kept for later.
 - **The app remembers your password for Connect and Disconnect only.** Saying
   yes once writes a sudoers rule for the handful of commands that change
   nothing about who this machine trusts. Adding a device, joining a network,

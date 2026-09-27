@@ -259,7 +259,7 @@ var ErrNoLeave = errors.New("the control plane runs a makima from before machine
 // the control plane had no machine with this key.
 func (c *Client) Leave(ctx context.Context) (string, error) {
 	var resp LeaveResponse
-	if err := c.roundTrip(ctx, "machine/leave", &LeaveRequest{}, &resp); err != nil {
+	if err := c.roundTrip(ctx, "machine/leave", &LeaveRequest{Leave: true, At: time.Now()}, &resp); err != nil {
 		if errors.Is(err, errNoSuchEndpoint) {
 			return "", ErrNoLeave
 		}
