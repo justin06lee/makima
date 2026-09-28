@@ -71,14 +71,18 @@ export default function App() {
 
   // Tailscale is looked for once, when the window opens, and again after a
   // move — it is the one thing that changes it.
+  const detectTailscale = useCallback(
+    () =>
+      api.migrate
+        .detect()
+        .then(setTailscale)
+        .catch(() => setTailscale(null))
+        .finally(() => setLooked(true)),
+    [],
+  );
   useEffect(() => {
-    if (migrating) return;
-    api.migrate
-      .detect()
-      .then(setTailscale)
-      .catch(() => setTailscale(null))
-      .finally(() => setLooked(true));
-  }, [migrating]);
+    if (!migrating) void detectTailscale();
+  }, [migrating, detectTailscale]);
 
   // Every device gets a face the first time it is seen; see prefs.ts.
   const status0 = snap?.status;
@@ -249,7 +253,8 @@ export default function App() {
           notice={notice}
           dismiss={() => setNotice(null)}
           mac={mac}
-          tailscale={offer}
+          tailscale={tailscale}
+          onRecheck={detectTailscale}
           onMigrate={() => setMigrating(true)}
         />
         <Toaster />

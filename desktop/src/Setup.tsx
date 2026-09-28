@@ -7,10 +7,10 @@ import { Icon } from "./icons";
 /// The first screen, and the only one that asks a question.
 ///
 /// Somebody who has never used a mesh does not know that a coordination plane
-/// exists or that it has to live somewhere. The two choices turn that into the
-/// one thing they already know: is this the first device, or is there one
-/// already? Everything else — the server, the relay, the names, the tunnel —
-/// follows from the answer.
+/// exists or that it has to live somewhere. The choices turn that into the one
+/// thing they already know: is this the first device, is there one already —
+/// or are all of them on Tailscale now? Everything else — the server, the
+/// relay, the names, the tunnel — follows from the answer.
 export function Setup({
   env,
   busy,
@@ -19,6 +19,7 @@ export function Setup({
   dismiss,
   mac,
   tailscale,
+  onRecheck,
   onMigrate,
 }: {
   env: Environment;
@@ -28,14 +29,16 @@ export function Setup({
   dismiss: () => void;
   mac: boolean;
   tailscale: Tailscale | null;
+  onRecheck: () => Promise<unknown>;
   onMigrate: () => void;
 }) {
   const [invite, setInvite] = useState("");
-  const [which, setWhich] = useState<"start" | "join">("start");
+  const [which, setWhich] = useState<"start" | "join" | "takeover">("start");
   const [working, setWorking] = useState(false);
 
   const cleaned = invite.trim().replace(/^makima\s+(join|up)\s+/i, "");
   const valid = looksLikeInvite(cleaned);
+  const ready = !!tailscale?.running && tailscale.peers > 0;
 
   async function start() {
     setWorking(true);
@@ -99,30 +102,94 @@ export function Setup({
                 Get the words from <span className="text-dim">Add device</span> on a device that's already connected.
               </p>
             </Option>
+
+            <Option
+              on={which === "takeover"}
+              onPick={() => setWhich("takeover")}
+              icon={<Icon.Swap size={16} />}
+              title="Take over a network"
+              body={
+                ready
+                  ? `Bring ${tailscale.peers} device${tailscale.peers === 1 ? "" : "s"} over from Tailscale.`
+                  : "Move every device over from Tailscale."
+              }
+            >
+              <TakeOver tailscale={tailscale} ready={ready} disabled={busy || !env.cli} onRecheck={onRecheck} onMigrate={onMigrate} />
+            </Option>
           </div>
 
           <p className="mt-5 text-center text-[11.5px] leading-relaxed text-dimmer">
             You'll be asked for your password once — makima creates a network interface. From then on this device stays connected, after restarts too, until you turn it off.
           </p>
 
-          {tailscale && env.cli && (
-            <button
-              type="button"
-              onClick={onMigrate}
-              className="fade-in group mt-6 flex w-full items-center gap-3 rounded-xl border border-line bg-panel/60 px-4 py-3 text-left transition-colors hover:border-line-2 hover:bg-panel"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-[12.5px] font-medium">Coming from Tailscale?</div>
-                <div className="mt-px text-[12px] text-dim">
-                  It's running here with {tailscale.peers} other device{tailscale.peers === 1 ? "" : "s"}. Move them all to makima in one go.
-                </div>
-              </div>
-              <Icon.Arrow size={15} className="text-dim transition-transform group-hover:translate-x-0.5 group-hover:text-ink" />
-            </button>
-          )}
         </div>
       </div>
     </div>
+  );
+}
+
+/// Taking over a tailnet: what the move does, and the way in — or, when
+/// Tailscale is not here to move through, what is missing and a way to look
+/// again once it is.
+function TakeOver({
+  tailscale,
+  ready,
+  disabled,
+  onRecheck,
+  onMigrate,
+}: {
+  tailscale: Tailscale | null;
+  ready: boolean;
+  disabled: boolean;
+  onRecheck: () => Promise<unknown>;
+  onMigrate: () => void;
+}) {
+  const [checking, setChecking] = useState(false);
+
+  async function recheck() {
+    setChecking(true);
+    try {
+      await onRecheck();
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  if (!ready) {
+    const why = !tailscale?.installed
+      ? "Tailscale isn't on this device. Run this on a device that's on your tailnet — makima reaches the others through it."
+      : !tailscale.running
+        ? "Tailscale is installed here but not connected. Connect it, then check again."
+        : "Tailscale is running, but there are no other devices on your tailnet to bring over.";
+    return (
+      <>
+        <p className="text-[12.5px] leading-relaxed text-dim">{why}</p>
+        <Button className="mt-4 w-full" size="lg" busy={checking} disabled={disabled} onClick={recheck} icon={<Icon.Refresh size={14} />}>
+          Check again
+        </Button>
+      </>
+    );
+  }
+
+  const steps = [
+    "It looks at each device through Tailscale. Nothing changes yet.",
+    "You pick which device holds the network.",
+    "Tailscale comes off each device once makima works there.",
+  ];
+  return (
+    <>
+      <ol className="space-y-2">
+        {steps.map((s, i) => (
+          <li key={i} className="flex gap-3 text-[12.5px] leading-relaxed text-dim">
+            <span className="tabular mt-px flex size-5 shrink-0 items-center justify-center rounded-full border border-line-2 text-[10.5px] font-medium text-ink-2">{i + 1}</span>
+            <span>{s}</span>
+          </li>
+        ))}
+      </ol>
+      <Button className="mt-4 w-full" variant="primary" size="lg" disabled={disabled} onClick={onMigrate}>
+        Look at my devices
+      </Button>
+    </>
   );
 }
 

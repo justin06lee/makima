@@ -65,7 +65,7 @@ export function Onboarding({ mac, tailscale, onDone }: { mac: boolean; tailscale
                   SSH to your other devices opens here. You can change it any time in Settings.
                 </p>
 
-                <div role="radiogroup" aria-label="Terminal" className="mt-8 space-y-1">
+                <div role="radiogroup" aria-label="Terminal" className="mt-8 space-y-3">
                   {terminals.map((t) => {
                     const on = chosen === t.id;
                     return (

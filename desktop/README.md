@@ -110,9 +110,10 @@ Settings.
 
 **The first run** — once the app is open on a machine with no network — has
 no daemon and no configuration, so it asks the one
-question that matters: start a network, or join one by typing the fifteen
-words the first device shows into fifteen numbered slots (or pasting them, or
-its invite, into any one). `makima up` registers the
+question that matters: start a network, join one by typing the fifteen words
+the first device shows into fifteen numbered slots (or pasting them, or its
+invite, into any one), or take over a network — every device on a tailnet,
+moved to makima through Tailscale (see below). `makima up` registers the
 daemon with launchd or systemd, so from then on the device is connected
 whenever it is on, and the app becomes a login item so the menu bar is there
 too; Disconnect takes the registration away, and Settings turns the login item
@@ -127,8 +128,9 @@ running as you put this machine on a network of its choosing without a prompt,
 since an invite carries the control plane it points at. Delete
 `/etc/sudoers.d/makima_<you>` to make everything ask again.
 
-**Move from Tailscale** appears when Tailscale is running here — on the first
-run beside the two cards, over the device list, and in Settings. It is a
+**Move from Tailscale** is the first run's *Take over a network*, the second
+first-open question when Tailscale is running here, the card above Add device,
+and a row in Settings. It is a
 full-window sheet over `makima migrate`: *Look* lists every device on the
 tailnet as it is examined over SSH (with an Approve button when Tailscale SSH
 wants a browser check), *Choose* picks the Control Devil and what comes along
