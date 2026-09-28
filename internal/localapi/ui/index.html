@@ -6,10 +6,10 @@
 <title>makima</title>
 <style>
   /* The desktop app's look: ink on a pale ground, content on white sheets,
-     hairlines rather than filled boxes. Buttons are ink, so the only colour
-     on the page is status — green reachable, amber relayed or warning, red
-     broken — and when something turns red it means something. System fonts:
-     this page is one file with nothing to fetch. */
+     hairlines rather than filled boxes, and no colour at all. Status is
+     shape and weight: a solid mark is up, a half is relayed, a ring is off,
+     and whatever is wrong is written in full ink. System fonts: this page is
+     one file with nothing to fetch. */
   :root {
     --bg: #f3f3f4;
     --panel: #ffffff;
@@ -21,9 +21,6 @@
     --dimmer: #a3a3ab;
     --primary: #0c0c0e;
     --primary-ink: #ffffff;
-    --green: #17a34a;
-    --amber: #d98206;
-    --red: #dc2f2f;
     --shadow: 0 0 0 1px rgba(12, 12, 14, .06), 0 1px 2px rgba(12, 12, 14, .04), 0 8px 24px -12px rgba(12, 12, 14, .08);
     --radius: 12px;
     color-scheme: light;
@@ -40,9 +37,6 @@
       --dimmer: #5d5d66;
       --primary: #ededf0;
       --primary-ink: #0b0b0c;
-      --green: #3dd68c;
-      --amber: #f5a524;
-      --red: #f87171;
       --shadow: 0 0 0 1px rgba(255, 255, 255, .06), 0 8px 24px -12px rgba(0, 0, 0, .6);
       color-scheme: dark;
     }
@@ -75,10 +69,10 @@
     padding: 5px 12px; border-radius: 999px;
     font-size: 12px; color: var(--dim); background: var(--panel); box-shadow: var(--shadow);
   }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dimmer); flex: none; }
-  .dot.up { background: var(--green); }
-  .dot.down { background: var(--red); }
-  .dot.relay { background: var(--amber); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--dimmer); flex: none; }
+  .dot.up { background: var(--text); border-color: var(--text); }
+  .dot.down { border-color: var(--text); }
+  .dot.relay { border: 1px solid var(--text); background: linear-gradient(90deg, var(--text) 50%, transparent 50%); }
 
   main {
     display: grid; gap: 14px; padding: 16px 28px 48px;
@@ -111,9 +105,9 @@
     margin-left: auto; font-size: 12px; padding: 2px 9px; border-radius: 6px;
     background: var(--sunken); color: var(--dim);
   }
-  .peer .path.direct { color: var(--green); }
-  .peer .path.relayed { color: var(--amber); }
-  .peer .path.none { color: var(--red); }
+  .peer .path.direct { color: var(--text); }
+  .peer .path.relayed { color: var(--dim); }
+  .peer .path.none { color: var(--text); font-weight: 600; background: transparent; border: 1px solid var(--line-2); }
 
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
   .chip {
@@ -130,9 +124,9 @@
   th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); }
   th { color: var(--dimmer); font-weight: 450; font-size: 12px; }
   tr:last-child td { border-bottom: 0; }
-  td.state.ok { color: var(--green); }
-  td.state.bad { color: var(--red); }
-  td.state.warn { color: var(--amber); }
+  td.state.ok { color: var(--dim); }
+  td.state.bad { color: var(--text); font-weight: 600; }
+  td.state.warn { color: var(--text); font-weight: 500; }
 
   form.add { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--sunken); }
   input, button, select {
@@ -149,7 +143,7 @@
   }
   button:hover { opacity: .9; }
   button.ghost { background: transparent; color: var(--dim); border-color: var(--line-2); font-weight: 400; padding: 3px 10px; font-size: 12px; }
-  button.ghost:hover { color: var(--red); border-color: var(--red); opacity: 1; }
+  button.ghost:hover { color: var(--text); border-color: var(--dim); opacity: 1; }
   button:disabled { opacity: .4; cursor: default; }
 
   .hint { color: var(--dim); font-size: 12.5px; padding: 12px 16px 14px; background: var(--sunken); }
@@ -158,9 +152,9 @@
   .check { display: flex; gap: 11px; padding: 11px 16px; border-bottom: 1px solid var(--line); align-items: flex-start; }
   .check:last-child { border-bottom: 0; }
   .check .mark { flex: none; width: 16px; text-align: center; font-weight: 700; }
-  .check.ok .mark { color: var(--green); }
-  .check.bad .mark { color: var(--red); }
-  .check.warn .mark { color: var(--amber); }
+  .check.ok .mark { color: var(--dimmer); }
+  .check.bad .mark { color: var(--text); }
+  .check.warn .mark { color: var(--text); }
   .check .what { flex: 1; }
   .check .what b { font-weight: 600; }
   .check .detail { color: var(--dim); }
@@ -176,8 +170,8 @@
   .empty { padding: 22px 16px; color: var(--dim); text-align: center; }
   .banner {
     margin: 12px 16px 0; padding: 10px 12px; border-radius: 10px;
-    border: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
-    background: color-mix(in srgb, var(--red) 7%, transparent); color: var(--text);
+    border: 1px solid var(--line-2);
+    background: var(--sunken); color: var(--text); font-weight: 500;
     display: flex; gap: 11px; align-items: center; flex-wrap: wrap;
   }
   .banner button { margin-left: auto; }
