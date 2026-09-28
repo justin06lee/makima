@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, inTauri, type Action, type Environment, type Snapshot, type Status, type Tailscale } from "./api";
-import { Button, Copyable, Dot, Kbd, Notice, Toaster, Toggle, toast } from "./ui";
+import { Button, Copyable, Kbd, Notice, Toaster, Toggle, toast } from "./ui";
 import { Icon } from "./icons";
 import { Setup } from "./Setup";
 import { Devices } from "./Devices";
@@ -12,6 +12,10 @@ import { AddDevice } from "./AddDevice";
 import { Migrate } from "./Migrate";
 import { Palette } from "./Palette";
 import { useSSH } from "./Terminal";
+import { Onboarding, ONBOARDED } from "./Onboarding";
+import { Avatar, DeviceEditor } from "./Avatar";
+import { Pulse } from "./Wave";
+import { ensurePictures, labelOf, usePrefs } from "./prefs";
 
 /// Where "not now" on the Tailscale offer is remembered.
 const OFFER_DISMISSED = "makima:tailscale-offer-dismissed";
@@ -36,6 +40,8 @@ export type Nav = {
   device: (name: string | null) => void;
   add: () => void;
   ssh: (peer: string) => void;
+  /// Rename a device, or change its picture.
+  edit: (name: string) => void;
 };
 
 const PAGES: { id: Page; label: string; icon: (p: { size?: number }) => React.ReactNode; key: string }[] = [
@@ -57,13 +63,39 @@ export default function App() {
   const [tailscale, setTailscale] = useState<Tailscale | null>(null);
   const [migrating, setMigrating] = useState(false);
   const [offerDismissed, setOfferDismissed] = useState(() => localStorage.getItem(OFFER_DISMISSED) === "1");
+  // ?onboard=1 shows the first-open questions again, for the browser preview.
+  const [onboarded, setOnboarded] = useState(() => localStorage.getItem(ONBOARDED) === "1" && new URLSearchParams(location.search).get("onboard") !== "1");
+  const [looked, setLooked] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
   const { ssh, picker } = useSSH();
 
   // Tailscale is looked for once, when the window opens, and again after a
   // move — it is the one thing that changes it.
   useEffect(() => {
-    if (!migrating) api.migrate.detect().then(setTailscale).catch(() => setTailscale(null));
+    if (migrating) return;
+    api.migrate
+      .detect()
+      .then(setTailscale)
+      .catch(() => setTailscale(null))
+      .finally(() => setLooked(true));
   }, [migrating]);
+
+  // Every device gets a face the first time it is seen; see prefs.ts.
+  const status0 = snap?.status;
+  useEffect(() => {
+    if (!status0 || !env) return;
+    const names = [status0.node.name, ...status0.peers.map((p) => p.name)];
+    let holder: string | null = env.holds_mesh ? status0.node.name : null;
+    if (!holder && status0.server) {
+      try {
+        const host = new URL(status0.server).hostname;
+        holder = status0.peers.find((p) => p.name === host || p.address === host || `${p.name}.${status0.domain}` === host)?.name ?? null;
+      } catch {
+        // No server URL to read: nobody holds it that this device can name.
+      }
+    }
+    ensurePictures(names, holder);
+  }, [status0, env]);
 
   const refresh = useCallback(async () => {
     try {
@@ -140,12 +172,13 @@ export default function App() {
     },
     add: () => running && setAdding(true),
     ssh,
+    edit: setEditing,
   };
 
   // The keyboard: ⌘K for everything, ⌘1–3 and ⌘, for the pages, ⌘N to add a
   // device. Only once there is a network to move around in.
   useEffect(() => {
-    if (!onNetwork || migrating) return;
+    if (!onNetwork || migrating || !onboarded) return;
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
       const k = e.key.toLowerCase();
@@ -167,12 +200,32 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onNetwork, migrating, adding, palette, running]);
+  }, [onNetwork, migrating, adding, palette, running, onboarded]);
 
-  if (!env || !snap) return <Splash />;
+  if (!env || !snap || (!onboarded && !looked)) return <Splash />;
 
   const mac = env.platform === "macos";
   const offer = tailscale?.running && tailscale.peers > 0 ? tailscale : null;
+
+  // The first time the app opens: which terminal, and whether to come over
+  // from Tailscale now. Skipping the move leaves it in the sidebar and in
+  // Settings, so nothing is lost by saying no.
+  if (!onboarded && !migrating) {
+    return (
+      <>
+        <Onboarding
+          mac={mac}
+          tailscale={offer}
+          onDone={(move) => {
+            localStorage.setItem(ONBOARDED, "1");
+            setOnboarded(true);
+            if (move) setMigrating(true);
+          }}
+        />
+        <Toaster />
+      </>
+    );
+  }
 
   if (migrating) {
     return (
@@ -242,6 +295,7 @@ export default function App() {
       </main>
 
       {adding && status && <AddDevice status={status} env={env} act={act} onClose={() => setAdding(false)} />}
+      {editing && <DeviceEditor name={editing} onClose={() => setEditing(null)} />}
       {palette && (
         <Palette
           status={status}
@@ -337,6 +391,7 @@ function Sidebar({
   onMigrate: () => void;
   onDismissOffer: () => void;
 }) {
+  const prefs = usePrefs();
   const peers = status?.peers ?? [];
   const online = peers.filter((p) => p.online).length;
   const services = peers.reduce((n, p) => n + (p.online ? p.services?.length ?? 0 : 0), 0) + (status?.services?.length ?? 0);
@@ -352,29 +407,38 @@ function Sidebar({
       <div className={mac ? "h-[46px] shrink-0" : "h-3 shrink-0"} data-tauri-drag-region />
 
       {/* This machine, and the switch. */}
-      <div className="px-4 pb-4 pt-1" data-tauri-drag-region>
-        <div className="flex items-center gap-3" data-tauri-drag-region>
-          <div className="min-w-0 flex-1" data-tauri-drag-region>
-            <div className="truncate text-[14px] font-semibold tracking-[-0.01em]" data-tauri-drag-region>
-              {status?.node.name ?? "makima"}
+      <div className="flex gap-2.5 px-3 pb-4 pt-1" data-tauri-drag-region>
+        {status ? (
+          <button type="button" onClick={() => nav.edit(status.node.name)} title="Change this device's name or picture" className="shrink-0 self-start rounded-full transition-opacity hover:opacity-80">
+            <Avatar name={status.node.name} size={34} offline={!running} />
+          </button>
+        ) : (
+          <span className="flex size-[34px] shrink-0 items-center justify-center rounded-full bg-active text-dim">
+            <Icon.Devices size={15} />
+          </span>
+        )}
+        <div className="min-w-0 flex-1" data-tauri-drag-region>
+          <div className="flex items-center gap-2" data-tauri-drag-region>
+            <div className="min-w-0 flex-1 truncate text-[13.5px] font-semibold tracking-[-0.01em]" data-tauri-drag-region>
+              {status ? labelOf(prefs, status.node.name) : "makima"}
             </div>
+            <Toggle
+              on={running}
+              busy={busy}
+              label={running ? "Disconnect" : "Connect"}
+              onChange={(next) => act({ kind: next ? "up" : "down" })}
+            />
           </div>
-          <Toggle
-            on={running}
-            busy={busy}
-            label={running ? "Disconnect" : "Connect"}
-            onChange={(next) => act({ kind: next ? "up" : "down" })}
-          />
-        </div>
-        <div className="mt-1 flex min-w-0 items-center gap-2 text-[12px] text-dim">
-          <Dot tone={running ? "green" : "grey"} size="sm" live={running} />
-          <span className="shrink-0">{running ? "Connected" : "Disconnected"}</span>
-          {running && status && (
-            <>
-              <span className="text-dimmer">·</span>
-              <Copyable value={status.node.address} what="this device's address" className="!text-[11.5px] text-dim" />
-            </>
-          )}
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11.5px] text-dim">
+            <Pulse on={running} className={running ? "text-ink" : "text-dimmer"} />
+            <span className="shrink-0">{running ? "Connected" : "Off"}</span>
+            {running && status && (
+              <>
+                <span className="text-dimmer">·</span>
+                <Copyable value={status.node.address} what="this device's address" className="!text-[11px] text-dim" />
+              </>
+            )}
+          </div>
         </div>
       </div>
 

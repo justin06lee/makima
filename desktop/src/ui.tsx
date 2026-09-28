@@ -33,7 +33,7 @@ export function Button({
   const variants = {
     primary: "bg-primary text-primary-ink border-transparent hover:opacity-90 active:opacity-80",
     default: "bg-panel text-ink border-line-2 hover:bg-sunken active:bg-active shadow-[0_1px_1px_rgba(0,0,0,0.03)]",
-    danger: "bg-panel text-red border-line-2 hover:bg-red/6 active:bg-red/10",
+    danger: "bg-panel text-ink border-line-2 hover:bg-sunken hover:border-dim active:bg-active",
     ghost: "bg-transparent text-dim border-transparent hover:bg-hover hover:text-ink active:bg-active",
   }[variant];
   const sizes = {
@@ -148,38 +148,44 @@ export function Toggle({
 
 export type Tone = "green" | "grey" | "amber" | "red";
 
-/// A coloured dot. The only place in the app colour carries meaning on its
-/// own, so it always sits beside a word that says the same thing. A live one
-/// breathes.
-export function Dot({ tone, size = "md", live }: { tone: Tone; size?: "sm" | "md"; live?: boolean }) {
-  const c = { green: "bg-green text-green", grey: "bg-grey text-grey", amber: "bg-amber text-amber", red: "bg-red text-red" }[tone];
-  const s = size === "sm" ? "size-1.5" : "size-[7px]";
-  return <span className={`relative inline-block shrink-0 rounded-full ${s} ${c} ${live ? "halo" : ""}`} />;
+/// A status mark, in ink only: solid for up, half for the long way round, a
+/// ring for off, a cross for broken. It always sits beside a word that says
+/// the same thing — the shape is a glance, the word is the answer.
+export function Dot({ tone, size = "md" }: { tone: Tone; size?: "sm" | "md" }) {
+  const px = size === "sm" ? 6 : 7;
+  const box = { width: px, height: px };
+  if (tone === "red") {
+    return (
+      <svg width={px + 2} height={px + 2} viewBox="0 0 10 10" className="shrink-0 text-ink" aria-hidden="true">
+        <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (tone === "amber") {
+    return <span style={box} className="inline-block shrink-0 rounded-full border border-ink bg-[linear-gradient(90deg,var(--ink)_50%,transparent_50%)]" />;
+  }
+  if (tone === "grey") return <span style={box} className="inline-block shrink-0 rounded-full border-[1.5px] border-dimmer" />;
+  return <span style={box} className="inline-block shrink-0 rounded-full bg-ink" />;
 }
 
 /// Three bars for how good a path is: all three direct and quick, fewer as it
-/// gets slower, amber through a relay. The number is always beside it.
+/// gets slower, one through a relay, none offline. The words are always
+/// beside them.
 export function Signal({ latency, direct, online }: { latency: number; direct: boolean; online: boolean }) {
   const msv = latency / 1e6;
   const bars = !online ? 0 : !direct ? 1 : !latency || msv < 25 ? 3 : msv < 90 ? 2 : 1;
-  const tone = !online ? "bg-grey" : direct ? "bg-green" : "bg-amber";
   return (
     <span className="inline-flex h-[11px] items-end gap-[2px]" aria-hidden="true">
       {[5, 8, 11].map((h, i) => (
-        <span key={h} style={{ height: h }} className={`w-[3px] rounded-[1px] ${i < bars ? tone : "bg-active"}`} />
+        <span key={h} style={{ height: h }} className={`w-[3px] rounded-[1px] ${i < bars ? "bg-ink" : "bg-active"}`} />
       ))}
     </span>
   );
 }
 
 /// A small label beside a name.
-export function Tag({ children, tone = "plain" }: { children: React.ReactNode; tone?: "plain" | "ink" | "green" | "amber" }) {
-  const t = {
-    plain: "bg-active text-dim",
-    ink: "bg-primary text-primary-ink",
-    green: "bg-green/12 text-green",
-    amber: "bg-amber/14 text-amber",
-  }[tone];
+export function Tag({ children, tone = "plain" }: { children: React.ReactNode; tone?: "plain" | "ink" }) {
+  const t = tone === "ink" ? "bg-primary text-primary-ink" : "bg-active text-dim";
   return <span className={`inline-flex h-[18px] shrink-0 items-center rounded-[5px] px-1.5 text-[10.5px] font-medium ${t}`}>{children}</span>;
 }
 
@@ -330,7 +336,7 @@ export function Toaster() {
           key={t.id}
           className="rise-in flex max-w-[420px] items-center gap-2 rounded-full bg-primary py-1.5 pl-2.5 pr-3.5 text-[12.5px] font-medium text-primary-ink shadow-[var(--pop-shadow)]"
         >
-          {t.tone === "ok" ? <Icon.Check size={14} className="text-green" /> : <Icon.Warn size={14} className="text-red" />}
+          {t.tone === "ok" ? <Icon.Check size={14} className="opacity-70" /> : <Icon.Warn size={14} className="opacity-70" />}
           <span className="truncate">{t.text}</span>
         </div>
       ))}
@@ -362,7 +368,7 @@ export function CopyButton({ value, label = "Copy", what }: { value: string; lab
   const [copied, copy] = useCopied();
   return (
     <IconButton onClick={() => copy(value, what ?? value)} title={copied ? "Copied" : label}>
-      {copied ? <Icon.Check className="text-green" /> : <Icon.Copy />}
+      {copied ? <Icon.Check className="text-ink" /> : <Icon.Copy />}
     </IconButton>
   );
 }
@@ -387,7 +393,7 @@ export function Copyable({
 }) {
   const [copied, copy] = useCopied();
   const glyph = copied ? (
-    <Icon.Check size={13} className="shrink-0 text-green" />
+    <Icon.Check size={13} className="shrink-0 text-ink" />
   ) : (
     <Icon.Copy size={13} className="shrink-0 text-dimmer opacity-0 transition-opacity group-hover/copy:opacity-100" />
   );
@@ -527,8 +533,8 @@ export function Modal({
 /// Something went wrong, in a line across the top, until dismissed.
 export function Notice({ text, onDismiss }: { text: string; onDismiss: () => void }) {
   return (
-    <div className="fade-in flex items-start gap-2.5 border-b border-red/15 bg-red/[0.06] px-5 py-2.5">
-      <Icon.Warn size={15} className="mt-px text-red" />
+    <div className="fade-in flex items-start gap-2.5 border-b border-line bg-sunken px-5 py-2.5">
+      <Icon.Warn size={15} className="mt-px text-ink" />
       <p className="selectable flex-1 text-[12.5px] leading-relaxed text-ink">{text}</p>
       <IconButton size="sm" onClick={onDismiss} title="Dismiss">
         <Icon.Close size={14} />

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { copyText, fqdn, openExternal, type Status } from "./api";
 import type { Act, Nav } from "./App";
-import { Dot, Kbd, toast } from "./ui";
+import { Kbd, toast } from "./ui";
+import { Avatar } from "./Avatar";
+import { labelOf, usePrefs } from "./prefs";
 import { Icon } from "./icons";
 
 type Item = {
@@ -19,6 +21,8 @@ type Item = {
 /// by typing any part of it.
 export function Palette({ status, running, nav, act, onClose }: { status?: Status; running: boolean; nav: Nav; act: Act; onClose: () => void }) {
   const [query, setQuery] = useState("");
+  const prefs = usePrefs();
+  const L = (name: string) => labelOf(prefs, name);
   const [at, setAt] = useState(0);
   const list = useRef<HTMLDivElement>(null);
 
@@ -31,22 +35,22 @@ export function Palette({ status, running, nav, act, onClose }: { status?: Statu
         out.push({
           id: `dev:${p.name}`,
           group: "Devices",
-          label: p.name,
+          label: L(p.name),
           hint: p.online ? (p.direct ? "Direct" : "Via relay") : "Offline",
-          icon: <Dot tone={p.online ? (p.direct ? "green" : "amber") : "grey"} />,
-          words: `${p.name} ${p.address} device`,
+          icon: <Avatar name={p.name} size={18} offline={!p.online} />,
+          words: `${p.name} ${L(p.name)} ${p.address} device`,
           run: () => nav.device(p.name),
         });
         if (p.online) {
-          out.push({ id: `ssh:${p.name}`, group: "Actions", label: `SSH to ${p.name}`, icon: <Icon.Terminal />, words: `ssh shell terminal ${p.name}`, run: () => nav.ssh(p.name) });
+          out.push({ id: `ssh:${p.name}`, group: "Actions", label: `SSH to ${L(p.name)}`, icon: <Icon.Terminal />, words: `ssh shell terminal ${p.name} ${L(p.name)}`, run: () => nav.ssh(p.name) });
         }
         out.push({
           id: `cp:${p.name}`,
           group: "Actions",
-          label: `Copy ${p.name}'s address`,
+          label: `Copy ${L(p.name)}'s address`,
           hint: p.address,
           icon: <Icon.Copy />,
-          words: `copy address ip ${p.name} ${p.address}`,
+          words: `copy address ip ${p.name} ${L(p.name)} ${p.address}`,
           run: () => void copyText(p.address).then(() => toast(`Copied ${p.address}`)),
         });
         for (const sv of p.services ?? []) {
@@ -57,18 +61,18 @@ export function Palette({ status, running, nav, act, onClose }: { status?: Statu
             id: `svc:${p.name}:${sv.port}`,
             group: "Services",
             label: url ? `Open ${name}` : `Copy ${name}'s address`,
-            hint: `on ${p.name}`,
+            hint: `on ${L(p.name)}`,
             icon: url ? <Icon.Open /> : <Icon.Copy />,
-            words: `${name} ${sv.port} ${p.name} service open`,
+            words: `${name} ${sv.port} ${p.name} ${L(p.name)} service open`,
             run: url ? () => void openExternal(url) : () => void copyText(`${host}:${sv.port}`).then(() => toast(`Copied ${host}:${sv.port}`)),
           });
         }
         if (p.exit_node && p.online && s.exit_node !== p.name) {
-          out.push({ id: `exit:${p.name}`, group: "Exit node", label: `Route traffic through ${p.name}`, icon: <Icon.Globe />, words: `exit node route vpn ${p.name}`, run: () => void act({ kind: "exit-node", name: p.name }) });
+          out.push({ id: `exit:${p.name}`, group: "Exit node", label: `Route traffic through ${L(p.name)}`, icon: <Icon.Globe />, words: `exit node route vpn ${p.name} ${L(p.name)}`, run: () => void act({ kind: "exit-node", name: p.name }) });
         }
       }
       if (s.exit_node) {
-        out.push({ id: "exit:none", group: "Exit node", label: "Stop using an exit node", hint: `now ${s.exit_node}`, icon: <Icon.Home />, words: "exit node stop none off own connection", run: () => void act({ kind: "exit-node", name: "" }) });
+        out.push({ id: "exit:none", group: "Exit node", label: "Stop using an exit node", hint: `now ${L(s.exit_node)}`, icon: <Icon.Home />, words: "exit node stop none off own connection", run: () => void act({ kind: "exit-node", name: "" }) });
       }
       out.push({
         id: "copy:self",
@@ -83,12 +87,14 @@ export function Palette({ status, running, nav, act, onClose }: { status?: Statu
       out.push({ id: "go:devices", group: "Go to", label: "Devices", icon: <Icon.Devices />, keys: "⌘1", words: "devices go", run: () => nav.page("devices") });
       out.push({ id: "go:services", group: "Go to", label: "Services", icon: <Icon.Services />, keys: "⌘2", words: "services go share port", run: () => nav.page("services") });
       out.push({ id: "go:exit", group: "Go to", label: "Exit node", icon: <Icon.Exit />, keys: "⌘3", words: "exit node go", run: () => nav.page("exit") });
+      out.push({ id: "edit:self", group: "Actions", label: "Rename this device", icon: <Icon.Pencil />, words: "rename name picture photo avatar edit this device", run: () => nav.edit(s.node.name) });
       out.push({ id: "go:settings", group: "Go to", label: "Settings", icon: <Icon.Gear />, keys: "⌘,", words: "settings preferences diagnostics go", run: () => nav.page("settings") });
     } else {
       out.push({ id: "up", group: "Actions", label: "Connect", icon: <Icon.Power />, words: "connect on up start", run: () => void act({ kind: "up" }) });
     }
     return out;
-  }, [status, running, nav, act]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, running, nav, act, prefs]);
 
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = useMemo(() => {

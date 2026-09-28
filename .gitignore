@@ -24,3 +24,6 @@ desktop/src-tauri/gen/
 
 # Other platforms' makima, built into the app by `make kits`.
 desktop/src-tauri/kits/*.tar.gz
+
+# Device pictures: fetched at build time, never committed (see desktop/src/characters.ts).
+desktop/src/avatars/

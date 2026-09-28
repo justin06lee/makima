@@ -1,13 +1,12 @@
 @import "tailwindcss";
 
-/* Monochrome, with one colour that means something.
+/* Monochrome.
 
    Ink on a pale window, content on an inset sheet, hairlines instead of
-   filled boxes. Primary actions are ink, not a brand blue: the only colour
-   in the window is status — green for reachable, amber for the long way
-   round, red for broken — so when something is coloured it is telling you
-   something. It follows the system's appearance because every other window
-   on the screen does. */
+   filled boxes. Nothing is coloured but the pictures — device faces, app
+   icons — so status is carried by shape and words: a solid mark, a half, a
+   ring, a cross, a line with a pulse in it. It follows the system's
+   appearance because every other window on the screen does. */
 :root {
   --bg: #f3f3f4;
   --panel: #ffffff;
@@ -22,9 +21,6 @@
   --line-2: rgba(12, 12, 14, 0.13);
   --primary: #0c0c0e;
   --primary-ink: #ffffff;
-  --green: #17a34a;
-  --amber: #d98206;
-  --red: #dc2f2f;
   --grey: #cfcfd4;
   --focus: rgba(12, 12, 14, 0.16);
   --panel-shadow: 0 0 0 1px rgba(12, 12, 14, 0.06), 0 1px 2px rgba(12, 12, 14, 0.04), 0 8px 24px -12px rgba(12, 12, 14, 0.08);
@@ -50,9 +46,6 @@
     --line-2: rgba(255, 255, 255, 0.12);
     --primary: #ededf0;
     --primary-ink: #0b0b0c;
-    --green: #3dd68c;
-    --amber: #f5a524;
-    --red: #f87171;
     --grey: #3d3d44;
     --focus: rgba(255, 255, 255, 0.2);
     --panel-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
@@ -75,9 +68,6 @@
   --line-2: rgba(255, 255, 255, 0.12);
   --primary: #ededf0;
   --primary-ink: #0b0b0c;
-  --green: #3dd68c;
-  --amber: #f5a524;
-  --red: #f87171;
   --grey: #3d3d44;
   --focus: rgba(255, 255, 255, 0.2);
   --panel-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
@@ -99,10 +89,7 @@
   --color-line-2: var(--line-2);
   --color-primary: var(--primary);
   --color-primary-ink: var(--primary-ink);
-  --color-green: var(--green);
   --color-grey: var(--grey);
-  --color-red: var(--red);
-  --color-amber: var(--amber);
 
   --font-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
@@ -204,30 +191,6 @@ body {
 }
 .pulse { animation: pulse 1.8s ease-in-out infinite }
 
-/* The halo round a live status dot: one slow breath, so a glance can tell a
-   connected window from a screenshot of one. */
-@keyframes halo {
-  0%   { transform: scale(1); opacity: 0.55 }
-  70%  { transform: scale(2.6); opacity: 0 }
-  100% { transform: scale(2.6); opacity: 0 }
-}
-.halo::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 9999px;
-  background: currentColor;
-  animation: halo 2.6s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
-}
-
-/* A packet running along a wire on the exit node route. */
-@keyframes wire {
-  from { left: 0 }
-  to   { left: calc(100% - 6px) }
-}
-.wire-dot { animation: wire 2.2s linear infinite }
-
 @media (prefers-reduced-motion: reduce) {
-  .fade-in, .slide-in, .pop-in, .rise-in, .scrim-in, .pulse, .wire-dot { animation: none }
-  .halo::after { display: none }
+  .fade-in, .slide-in, .pop-in, .rise-in, .scrim-in, .pulse { animation: none }
 }

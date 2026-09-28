@@ -63,7 +63,7 @@ export function Setup({
           </div>
 
           {!env.cli && (
-            <p className="mt-6 rounded-xl border border-red/20 bg-red/[0.06] px-4 py-3 text-center text-[12.5px] leading-relaxed text-red">
+            <p className="mt-6 rounded-xl border border-line-2 bg-panel px-4 py-3 text-center text-[12.5px] font-medium leading-relaxed text-ink">
               The makima command is missing from this app. Reinstall it, or install makima from the terminal first.
             </p>
           )}
@@ -217,7 +217,7 @@ function WordsInput({ value, onChange, onEnter }: { value: string; onChange: (v:
   if (pasted) {
     return (
       <div className="flex items-center gap-3 rounded-[10px] border border-line bg-sunken px-3 py-2.5">
-        <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${ok ? "bg-green/15 text-green" : "bg-active text-dim"}`}>
+        <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${ok ? "bg-ink text-panel" : "bg-active text-dim"}`}>
           {ok ? <Icon.Check size={13} /> : <Icon.Warn size={13} />}
         </span>
         <div className="min-w-0 flex-1">
@@ -257,7 +257,7 @@ function WordsInput({ value, onChange, onEnter }: { value: string; onChange: (v:
       </ol>
       <div className="mt-2 flex items-center justify-between text-[11.5px]">
         <span className="text-dimmer">Or paste the whole invite into any slot.</span>
-        <span className="tabular">{ok ? <span className="text-green">Ready</span> : <span className="text-dimmer">{filled} of 15</span>}</span>
+        <span className="tabular">{ok ? <span className="inline-flex items-center gap-1 font-medium text-ink"><Icon.Check size={12} /> Ready</span> : <span className="text-dimmer">{filled} of 15</span>}</span>
       </div>
     </div>
   );

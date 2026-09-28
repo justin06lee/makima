@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, openExternal, type Candidate, type Choice, type MigrateEvent, type MigrationResult, type Plan } from "./api";
-import { Button, Card, Input, Spinner, Tag, Toggle } from "./ui";
+import { Button, Card, Dot, Input, Spinner, Tag, Toggle } from "./ui";
 import { Icon } from "./icons";
 
 /// Moving every device on a tailnet to makima, in one go.
@@ -190,7 +190,10 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[620px] space-y-6 px-6 pb-8 pt-6">
           {error && (
-            <p className="selectable rounded-xl border border-red/20 bg-red/[0.06] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-red">{error}</p>
+            <p className="selectable flex gap-2.5 rounded-xl border border-line-2 bg-sunken px-3.5 py-2.5 text-[12.5px] font-medium leading-relaxed text-ink">
+              <Icon.Warn size={14} className="mt-0.5 shrink-0" />
+              {error}
+            </p>
           )}
 
           {phase === "scan" && <ScanList machines={machines} auth={auth} scanning={scanning} />}
@@ -219,7 +222,7 @@ export function Migrate({ onClose, mac }: { onClose: () => void; mac: boolean })
                     </ControllerCard>
                   ))}
                 </div>
-                {plan?.advice && <p className="rounded-lg bg-amber/10 px-3 py-2 text-[12.5px] leading-relaxed text-dim">{plan.advice}</p>}
+                {plan?.advice && <p className="rounded-xl border border-line bg-sunken/60 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink-2">{plan.advice}</p>}
               </section>
 
               <section className="space-y-2">
@@ -389,7 +392,7 @@ function Stepper({ phase }: { phase: Phase }) {
               i === at ? "bg-panel font-medium text-ink shadow-[var(--panel-shadow)]" : i < at ? "text-dim" : "text-dimmer"
             }`}
           >
-            {i < at && <Icon.Check size={12} className="text-green" />}
+            {i < at && <Icon.Check size={12} className="text-ink" />}
             {label}
           </span>
         </li>
@@ -439,7 +442,7 @@ function ScanList({ machines, auth, scanning }: { machines: Candidate[]; auth: R
                   Approve
                 </Button>
               ) : m.eligible ? (
-                <Icon.Check className="text-green" />
+                <Icon.Check className="text-ink" />
               ) : null
             }
             note={auth[m.id] ? "Tailscale SSH wants you to approve this login in your browser." : undefined}
@@ -481,7 +484,7 @@ function MachineRow({
           {m.local && <span className="ml-2"><Tag>This device</Tag></span>}
         </div>
         {caption && <div className="mt-0.5 text-[12px] leading-snug text-dim">{caption}</div>}
-        {note && <div className="mt-0.5 text-[12px] leading-snug text-amber">{note}</div>}
+        {note && <div className="mt-0.5 text-[12px] font-medium leading-snug text-ink">{note}</div>}
       </div>
       {right && <div className="flex shrink-0 items-center">{right}</div>}
     </div>
@@ -517,7 +520,7 @@ function ControllerCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-[14px] font-medium text-ink">{m.name}</span>
-            {recommended && <Tag tone="green">Recommended</Tag>}
+            {recommended && <Tag tone="ink">Recommended</Tag>}
             {m.local && <Tag>This device</Tag>}
           </div>
           <div className="mt-0.5 text-[12px] leading-snug text-dim">
@@ -626,8 +629,8 @@ function ProgressRow({
   outcome?: { outcome: string; detail?: string; notes?: string[] };
   done: boolean;
 }) {
-  // Red is for a device something went wrong on. One the run stopped short
-  // of was never touched, and says so in grey. Amber is on makima with
+  // A cross is a device something went wrong on. One the run stopped short
+  // of was never touched, and says so in grey. A half mark is on makima with
   // Tailscale still beside it.
   const on = outcome?.outcome === "moved" || outcome?.outcome === "both";
   const failed = !on && step?.state === "failed";
@@ -637,9 +640,15 @@ function ProgressRow({
     <div className="flex items-start gap-3 border-b border-line px-4 py-3 last:border-0">
       <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
         {failed ? (
-          <Icon.Close className="text-red" />
+          <Icon.Close className="text-ink" />
         ) : finished ? (
-          <Icon.Check className={outcome?.outcome === "both" ? "text-amber" : "text-green"} />
+          outcome?.outcome === "both" ? (
+            // On makima with Tailscale still beside it: done, but not all
+            // the way. A half-filled mark, as everywhere else.
+            <Dot tone="amber" />
+          ) : (
+            <Icon.Check className="text-ink" />
+          )
         ) : step && !done ? (
           <Spinner className="text-ink" />
         ) : (
@@ -651,7 +660,7 @@ function ProgressRow({
           <span className="truncate text-[14px] text-ink">{m.name}</span>
           {role && <Tag>{role}</Tag>}
         </div>
-        <div className={`mt-0.5 text-[12px] leading-snug ${failed ? "text-red" : "text-dim"}`}>
+        <div className={`mt-0.5 text-[12px] leading-snug ${failed ? "font-medium text-ink" : "text-dim"}`}>
           {sentence(text)}
         </div>
         {outcome?.notes?.map((n) => (
@@ -674,7 +683,7 @@ function Summary({ result, removed }: { result: MigrationResult; removed: boolea
   const tried = result.machines.filter((m) => m.outcome !== "stayed" || m.detail !== "not chosen").length;
   return (
     <div className="flex items-start gap-3 rounded-xl border border-line bg-sunken/60 px-4 py-3">
-      {result.ok ? <Icon.Check className="mt-0.5 text-green" /> : <Icon.Warn className="mt-0.5 text-amber" />}
+      {result.ok ? <Icon.Check className="mt-0.5 text-ink" /> : <Icon.Warn className="mt-0.5 text-ink" />}
       <div className="min-w-0 flex-1">
         <div className="text-[14px] font-medium text-ink">
           {result.ok ? `All ${on} devices are on makima.` : `${on} of ${tried} devices are on makima.`}

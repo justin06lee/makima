@@ -190,6 +190,12 @@ export const Icon = {
       <path d="M4 10.5L12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5H15V15h-6v5.5H5.5A1.5 1.5 0 0 1 4 19z" />
     </Svg>
   ),
+  Pencil: (p: P) => (
+    <Svg {...p}>
+      <path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z" />
+      <path d="M13.5 6.5l4 4" />
+    </Svg>
+  ),
   Plug: (p: P) => (
     <Svg {...p}>
       <path d="M9 3.5V7M15 3.5V7" />

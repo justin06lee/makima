@@ -137,8 +137,8 @@ export function AddDevice({
           </div>
 
           {local && (
-            <p className="flex gap-2.5 rounded-xl border border-amber/25 bg-amber/[0.07] px-3.5 py-2.5 text-[12px] leading-relaxed text-ink-2">
-              <Icon.Warn size={14} className="mt-0.5 shrink-0 text-amber" />
+            <p className="flex gap-2.5 rounded-xl border border-line bg-sunken/60 px-3.5 py-2.5 text-[12px] leading-relaxed text-ink-2">
+              <Icon.Warn size={14} className="mt-0.5 shrink-0 text-ink" />
               This network is held at a private address, so the other device has to be on the same local network to join.
             </p>
           )}

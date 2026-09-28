@@ -2,10 +2,14 @@ import { ms, type Status } from "./api";
 import type { Act } from "./App";
 import { Card, PageHeader, Section, Signal, Spinner, Toggle } from "./ui";
 import { Icon } from "./icons";
+import { Avatar } from "./Avatar";
+import { Wave } from "./Wave";
+import { labelOf, usePrefs } from "./prefs";
 
 /// Pick a device to carry all of this one's internet traffic, or none — and
 /// whether this one offers to carry the others'.
 export function ExitNodes({ status, busy, act }: { status: Status; busy: boolean; act: Act }) {
+  const prefs = usePrefs();
   const offering = status.peers.filter((p) => p.exit_node).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
   const current = status.exit_node ?? "";
 
@@ -29,7 +33,7 @@ export function ExitNodes({ status, busy, act }: { status: Status; busy: boolean
               {offering.map((p) => (
                 <Choice
                   key={p.name}
-                  label={p.name}
+                  label={labelOf(prefs, p.name)}
                   caption={
                     <span className="flex items-center gap-2">
                       <Signal latency={p.latency} direct={p.direct} online={p.online} />
@@ -37,7 +41,7 @@ export function ExitNodes({ status, busy, act }: { status: Status; busy: boolean
                       {p.online && p.latency > 0 && <span className="tabular text-dimmer">{ms(p.latency)}</span>}
                     </span>
                   }
-                  icon={<Icon.Devices size={15} />}
+                  icon={<Avatar name={p.name} size={32} offline={!p.online} />}
                   checked={current === p.name}
                   busy={busy}
                   disabled={!p.online && current !== p.name}
@@ -56,7 +60,7 @@ export function ExitNodes({ status, busy, act }: { status: Status; busy: boolean
             <Card>
               <div className="flex min-h-[56px] items-center gap-3 px-4 py-2.5">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[13px]">Offer {status.node.name} as an exit node</div>
+                  <div className="text-[13px]">Offer {labelOf(prefs, status.node.name)} as an exit node</div>
                   <div className="mt-px text-[12px] leading-snug text-dim">
                     {status.node.advertises_exit
                       ? status.node.exit_approved
@@ -75,40 +79,50 @@ export function ExitNodes({ status, busy, act }: { status: Status; busy: boolean
   );
 }
 
-/// The route, drawn: this device → (the exit node) → the internet.
+/// The route, drawn: this device → (the exit node) → the internet, with a
+/// pulse running down each leg of it.
 function Route({ from, via }: { from: string; via: string }) {
+  const prefs = usePrefs();
   return (
-    <div className="rounded-xl border border-line bg-sunken/60 px-6 py-5">
-      <div className="flex items-center">
-        <Node label={from} sub="This device" icon={<Icon.Devices size={16} />} />
-        <Wire live />
+    <div className="rounded-xl border border-line bg-sunken/60 px-5 py-5">
+      <div className="flex items-start">
+        <Node label={labelOf(prefs, from)} sub="This device" icon={<Avatar name={from} size={40} />} />
+        <Leg />
         {via && (
           <>
-            <Node label={via} sub="Exit node" icon={<Icon.Devices size={16} />} ink />
-            <Wire live />
+            <Node label={labelOf(prefs, via)} sub="Exit node" icon={<Avatar name={via} size={40} />} />
+            <Leg />
           </>
         )}
-        <Node label="Internet" sub={`Sees ${via || from}`} icon={<Icon.Globe size={16} />} />
+        <Node
+          label="Internet"
+          sub={`Sees ${labelOf(prefs, via || from)}`}
+          icon={
+            <span className="flex size-10 items-center justify-center rounded-full border border-line-2 bg-panel text-ink-2">
+              <Icon.Globe size={17} />
+            </span>
+          }
+        />
       </div>
     </div>
   );
 }
 
-function Node({ label, sub, icon, ink }: { label: string; sub: string; icon: React.ReactNode; ink?: boolean }) {
+function Node({ label, sub, icon }: { label: string; sub: string; icon: React.ReactNode }) {
   return (
-    <div className="fade-in flex w-[96px] shrink-0 flex-col items-center text-center">
-      <span className={`flex size-10 items-center justify-center rounded-xl ${ink ? "bg-primary text-primary-ink" : "border border-line-2 bg-panel text-ink-2"}`}>{icon}</span>
+    <div className="fade-in flex w-[92px] shrink-0 flex-col items-center text-center">
+      {icon}
       <span className="mt-2 w-full truncate text-[12.5px] font-medium">{label}</span>
       <span className="w-full truncate text-[11px] text-dimmer">{sub}</span>
     </div>
   );
 }
 
-/// A line with a dot running along it: traffic is going this way.
-function Wire({ live }: { live?: boolean }) {
+/// One leg of the route: a line with a jagged pulse crossing it.
+function Leg() {
   return (
-    <div className="relative -mt-9 h-px min-w-6 flex-1 bg-line-2">
-      {live && <span className="wire-dot absolute left-0 top-1/2 size-1.5 -translate-y-1/2 rounded-full bg-green" />}
+    <div className="mt-2 min-w-6 flex-1 px-1">
+      <Wave height={24} pulse={40} period={2200} className="text-ink/70" />
     </div>
   );
 }

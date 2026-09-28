@@ -3,6 +3,8 @@ import { fqdn, openExternal, type Status } from "./api";
 import type { Act, Nav } from "./App";
 import { Button, Card, Dot, Input, PageHeader, Search, Section, Tag, useCopied } from "./ui";
 import { Icon } from "./icons";
+import { Avatar } from "./Avatar";
+import { labelOf, usePrefs } from "./prefs";
 
 /// Everything every device offers, in one place — so opening Grafana on the
 /// server is one click from anywhere, without remembering which machine it is
@@ -10,6 +12,7 @@ import { Icon } from "./icons";
 export function Services({ status, busy, act, nav }: { status: Status; busy: boolean; act: Act; nav: Nav }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
+  const prefs = usePrefs();
 
   const remote = useMemo(
     () =>
@@ -22,15 +25,16 @@ export function Services({ status, busy, act, nav }: { status: Status; busy: boo
               name: s.name ?? `port ${s.port}`,
               port: s.port,
               device: p.name,
+              deviceLabel: labelOf(prefs, p.name),
               online: p.online,
               url: s.scheme ? `${s.scheme}://${host}:${s.port}` : null,
               address: `${host}:${s.port}`,
             };
           }),
         )
-        .filter((s) => !q || s.name.toLowerCase().includes(q) || s.device.toLowerCase().includes(q) || String(s.port).includes(q))
+        .filter((s) => !q || s.name.toLowerCase().includes(q) || s.device.toLowerCase().includes(q) || s.deviceLabel.toLowerCase().includes(q) || String(s.port).includes(q))
         .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name)),
-    [status, q],
+    [status, q, prefs],
   );
 
   const mine = (status.services ?? []).filter((s) => !q || (s.name ?? "").toLowerCase().includes(q) || String(s.port).includes(q));
@@ -56,7 +60,7 @@ export function Services({ status, busy, act, nav }: { status: Status; busy: boo
             )}
           </Section>
 
-          <Section title={`Shared from ${status.node.name}`} hint="Anything listening on localhost is shared on its own as it starts. Share a port by hand if it isn't.">
+          <Section title={`Shared from ${labelOf(prefs, status.node.name)}`} hint="Anything listening on localhost is shared on its own as it starts. Share a port by hand if it isn't.">
             <Card>
               {mine.map((s) => {
                 const health = !s.listening ? "red" : s.target_up ? "green" : "amber";
@@ -69,7 +73,7 @@ export function Services({ status, busy, act, nav }: { status: Status; busy: boo
                         <span className="font-mono text-[11.5px] text-dimmer">:{s.port}</span>
                         {s.auto && <Tag>Auto</Tag>}
                       </div>
-                      <div className={`mt-px truncate text-[12px] ${health === "green" ? "text-dim" : "text-amber"}`}>
+                      <div className={`mt-px truncate text-[12px] ${health === "green" ? "text-dim" : "font-medium text-ink-2"}`}>
                         {!s.listening
                           ? s.error ?? "Not listening on the network"
                           : !s.target_up
@@ -80,10 +84,10 @@ export function Services({ status, busy, act, nav }: { status: Status; busy: boo
                     {s.total > 0 && (
                       <span className="tabular hidden text-right text-[11.5px] leading-tight text-dimmer sm:block">
                         {s.total} connection{s.total === 1 ? "" : "s"}
-                        {s.active > 0 && <span className="block text-green">{s.active} open</span>}
+                        {s.active > 0 && <span className="block text-ink-2">{s.active} open</span>}
                       </span>
                     )}
-                    <Button size="sm" variant="ghost" busy={busy} onClick={() => act({ kind: "deny", port: s.port })} title="Take this off the network, and keep it off" className="hover:!text-red">
+                    <Button size="sm" variant="ghost" busy={busy} onClick={() => act({ kind: "deny", port: s.port })} title="Take this off the network, and keep it off">
                       Stop sharing
                     </Button>
                   </div>
@@ -102,6 +106,7 @@ function RemoteRow({
   name,
   port,
   device,
+  deviceLabel,
   online,
   url,
   address,
@@ -110,6 +115,7 @@ function RemoteRow({
   name: string;
   port: number;
   device: string;
+  deviceLabel: string;
   online: boolean;
   url: string | null;
   address: string;
@@ -142,14 +148,14 @@ function RemoteRow({
             }}
             className="inline-flex shrink-0 items-center gap-1.5 hover:text-ink hover:underline"
           >
-            <Dot tone={online ? "green" : "grey"} size="sm" />
-            {device}
+            <Avatar name={device} size={14} offline={!online} />
+            {deviceLabel}
           </button>
           <span className="text-dimmer">·</span>
           <span className="truncate font-mono text-[11.5px] text-dimmer">{url ?? address}</span>
         </div>
       </div>
-      <span className={`flex shrink-0 items-center gap-1 text-[12px] font-medium transition-opacity ${copied ? "text-green" : "text-dim opacity-0 group-hover:opacity-100"}`}>
+      <span className={`flex shrink-0 items-center gap-1 text-[12px] font-medium transition-opacity ${copied ? "text-ink" : "text-dim opacity-0 group-hover:opacity-100"}`}>
         {url ? (
           <>
             Open <Icon.Open size={14} />

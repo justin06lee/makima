@@ -212,6 +212,8 @@ const browser = {
   wait: (ms: number) => new Promise((r) => setTimeout(r, ms)),
 };
 
+const iconCache = new Map<string, Promise<string | null>>();
+
 export const api = {
   status: async (): Promise<Snapshot> => {
     if (inTauri) return invoke<Snapshot>("status");
@@ -297,6 +299,23 @@ export const api = {
       { id: "alacritty", name: "Alacritty", builtin: false },
       { id: "terminal", name: "Terminal", builtin: true },
     ];
+  },
+  /// A terminal's own app icon, as an image URL, or null when there is none
+  /// to show. Asked for once per terminal per window.
+  terminalIcon: (id: string): Promise<string | null> => {
+    let p = iconCache.get(id);
+    if (!p) {
+      p = inTauri
+        ? invoke<string | null>("terminal_icon", { id }).catch(() => null)
+        : // The browser preview asks vite, which runs the same script; see
+          // vite.config.ts. It answers only on a Mac, only in dev.
+          fetch(`/dev/terminal-icon/${encodeURIComponent(id)}`)
+            .then((r) => (r.ok ? r.blob() : null))
+            .then((b) => (b ? URL.createObjectURL(b) : null))
+            .catch(() => null);
+      iconCache.set(id, p);
+    }
+    return p;
   },
   /// A new window of that terminal, running `makima ssh PEER`.
   openSSH: async (terminal: string, peer: string): Promise<void> => {

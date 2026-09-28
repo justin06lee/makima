@@ -4,6 +4,9 @@ import type { Act, Nav } from "./App";
 import { Button, Copyable, Dot, IconButton, PageHeader, Search, Section, Signal, Spinner, Tag, Toggle, toast, useCopied } from "./ui";
 import { Icon } from "./icons";
 import { useDrop } from "./useDrop";
+import { Avatar } from "./Avatar";
+import { Pulse } from "./Wave";
+import { labelOf, usePrefs, type Prefs } from "./prefs";
 
 const SELF = "\u0000self";
 
@@ -25,17 +28,20 @@ export function Devices({
   selected: string | null;
 }) {
   const [query, setQuery] = useState("");
-  const { send, sending } = useSender();
+  const prefs = usePrefs();
+  const { send, sending } = useSender(prefs);
 
   const q = query.trim().toLowerCase();
+  const matches = (name: string, address: string) => !q || name.toLowerCase().includes(q) || labelOf(prefs, name).toLowerCase().includes(q) || address.includes(q);
   const peers = useMemo(
     () =>
       [...status.peers]
-        .filter((p) => !q || p.name.toLowerCase().includes(q) || p.address.includes(q) || p.services?.some((s) => s.name?.toLowerCase().includes(q)))
-        .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name)),
-    [status.peers, q],
+        .filter((p) => matches(p.name, p.address) || p.services?.some((s) => s.name?.toLowerCase().includes(q)))
+        .sort((a, b) => Number(b.online) - Number(a.online) || labelOf(prefs, a.name).localeCompare(labelOf(prefs, b.name))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [status.peers, q, prefs],
   );
-  const selfMatches = !q || status.node.name.toLowerCase().includes(q) || status.node.address.includes(q);
+  const selfMatches = matches(status.node.name, status.node.address);
 
   const self = selected === SELF || selected === status.node.name;
   const peer = !self && selected ? status.peers.find((p) => p.name === selected) ?? null : null;
@@ -130,7 +136,7 @@ export function Devices({
 
 /// Sending files, one after another, with the result said at the bottom of
 /// the window.
-function useSender() {
+function useSender(prefs: Prefs) {
   const [sending, setSending] = useState<{ peer: string; file: string } | null>(null);
   async function send(peer: string, paths: string[]) {
     for (const path of paths) {
@@ -138,7 +144,7 @@ function useSender() {
       setSending({ peer, file });
       try {
         const out = await api.sendFile(peer, path);
-        if (out.ok) toast(`Sent ${file} to ${peer}`);
+        if (out.ok) toast(`Sent ${file} to ${labelOf(prefs, peer)}`);
         else toast(`${file}: ${out.output}`, "error");
       } catch (e) {
         toast(`${file}: ${String(e)}`, "error");
@@ -157,7 +163,7 @@ const GRID = "grid grid-cols-[minmax(0,1fr)_auto] @[600px]:grid-cols-[minmax(0,1
 function ColumnHeads() {
   return (
     <div className={`${GRID} sticky top-0 z-10 hidden h-8 border-b border-line bg-panel/90 px-5 text-[11.5px] text-dimmer backdrop-blur @[600px]:grid`}>
-      <span className="pl-[19px]">Name</span>
+      <span className="pl-[38px]">Name</span>
       <span>Address</span>
       <span>Connection</span>
       <span>Services</span>
@@ -176,8 +182,8 @@ function SelfRow({ status, active, onClick }: { status: Status; active: boolean;
   return (
     <div role="option" aria-selected={active} tabIndex={-1} onClick={onClick} className={rowClass(active)}>
       <span className="flex min-w-0 items-center gap-3">
-        <Dot tone="green" live />
-        <span className="truncate text-[13px] font-medium">{status.node.name}</span>
+        <Avatar name={status.node.name} size={26} />
+        <Name name={status.node.name} />
         <Tag>You</Tag>
       </span>
       <span className="hidden font-mono text-[12px] text-dim @[600px]:block">{status.node.address}</span>
@@ -218,11 +224,11 @@ function PeerRow({
       onClick={onClick}
       onDoubleClick={() => peer.online && onSSH()}
       data-drop-peer={peer.online ? peer.name : undefined}
-      className={`group ${rowClass(active, dropTarget ? "!bg-green/10 ring-1 ring-inset ring-green/50" : dragging && !peer.online ? "opacity-40" : "")}`}
+      className={`group ${rowClass(active, dropTarget ? "!bg-active ring-1 ring-inset ring-ink/40" : dragging && !peer.online ? "opacity-40" : "")}`}
     >
       <span className="flex min-w-0 items-center gap-3">
-        <Dot tone={peer.online ? (peer.direct ? "green" : "amber") : "grey"} />
-        <span className={`truncate text-[13px] font-medium ${peer.online ? "" : "text-dim"}`}>{peer.name}</span>
+        <Avatar name={peer.name} size={26} offline={!peer.online} />
+        <Name name={peer.name} dim={!peer.online} />
         {isExit && <Tag tone="ink">Exit</Tag>}
         {sending && <Spinner className="text-dim" />}
       </span>
@@ -263,7 +269,9 @@ function PeerRow({
         )}
       </span>
       {dropTarget && (
-        <span className="pointer-events-none absolute inset-y-0 right-5 flex items-center text-[12px] font-medium text-green">Drop to send</span>
+        <span className="pointer-events-none absolute inset-y-0 right-5 flex items-center gap-1.5 text-[12px] font-medium text-ink">
+          <Icon.Send size={14} /> Drop to send
+        </span>
       )}
     </div>
   );
@@ -312,14 +320,36 @@ function Inspector({ children, onClose, highlight }: { children: React.ReactNode
   );
 }
 
-function Title({ name, tag, children }: { name: string; tag?: React.ReactNode; children?: React.ReactNode }) {
+/// A device's name in the table: the one given here, and — when that is
+/// different — the device's own, quieter, beside it.
+function Name({ name, dim }: { name: string; dim?: boolean }) {
+  const prefs = usePrefs();
+  const label = labelOf(prefs, name);
+  return (
+    <span className="flex min-w-0 items-baseline gap-1.5">
+      <span className={`truncate text-[13px] font-medium ${dim ? "text-dim" : ""}`}>{label}</span>
+      {label !== name && <span className="hidden truncate font-mono text-[11px] text-dimmer @[600px]:inline">{name}</span>}
+    </span>
+  );
+}
+
+function Title({ name, offline, tag, onEdit, children }: { name: string; offline?: boolean; tag?: React.ReactNode; onEdit: () => void; children?: React.ReactNode }) {
+  const prefs = usePrefs();
+  const label = labelOf(prefs, name);
   return (
     <div className="pr-8">
+      <button type="button" onClick={onEdit} title="Change the name or picture" className="group relative mb-3 block rounded-full">
+        <Avatar name={name} size={56} offline={offline} />
+        <span className="absolute -bottom-0.5 -right-0.5 flex size-6 items-center justify-center rounded-full border border-line bg-panel text-dim opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
+          <Icon.Pencil size={12} />
+        </span>
+      </button>
       <div className="flex items-center gap-2">
-        <h2 className="selectable truncate text-[18px] font-semibold tracking-[-0.02em]">{name}</h2>
+        <h2 className="selectable truncate text-[18px] font-semibold tracking-[-0.02em]">{label}</h2>
         {tag}
       </div>
-      <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12.5px] text-dim">{children}</div>
+      {label !== name && <div className="selectable mt-0.5 truncate font-mono text-[11.5px] text-dimmer">{name}</div>}
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12.5px] text-dim">{children}</div>
     </div>
   );
 }
@@ -376,6 +406,8 @@ function PeerInspector({
 
   const direct = ping ? ping.direct : peer.direct;
   const latency = ping ? (ping.direct ? ping.latency : ping.relay_latency) : peer.latency;
+  const prefs = usePrefs();
+  const label = labelOf(prefs, peer.name);
   const isExit = status.exit_node === peer.name;
   const name = fqdn(peer.name, status);
   const host = name ?? peer.address;
@@ -386,9 +418,9 @@ function PeerInspector({
       const p = await api.ping(peer.name);
       setPing(p);
       const l = p.direct ? p.latency : p.relay_latency;
-      toast(`${peer.name}: ${p.direct ? "direct" : "via relay"}${l ? `, ${ms(l)}` : ""}`);
-    } catch (e) {
-      toast(`${peer.name} did not answer`, "error");
+      toast(`${label}: ${p.direct ? "direct" : "via relay"}${l ? `, ${ms(l)}` : ""}`);
+    } catch {
+      toast(`${label} did not answer`, "error");
     } finally {
       setPinging(false);
     }
@@ -400,7 +432,7 @@ function PeerInspector({
       return;
     }
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const chosen = await open({ multiple: true, directory: false, title: `Send to ${peer.name}` });
+    const chosen = await open({ multiple: true, directory: false, title: `Send to ${label}` });
     if (chosen) onSend(Array.isArray(chosen) ? chosen : [chosen]);
   }
 
@@ -409,16 +441,16 @@ function PeerInspector({
       onClose={onClose}
       highlight={
         dragging && peer.online ? (
-          <div className="fade-in pointer-events-none absolute inset-2 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-green/60 bg-panel/90 backdrop-blur-sm">
-            <Icon.Send size={22} className="text-green" />
-            <p className="text-[13px] font-medium">Drop to send to {peer.name}</p>
+          <div className="fade-in pointer-events-none absolute inset-2 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-ink/40 bg-panel/90 backdrop-blur-sm">
+            <Icon.Send size={22} className="text-ink" />
+            <p className="text-[13px] font-medium">Drop to send to {label}</p>
             <p className="text-[12px] text-dim">It lands in their makima inbox</p>
           </div>
         ) : null
       }
     >
-      <Title name={peer.name} tag={isExit ? <Tag tone="ink">Exit</Tag> : undefined}>
-        <Dot tone={peer.online ? (direct ? "green" : "amber") : "grey"} size="sm" live={peer.online} />
+      <Title name={peer.name} offline={!peer.online} onEdit={() => nav.edit(peer.name)} tag={isExit ? <Tag tone="ink">Exit</Tag> : undefined}>
+        <Signal latency={latency} direct={direct} online={peer.online} />
         <span>{peer.online ? (direct ? "Direct" : "Via relay") : "Offline"}</span>
         {peer.online && latency > 0 && (
           <>
@@ -468,12 +500,12 @@ function PeerInspector({
       {peer.exit_node && (
         <Section title="Exit node" hint={isExit ? "All of this device's internet traffic goes through it." : "It offers to carry this device's internet traffic."}>
           <div className="flex items-center justify-between gap-3 rounded-[10px] border border-line px-3 py-2.5">
-            <span className="text-[12.5px]">Route traffic through {peer.name}</span>
+            <span className="truncate text-[12.5px]">Route traffic through {label}</span>
             <Toggle
               on={isExit}
               busy={busy}
               disabled={!peer.online && !isExit}
-              label={`Route traffic through ${peer.name}`}
+              label={`Route traffic through ${label}`}
               onChange={(next) => act({ kind: "exit-node", name: next ? peer.name : "" })}
             />
           </div>
@@ -495,7 +527,7 @@ export function ServiceLine({ name, port, url, address, disabled }: { name: stri
           Open
         </Button>
       ) : (
-        <Button size="sm" variant="ghost" icon={copied ? <Icon.Check size={14} className="text-green" /> : <Icon.Copy size={14} />} onClick={() => copy(address, address)} disabled={disabled} title={address}>
+        <Button size="sm" variant="ghost" icon={copied ? <Icon.Check size={14} className="text-ink" /> : <Icon.Copy size={14} />} onClick={() => copy(address, address)} disabled={disabled} title={address}>
           Copy
         </Button>
       )}
@@ -521,8 +553,8 @@ function SelfInspector({ status, env, busy, act, nav, onClose }: { status: Statu
 
   return (
     <Inspector onClose={onClose}>
-      <Title name={status.node.name} tag={<Tag>You</Tag>}>
-        <Dot tone="green" size="sm" live />
+      <Title name={status.node.name} onEdit={() => nav.edit(status.node.name)} tag={<Tag>You</Tag>}>
+        <Pulse on className="text-ink" />
         <span>{role}</span>
         {status.since && (
           <>

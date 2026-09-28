@@ -4,7 +4,40 @@ import { Modal, Row, toast } from "./ui";
 import { Icon } from "./icons";
 
 /// Where the choice of terminal is remembered.
-const TERMINAL = "makima:terminal";
+export const TERMINAL = "makima:terminal";
+
+/// The terminals on this device, most wanted first; null until known.
+export function useTerminals(): Terminal[] | null {
+  const [list, setList] = useState<Terminal[] | null>(null);
+  useEffect(() => {
+    api.terminals().then(setList).catch(() => setList([]));
+  }, []);
+  return list;
+}
+
+/// A terminal's own app icon, or a plain one while it loads or if it has
+/// none. The icons are the one thing in the window allowed to be coloured.
+export function TerminalIcon({ id, size = 40 }: { id: string; size?: number }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.terminalIcon(id).then((u) => live && setSrc(u));
+    return () => {
+      live = false;
+    };
+  }, [id]);
+  if (src) return <img src={src} alt="" draggable={false} style={{ width: size, height: size }} className="shrink-0 object-contain" />;
+  // Drawn at the size a real icon's artwork has inside its canvas (Apple's
+  // grid leaves a margin), so the plain one lines up with the rest.
+  const art = Math.round(size * 0.8);
+  return (
+    <span style={{ width: size, height: size }} className="flex shrink-0 items-center justify-center">
+      <span style={{ width: art, height: art }} className="flex items-center justify-center rounded-[22%] bg-primary text-primary-ink">
+        <Icon.Terminal size={Math.round(art * 0.5)} />
+      </span>
+    </span>
+  );
+}
 
 /// The SSH button: a new window of the person's terminal running `makima ssh
 /// NAME`. The first time there is more than one terminal to choose from, it
@@ -67,9 +100,7 @@ function TerminalPicker({ peer, list, onPick, onClose }: { peer: string; list: T
             onClick={() => onPick(t)}
             className="group flex flex-col items-center gap-2.5 rounded-xl border border-line bg-panel px-3 pb-3 pt-4 transition hover:border-line-2 hover:bg-sunken active:scale-[0.98]"
           >
-            <span className="flex size-10 items-center justify-center rounded-[10px] bg-primary text-primary-ink">
-              <Icon.Terminal size={18} />
-            </span>
+            <TerminalIcon id={t.id} size={44} />
             <span className="text-center">
               <span className="block text-[12.5px] font-medium text-ink">{t.name}</span>
               <span className="block text-[11px] text-dimmer">{t.builtin ? "Built in" : " "}</span>
@@ -83,12 +114,8 @@ function TerminalPicker({ peer, list, onPick, onClose }: { peer: string; list: T
 
 /// The same choice, in Settings, for changing it later.
 export function TerminalSetting() {
-  const [list, setList] = useState<Terminal[] | null>(null);
+  const list = useTerminals();
   const [chosen, setChosen] = useState(() => localStorage.getItem(TERMINAL) ?? "");
-
-  useEffect(() => {
-    api.terminals().then(setList).catch(() => setList([]));
-  }, []);
 
   function change(id: string) {
     if (id) localStorage.setItem(TERMINAL, id);

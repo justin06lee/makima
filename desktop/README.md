@@ -45,7 +45,9 @@ devserver up, `bun run dev` in `desktop/` and open http://localhost:5183. The
 devserver answers over TCP too and vite proxies to it; anything the CLI would
 do is pretended. The query string picks what to look at — `?state=setup`,
 `?state=off`, `?exit=tenet`, `?dark=1`, `?tailscale=0`, `?holds=0`,
-`?linked=0`, `?platform=linux`.
+`?linked=0`, `?platform=linux`, `?onboard=1` (the first-open questions again).
+On a Mac the preview shows real terminal icons: vite runs the same
+`app_icon.js` the app does.
 
 ## What it shows
 
@@ -74,11 +76,34 @@ walk the device table and Escape closes the inspector.
 
 **The look** is monochrome: ink on a pale window, content on an inset sheet,
 hairlines rather than filled boxes, Geist and Geist Mono bundled with the app.
-Primary actions are ink, so the only colour in the window is status — green
-reachable, amber relayed, red broken. It follows the system's light or dark
-appearance.
+Nothing is coloured but pictures — device faces and terminal app icons — so
+status is shape and words: signal bars, a solid mark for up, a half for
+relayed, a ring for off, and a line with a jagged pulse in it for traffic
+(beside this device's name when it is connected, and running along each leg
+of the exit node route). It follows the system's light or dark appearance.
 
-**The first run** has no daemon and no configuration, so it asks the one
+**Device names and pictures.** Every device wears a face — Chainsaw Man
+characters, one each, handed out the first time the app sees a device (the one
+holding the network is Makima) — and greys out when offline. Click a face, or
+the device's picture in the sidebar, to rename it or pick another, or upload
+your own. Both are this app's alone, kept in its local storage: SSH, the
+`.makima` names and the addresses stay the device's own.
+
+The faces are stills from the show and this repository is public, so they are
+not committed. `scripts/avatars.ts` fetches each from the Chainsaw Man wiki and
+crops it into `src/avatars/` (gitignored) the first time `bun run dev` or
+`bun run build` runs — which is every `make app`. The sources and crops are in
+`src/characters.ts`. Cropping uses `sips`, so off a Mac, or offline, the build
+goes on without them and devices show their initials.
+
+**The first open** asks two things, each skipped when there is nothing to
+ask: which terminal SSH should open in — with each terminal's own app icon,
+only when there is more than one — and, when Tailscale is running here,
+whether to move off it now. Skipping the move leaves it in the sidebar and in
+Settings.
+
+**The first run** — once the app is open on a machine with no network — has
+no daemon and no configuration, so it asks the one
 question that matters: start a network, or join one by typing the fifteen
 words the first device shows into fifteen numbered slots (or pasting them, or
 its invite, into any one). `makima up` registers the
@@ -160,19 +185,27 @@ src/              the interface — React, Tailwind, no router and no state libr
 src/api.ts        the daemon's types, mirrored, and the invoke wrappers
 src/App.tsx       the sidebar, the sheet, the keyboard, and which screen is showing
 src/ui.tsx        the pieces every screen is built from, and the toasts
+src/Onboarding.tsx the first open: default terminal, then the Tailscale offer
 src/Setup.tsx     the first run: start a network, or join one
 src/Devices.tsx   the device table and the inspector, including dropping files
+src/Avatar.tsx    device pictures, and the sheet to rename a device or change its picture
+src/prefs.ts      what this app calls each device and the picture it wears
+src/characters.ts where each built-in face comes from, and how it is cropped
+src/Wave.tsx      the line with a jagged pulse in it
 src/Services.tsx  what every device shares, and what this one shares
 src/ExitNodes.tsx pick an exit node
 src/Settings.tsx  login item, terminal, CLI install, diagnostics
 src/AddDevice.tsx the invite sheet
 src/Palette.tsx   ⌘K
 src/Migrate.tsx   moving from Tailscale: look, choose the Control Devil, move
+scripts/avatars.ts fetches and crops the built-in faces into src/avatars/
 src-tauri/        the Rust half
   daemon.rs       reading status over the read-only socket, and the facts on disk
   privileged.rs   the named actions, and the auth prompt in front of them
   migrate.rs      runs `makima migrate`, streams it to the window, answers its root steps
   tray.rs         the menu bar, rebuilt from the snapshot when it changes
+  terminal.rs     finding terminals, their app icons, and opening makima ssh in one
+  app_icon.js     draws an app's icon to a PNG on macOS (also used by vite in dev)
   lib.rs          the window, the plugins, and what closing the window means
   binaries/       the four Go binaries, built by `make sidecars`
   kits/           the same four for every other platform, built by `make kits`

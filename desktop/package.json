@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "bun scripts/avatars.ts && vite",
+    "build": "bun scripts/avatars.ts && tsc --noEmit && vite build",
+    "avatars": "bun scripts/avatars.ts",
     "tauri": "tauri"
   },
   "dependencies": {

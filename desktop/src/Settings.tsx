@@ -35,7 +35,7 @@ export function Settings({
                 right={
                   env.linked ? (
                     <span className="flex items-center gap-1.5 text-[12px] text-dim">
-                      <Icon.Check size={14} className="text-green" /> Installed
+                      <Icon.Check size={14} className="text-ink" /> Installed
                     </span>
                   ) : (
                     <Button size="sm" busy={busy} onClick={() => act({ kind: "link-cli" })}>
@@ -170,7 +170,7 @@ function LoginItem() {
 
 /// The doctor's checks, on demand.
 ///
-/// Not shown until asked for: a permanent list of green ticks is noise, and
+/// Not shown until asked for: a permanent list of ticks is noise, and
 /// the one time it matters is the time something is wrong.
 function Diagnostics() {
   const [checks, setChecks] = useState<Check[] | null>(null);
