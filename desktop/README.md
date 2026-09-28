@@ -54,15 +54,34 @@ every other device with a dot for whether it is reachable (click to copy the
 address), the exit node as a radio group, and Connect/Disconnect. It is a
 native menu, rebuilt only when what it shows changes.
 
-**The window** has three pages. *Devices* is a list on the left and a detail
-pane on the right — addresses to copy, services with Open buttons, SSH, and a
-drop zone that sends a file to that device's inbox. *Exit nodes* picks one.
-*Settings* has the login item, the command-line install, diagnostics, and the
-network's particulars.
+**The window** is a sidebar and a sheet. The sidebar carries this device's
+name, its switch and its address (click to copy), then the pages — *Devices*,
+*Services*, *Exit node*, *Settings* — and Add device at the foot. *Devices* is
+a table of every machine with its address, how it is reached (direct or relay,
+with the latency) and what it shares; pick one and an inspector opens beside
+it with SSH, Send file and Ping, its addresses to copy, its services with Open,
+and the exit node switch. Drop a file on any device's row — or anywhere, with
+one open — to send it there. *Services* lists everything every device shares,
+one click to open, above what this one shares and a box to share another port.
+*Exit node* draws the route and picks one. *Settings* has the login item, the
+terminal SSH opens in, the command-line install, diagnostics, and the network's
+particulars.
+
+**The keyboard.** ⌘K opens a palette over everything — devices, SSH, copying an
+address, opening any service, switching exit node, connecting — filtered by
+every word typed. ⌘1–3 and ⌘, go to the pages, ⌘N adds a device, the arrows
+walk the device table and Escape closes the inspector.
+
+**The look** is monochrome: ink on a pale window, content on an inset sheet,
+hairlines rather than filled boxes, Geist and Geist Mono bundled with the app.
+Primary actions are ink, so the only colour in the window is status — green
+reachable, amber relayed, red broken. It follows the system's light or dark
+appearance.
 
 **The first run** has no daemon and no configuration, so it asks the one
 question that matters: start a network, or join one by typing the fifteen
-words the first device shows (or pasting its invite). `makima up` registers the
+words the first device shows into fifteen numbered slots (or pasting them, or
+its invite, into any one). `makima up` registers the
 daemon with launchd or systemd, so from then on the device is connected
 whenever it is on, and the app becomes a login item so the menu bar is there
 too; Disconnect takes the registration away, and Settings turns the login item
@@ -139,12 +158,15 @@ the app still runs; it just has nowhere to live when its window is closed.
 ```
 src/              the interface — React, Tailwind, no router and no state library
 src/api.ts        the daemon's types, mirrored, and the invoke wrappers
-src/App.tsx       the title bar, the sidebar, and which screen is showing
+src/App.tsx       the sidebar, the sheet, the keyboard, and which screen is showing
+src/ui.tsx        the pieces every screen is built from, and the toasts
 src/Setup.tsx     the first run: start a network, or join one
-src/Devices.tsx   the list and the detail pane, including the drop zone
+src/Devices.tsx   the device table and the inspector, including dropping files
+src/Services.tsx  what every device shares, and what this one shares
 src/ExitNodes.tsx pick an exit node
-src/Settings.tsx  login item, CLI install, diagnostics
+src/Settings.tsx  login item, terminal, CLI install, diagnostics
 src/AddDevice.tsx the invite sheet
+src/Palette.tsx   ⌘K
 src/Migrate.tsx   moving from Tailscale: look, choose the Control Devil, move
 src-tauri/        the Rust half
   daemon.rs       reading status over the read-only socket, and the facts on disk

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Terminal } from "./api";
-import { Card, Modal, Row } from "./ui";
+import { Modal, Row, toast } from "./ui";
 import { Icon } from "./icons";
 
 /// Where the choice of terminal is remembered.
@@ -8,31 +8,30 @@ const TERMINAL = "makima:terminal";
 
 /// The SSH button: a new window of the person's terminal running `makima ssh
 /// NAME`. The first time there is more than one terminal to choose from, it
-/// asks which; after that it just opens.
+/// asks which; after that it just opens. Anything that goes wrong is said at
+/// the bottom of the window, wherever the button was.
 export function useSSH() {
   const [choosing, setChoosing] = useState<{ peer: string; list: Terminal[] } | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   async function open(terminal: string, peer: string) {
-    setError(null);
     try {
       await api.openSSH(terminal, peer);
+      toast(`Opening a shell on ${peer}`);
     } catch (e) {
-      setError(String(e));
+      toast(String(e), "error");
     }
   }
 
   async function ssh(peer: string) {
-    setError(null);
     let list: Terminal[];
     try {
       list = await api.terminals();
     } catch (e) {
-      setError(String(e));
+      toast(String(e), "error");
       return;
     }
     if (list.length === 0) {
-      setError("No terminal app was found on this device.");
+      toast("No terminal app was found on this device.", "error");
       return;
     }
     const saved = localStorage.getItem(TERMINAL);
@@ -43,6 +42,7 @@ export function useSSH() {
 
   const picker = choosing && (
     <TerminalPicker
+      peer={choosing.peer}
       list={choosing.list}
       onClose={() => setChoosing(null)}
       onPick={(t) => {
@@ -53,26 +53,30 @@ export function useSSH() {
     />
   );
 
-  return { ssh, picker, error };
+  return { ssh, picker };
 }
 
-function TerminalPicker({ list, onPick, onClose }: { list: Terminal[]; onPick: (t: Terminal) => void; onClose: () => void }) {
+function TerminalPicker({ peer, list, onPick, onClose }: { peer: string; list: Terminal[]; onPick: (t: Terminal) => void; onClose: () => void }) {
   return (
-    <Modal title="Open SSH in" onClose={onClose}>
-      <p className="mb-3 text-[13px] leading-relaxed text-dim">
-        These are the terminals on this device. makima remembers the one you pick — change it in Settings.
-      </p>
-      <Card>
+    <Modal title={`Open ${peer} in…`} sub="makima remembers the one you pick. Change it any time in Settings." onClose={onClose} width="max-w-[440px]">
+      <div className="grid grid-cols-3 gap-2">
         {list.map((t) => (
-          <Row
+          <button
             key={t.id}
-            value={t.name}
-            caption={t.builtin ? "Comes with the system" : undefined}
-            right={<Icon.Terminal className="text-dim" />}
+            type="button"
             onClick={() => onPick(t)}
-          />
+            className="group flex flex-col items-center gap-2.5 rounded-xl border border-line bg-panel px-3 pb-3 pt-4 transition hover:border-line-2 hover:bg-sunken active:scale-[0.98]"
+          >
+            <span className="flex size-10 items-center justify-center rounded-[10px] bg-primary text-primary-ink">
+              <Icon.Terminal size={18} />
+            </span>
+            <span className="text-center">
+              <span className="block text-[12.5px] font-medium text-ink">{t.name}</span>
+              <span className="block text-[11px] text-dimmer">{t.builtin ? "Built in" : " "}</span>
+            </span>
+          </button>
         ))}
-      </Card>
+      </div>
     </Modal>
   );
 }
@@ -95,23 +99,41 @@ export function TerminalSetting() {
   return (
     <Row
       value="Terminal"
-      caption="Where the SSH button opens a shell"
-      right={
-        <select
-          value={chosen}
-          onChange={(e) => change(e.target.value)}
-          disabled={!list}
-          aria-label="Terminal"
-          className="h-7 rounded-md border border-line-2 bg-bg px-2 text-[12.5px] text-ink outline-none focus:border-accent"
-        >
-          <option value="">Ask the first time</option>
-          {list?.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-      }
+      caption="Where SSH opens a shell"
+      right={<Select value={chosen} onChange={change} disabled={!list} label="Terminal" options={[{ value: "", label: "Ask the first time" }, ...(list ?? []).map((t) => ({ value: t.id, label: t.name }))]} />}
     />
+  );
+}
+
+export function Select({
+  value,
+  onChange,
+  options,
+  disabled,
+  label,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <span className="relative inline-flex">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        aria-label={label}
+        className="h-7 appearance-none rounded-[7px] border border-line-2 bg-panel pl-2.5 pr-7 text-[12.5px] text-ink outline-none transition-colors hover:bg-sunken"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <Icon.ChevronDown size={13} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-dim" />
+    </span>
   );
 }
