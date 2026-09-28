@@ -6,15 +6,24 @@
 // sips), it says so and the app falls back to initials. See src/characters.ts
 // for why these are not simply committed.
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHARACTERS } from "../src/characters.ts";
 
 const OUT = join(import.meta.dir, "..", "src", "avatars");
 const SIZE = 256;
+// Grey, so a panel with a touch of colour on it — a coloured page, a red
+// stamp — comes out as black and white as the rest.
+const GRAY = "/System/Library/ColorSync/Profiles/Generic Gray Gamma 2.2 Profile.icc";
 
-const missing = CHARACTERS.filter((c) => !existsSync(join(OUT, `${c.id}.jpg`)));
+// Each picture remembers the crop it was made with, so changing a source or
+// a crop in characters.ts remakes just that one on the next build.
+const stamp = (c: (typeof CHARACTERS)[number]) => `${c.url}#${c.crop.join(",")}`;
+const STAMPS = join(OUT, "sources.json");
+const made: Record<string, string> = existsSync(STAMPS) ? JSON.parse(readFileSync(STAMPS, "utf8")) : {};
+
+const missing = CHARACTERS.filter((c) => !existsSync(join(OUT, `${c.id}.jpg`)) || made[c.id] !== stamp(c));
 if (missing.length === 0) process.exit(0);
 
 if (process.platform !== "darwin") {
@@ -30,7 +39,7 @@ function sips(args: string[]): string {
   return r.stdout.toString();
 }
 
-let made = 0;
+let count = 0;
 for (const c of missing) {
   const src = join(tmpdir(), `makima-avatar-${c.id}.png`);
   const cut = join(tmpdir(), `makima-avatar-${c.id}-cut.png`);
@@ -50,8 +59,9 @@ for (const c of missing) {
     const y = Math.max(0, Math.min(h - side, Math.round(cy * h - side / 2)));
 
     sips(["-c", String(side), String(side), "--cropOffset", String(y), String(x), src, "--out", cut]);
-    sips(["-z", String(SIZE), String(SIZE), "-s", "format", "jpeg", "-s", "formatOptions", "84", cut, "--out", join(OUT, `${c.id}.jpg`)]);
-    made++;
+    sips(["-z", String(SIZE), String(SIZE), "-m", GRAY, "-s", "format", "jpeg", "-s", "formatOptions", "86", cut, "--out", join(OUT, `${c.id}.jpg`)]);
+    made[c.id] = stamp(c);
+    count++;
   } catch (e) {
     console.log(`  avatar  ${c.id}: ${e instanceof Error ? e.message : e}`);
   } finally {
@@ -59,4 +69,8 @@ for (const c of missing) {
     rmSync(cut, { force: true });
   }
 }
-console.log(`  avatars ${made} of ${missing.length} fetched into src/avatars/`);
+// A face no longer in the list goes too, so the picker never offers it.
+const known = new Set(CHARACTERS.map((c) => `${c.id}.jpg`));
+for (const f of readdirSync(OUT)) if (f.endsWith(".jpg") && !known.has(f)) rmSync(join(OUT, f));
+writeFileSync(STAMPS, JSON.stringify(made, null, 1));
+console.log(`  avatars ${count} of ${missing.length} fetched into src/avatars/`);

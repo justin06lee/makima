@@ -3,8 +3,9 @@
 /* Monochrome.
 
    Ink on a pale window, content on an inset sheet, hairlines instead of
-   filled boxes. Nothing is coloured but the pictures — device faces, app
-   icons — so status is carried by shape and words: a solid mark, a half, a
+   filled boxes. Nothing is coloured but the terminals' own app icons —
+   the device faces are black-and-white manga — so status is carried by
+   shape and words: a solid mark, a half, a
    ring, a cross, a line with a pulse in it. It follows the system's
    appearance because every other window on the screen does. */
 :root {

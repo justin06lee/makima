@@ -1,10 +1,11 @@
 // The faces a device can wear, and where each one comes from.
 //
-// The images are not in git. They are stills from Chainsaw Man — © Tatsuki
-// Fujimoto / Shueisha, MAPPA — and this repository is public, so
-// scripts/avatars.ts fetches each from the Chainsaw Man wiki and crops it
-// into src/avatars/ when the app is built. Without them the picker offers an
-// upload and every device shows its initial instead.
+// Manga panels, black and white like the rest of the window. They are not
+// in git: they are pages of Chainsaw Man — © Tatsuki Fujimoto / Shueisha —
+// and this repository is public, so scripts/avatars.ts fetches each from the
+// Chainsaw Man wiki, crops it and takes out any colour into src/avatars/ when
+// the app is built. Without them the picker offers an upload and every
+// device shows its initial instead.
 //
 // crop is [centre x, centre y, side]: the centre as fractions of the image's
 // width and height, the side of the square as a fraction of its height.
@@ -12,24 +13,24 @@
 export type Character = { id: string; name: string; crop: [number, number, number]; url: string };
 
 export const CHARACTERS: Character[] = [
-  { id: "makima", name: "Makima", crop: [0.5, 0.55, 0.85], url: "https://static.wikia.nocookie.net/chainsaw-man/images/6/6a/Episode_12-5.png/revision/latest?cb=20221227085333" },
-  { id: "denji", name: "Denji", crop: [0.365, 0.33, 0.62], url: "https://static.wikia.nocookie.net/chainsaw-man/images/e/e7/Denji_and_Power_at_Public_Safety_HQ.png/revision/latest?cb=20251209105905" },
-  { id: "power", name: "Power", crop: [0.5, 0.45, 0.8], url: "https://static.wikia.nocookie.net/chainsaw-man/images/1/10/Episode_6-2.png/revision/latest?cb=20221115090650" },
-  { id: "aki", name: "Aki", crop: [0.5, 0.42, 0.85], url: "https://static.wikia.nocookie.net/chainsaw-man/images/6/6a/Aki_enraged_over_the_deaths_of_Division_2.png/revision/latest?cb=20251209133343" },
-  { id: "pochita", name: "Pochita", crop: [0.48, 0.45, 0.78], url: "https://static.wikia.nocookie.net/chainsaw-man/images/f/fe/Episode_1-2.png/revision/latest?cb=20221004092558" },
-  { id: "himeno", name: "Himeno", crop: [0.5, 0.45, 0.65], url: "https://static.wikia.nocookie.net/chainsaw-man/images/d/d6/Himeno_horrified_over_seeing_Aki_wounded.png/revision/latest?cb=20240223095845" },
-  { id: "kobeni", name: "Kobeni", crop: [0.49, 0.42, 0.62], url: "https://static.wikia.nocookie.net/chainsaw-man/images/5/5e/Kobeni_making_double_peace_sign.png/revision/latest?cb=20221115175448" },
-  { id: "kishibe", name: "Kishibe", crop: [0.47, 0.35, 0.6], url: "https://static.wikia.nocookie.net/chainsaw-man/images/6/6e/Episode_7-1.png/revision/latest?cb=20221122095357" },
-  { id: "angel", name: "Angel", crop: [0.47, 0.37, 0.62], url: "https://static.wikia.nocookie.net/chainsaw-man/images/5/5f/Episode_12-4.png/revision/latest?cb=20221227085327" },
-  { id: "reze", name: "Reze", crop: [0.27, 0.4, 0.7], url: "https://static.wikia.nocookie.net/chainsaw-man/images/e/ee/Denji_realizes_he%27s_starting_to_fall_for_Reze.png/revision/latest?cb=20251209103426" },
-  { id: "beam", name: "Beam", crop: [0.62, 0.45, 0.9], url: "https://static.wikia.nocookie.net/chainsaw-man/images/c/c0/Beam_meets_Denji.png/revision/latest?cb=20251209101723" },
-  { id: "galgali", name: "Galgali", crop: [0.68, 0.38, 0.6], url: "https://static.wikia.nocookie.net/chainsaw-man/images/1/13/Galgali_beating_some_zombies.png/revision/latest?cb=20221220183700" },
-  { id: "katana", name: "Katana Man", crop: [0.45, 0.4, 0.7], url: "https://static.wikia.nocookie.net/chainsaw-man/images/0/04/Katana_Man_human_anime.png/revision/latest?cb=20221129182826" },
-  { id: "quanxi", name: "Quanxi", crop: [0.55, 0.14, 0.16], url: "https://static.wikia.nocookie.net/chainsaw-man/images/8/80/Quanxi_infobox.png/revision/latest?cb=20231222204207" },
-  { id: "asa", name: "Asa", crop: [0.56, 0.2, 0.25], url: "https://static.wikia.nocookie.net/chainsaw-man/images/9/9b/Volume_20_%28Textless%29.png/revision/latest?cb=20250503033800" },
-  { id: "yoru", name: "Yoru", crop: [0.42, 0.2, 0.28], url: "https://static.wikia.nocookie.net/chainsaw-man/images/9/90/Volume_12_%28Textless%29.png/revision/latest?cb=20230405234930" },
-  { id: "yoshida", name: "Yoshida", crop: [0.57, 0.18, 0.2], url: "https://static.wikia.nocookie.net/chainsaw-man/images/4/4c/Volume_17_%28Textless%29.png/revision/latest?cb=20250502232859" },
-  { id: "nayuta", name: "Nayuta", crop: [0.5, 0.33, 0.3], url: "https://static.wikia.nocookie.net/chainsaw-man/images/9/94/Nayuta_Part_2.png/revision/latest?cb=20230422123541" },
-  { id: "fami", name: "Fami", crop: [0.58, 0.23, 0.27], url: "https://static.wikia.nocookie.net/chainsaw-man/images/e/e4/Volume_14_%28Textless%29.png/revision/latest?cb=20250505195335" },
-  { id: "santa", name: "Santa Claus", crop: [0.5, 0.2, 0.25], url: "https://static.wikia.nocookie.net/chainsaw-man/images/9/97/Santa_Claus_%28Tolka%27s_Master%29_Infobox.png/revision/latest?cb=20231222204442" },
+  { id: "makima", name: "Makima", crop: [0.52, 0.34, 0.62], url: "https://static.wikia.nocookie.net/chainsaw-man/images/6/66/Makima_tells_Denji_the_type_of_boys_she_likes.png/revision/latest?cb=20230409100539" },
+  { id: "denji", name: "Denji", crop: [0.37, 0.42, 0.7], url: "https://static.wikia.nocookie.net/chainsaw-man/images/5/52/Denji_believes_he_doesn%27t_deserve_to_have_a_family.png/revision/latest?cb=20241205234656" },
+  { id: "power", name: "Power", crop: [0.4, 0.42, 0.72], url: "https://static.wikia.nocookie.net/chainsaw-man/images/e/ed/Power_tells_Aki_that_she_wants_human_blood.png/revision/latest?cb=20230530170652" },
+  { id: "aki", name: "Aki", crop: [0.33, 0.19, 0.4], url: "https://static.wikia.nocookie.net/chainsaw-man/images/d/de/Aki%27s_missing_left_arm.png/revision/latest?cb=20230523181152" },
+  { id: "pochita", name: "Pochita", crop: [0.565, 0.25, 0.4], url: "https://static.wikia.nocookie.net/chainsaw-man/images/9/96/Pochita_tells_Power_to_help_save_Denji.png/revision/latest?cb=20230411172213" },
+  { id: "himeno", name: "Himeno", crop: [0.42, 0.22, 0.46], url: "https://static.wikia.nocookie.net/chainsaw-man/images/a/a0/Himeno_explaining_her_Ghost_Devil_contract.png/revision/latest?cb=20230610052439" },
+  { id: "kobeni", name: "Kobeni", crop: [0.64, 0.47, 0.72], url: "https://static.wikia.nocookie.net/chainsaw-man/images/f/f7/Kobeni_slowly_breaking_down.png/revision/latest?cb=20230610050521" },
+  { id: "kishibe", name: "Kishibe", crop: [0.44, 0.31, 0.56], url: "https://static.wikia.nocookie.net/chainsaw-man/images/e/ed/Kishibe_tells_Denji_and_Power_that_he%27ll_make_them_stronger.png/revision/latest?cb=20230418191514" },
+  { id: "angel", name: "Angel", crop: [0.47, 0.27, 0.42], url: "https://static.wikia.nocookie.net/chainsaw-man/images/c/c7/Angel_eating_at_a_restaurant.png/revision/latest?cb=20230813193819" },
+  { id: "reze", name: "Reze", crop: [0.3, 0.45, 0.66], url: "https://static.wikia.nocookie.net/chainsaw-man/images/2/26/Reze_tells_Denji_she_thinks_he%27s_funny.png/revision/latest?cb=20240903063339" },
+  { id: "beam", name: "Beam", crop: [0.58, 0.42, 0.56], url: "https://static.wikia.nocookie.net/chainsaw-man/images/7/75/Denji_meets_Beam.png/revision/latest?cb=20230507114849" },
+  { id: "galgali", name: "Galgali", crop: [0.4, 0.21, 0.3], url: "https://static.wikia.nocookie.net/chainsaw-man/images/4/48/Violence_Fiend.png/revision/latest?cb=20220806080753" },
+  { id: "katana", name: "Katana Man", crop: [0.62, 0.2, 0.4], url: "https://static.wikia.nocookie.net/chainsaw-man/images/4/4b/Katana_Man_as_human.png/revision/latest?cb=20230417043751" },
+  { id: "quanxi", name: "Quanxi", crop: [0.64, 0.28, 0.44], url: "https://static.wikia.nocookie.net/chainsaw-man/images/e/e0/Quanxi_contacts_Public_Safety_on_the_mission.png/revision/latest?cb=20240902230152" },
+  { id: "asa", name: "Asa", crop: [0.53, 0.4, 0.74], url: "https://static.wikia.nocookie.net/chainsaw-man/images/c/ca/Asa_mugshot.png/revision/latest?cb=20240405085906" },
+  { id: "yoru", name: "Yoru", crop: [0.45, 0.24, 0.32], url: "https://static.wikia.nocookie.net/chainsaw-man/images/5/5e/Yoru_laughing_at_the_misery_of_a_civilian.png/revision/latest?cb=20250904183205" },
+  { id: "yoshida", name: "Yoshida", crop: [0.47, 0.5, 0.95], url: "https://static.wikia.nocookie.net/chainsaw-man/images/b/b2/Yoshida_stares_at_Fami_from_the_ground.png/revision/latest?cb=20230422094453" },
+  { id: "nayuta", name: "Nayuta", crop: [0.52, 0.48, 0.58], url: "https://static.wikia.nocookie.net/chainsaw-man/images/8/86/Nayuta_biting_Denji%27s_finger.png/revision/latest?cb=20230405002016" },
+  { id: "fami", name: "Fami", crop: [0.52, 0.55, 0.8], url: "https://static.wikia.nocookie.net/chainsaw-man/images/3/3f/Fami_Closeup.png/revision/latest?cb=20240210115651" },
+  { id: "santa", name: "Santa Claus", crop: [0.45, 0.2, 0.3], url: "https://static.wikia.nocookie.net/chainsaw-man/images/1/13/Doll_Devil.png/revision/latest?cb=20200505105107" },
 ];

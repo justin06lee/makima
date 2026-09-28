@@ -76,25 +76,31 @@ walk the device table and Escape closes the inspector.
 
 **The look** is monochrome: ink on a pale window, content on an inset sheet,
 hairlines rather than filled boxes, Geist and Geist Mono bundled with the app.
-Nothing is coloured but pictures — device faces and terminal app icons — so
-status is shape and words: signal bars, a solid mark for up, a half for
+Nothing is coloured but the terminals' own app icons (the device faces are
+black-and-white manga), so status is shape and words: signal bars, a solid mark for up, a half for
 relayed, a ring for off, and a line with a jagged pulse in it for traffic
 (beside this device's name when it is connected, and running along each leg
 of the exit node route). It follows the system's light or dark appearance.
 
 **Device names and pictures.** Every device wears a face — Chainsaw Man
-characters, one each, handed out the first time the app sees a device (the one
-holding the network is Makima) — and greys out when offline. Click a face, or
+characters from the manga, in black and white, one each, handed out the first
+time the app sees a device (the one holding the network is Makima) — which
+fades when the device is offline. Click a face, or
 the device's picture in the sidebar, to rename it or pick another, or upload
 your own. Both are this app's alone, kept in its local storage: SSH, the
 `.makima` names and the addresses stay the device's own.
 
-The faces are stills from the show and this repository is public, so they are
-not committed. `scripts/avatars.ts` fetches each from the Chainsaw Man wiki and
-crops it into `src/avatars/` (gitignored) the first time `bun run dev` or
-`bun run build` runs — which is every `make app`. The sources and crops are in
+The faces are manga panels and this repository is public, so they are not
+committed. `scripts/avatars.ts` fetches each from the Chainsaw Man wiki, crops
+it and converts it to grey into `src/avatars/` (gitignored) the first time
+`bun run dev` or `bun run build` runs — which is every `make app` — and again
+for any face whose source or crop changes. The sources and crops are in
 `src/characters.ts`. Cropping uses `sips`, so off a Mac, or offline, the build
 goes on without them and devices show their initials.
+
+The terminal question lists only terminals actually installed: the app looks
+for each one's app bundle (macOS) or program on PATH (Linux), and the browser
+preview asks vite to look in the same places.
 
 **The first open** asks two things, each skipped when there is nothing to
 ask: which terminal SSH should open in — with each terminal's own app icon,

@@ -114,8 +114,10 @@ export function ensurePictures(names: string[], holder: string | null) {
   save(next);
 }
 
-/// An uploaded image as a small square JPEG: the middle of it, 256px across.
-/// Stored in localStorage, so it has to be small.
+/// An uploaded image as a small square JPEG: the middle of it, 256px across,
+/// in grey like the built-in faces — the window has no colour in it, and a
+/// photo should not be the one thing that does. Stored in localStorage, so
+/// it has to be small.
 export async function squareJPEG(file: File): Promise<string> {
   const url = URL.createObjectURL(file);
   try {
@@ -129,6 +131,14 @@ export async function squareJPEG(file: File): Promise<string> {
     if (!ctx) throw new Error("no canvas");
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 256, 256);
+    // By hand rather than ctx.filter, which the WebKit on older macOS ignores.
+    const px = ctx.getImageData(0, 0, 256, 256);
+    const d = px.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      d[i] = d[i + 1] = d[i + 2] = y;
+    }
+    ctx.putImageData(px, 0, 0);
     return canvas.toDataURL("image/jpeg", 0.86);
   } finally {
     URL.revokeObjectURL(url);

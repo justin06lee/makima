@@ -3,8 +3,9 @@ import { FACES, labelOf, pictureOf, pictureURL, setPref, squareJPEG, usePrefs } 
 import { Button, Input, Modal, toast } from "./ui";
 import { Icon } from "./icons";
 
-/// A device's picture, or its initial. Offline, it goes grey: the pictures
-/// are the only colour in the window, so colour itself says "reachable".
+/// A device's picture, or its initial. Offline, it fades back and flattens:
+/// the faces are already black and white, so being out of reach has to show
+/// as the ink going pale rather than as colour going grey.
 export function Avatar({ name, size = 28, offline, className = "" }: { name: string; size?: number; offline?: boolean; className?: string }) {
   const prefs = usePrefs();
   return <Picture src={pictureOf(prefs, name)} label={labelOf(prefs, name)} size={size} offline={offline} className={className} />;
@@ -15,7 +16,7 @@ function Picture({ src, label, size, offline, className = "" }: { src: string | 
   if (src) {
     return (
       <span
-        className={`relative inline-block shrink-0 overflow-hidden rounded-full bg-active transition-[filter,opacity] duration-300 ${offline ? "opacity-55 grayscale" : ""} ${className}`}
+        className={`relative inline-block shrink-0 overflow-hidden rounded-full bg-active transition-[filter,opacity] duration-300 ${offline ? "opacity-40 contrast-[0.7]" : ""} ${className}`}
         style={style}
       >
         <img src={src} alt="" draggable={false} className="size-full object-cover" />
@@ -25,7 +26,7 @@ function Picture({ src, label, size, offline, className = "" }: { src: string | 
   }
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center rounded-full bg-active font-semibold uppercase text-ink-2 ${offline ? "opacity-55" : ""} ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-full bg-active font-semibold uppercase text-ink-2 ${offline ? "opacity-40" : ""} ${className}`}
       style={{ ...style, fontSize: Math.max(10, Math.round(size * 0.4)) }}
     >
       {label.trim()[0] ?? "?"}
