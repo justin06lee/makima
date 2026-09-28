@@ -6,28 +6,36 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-/// The browser preview's stand-in for the app's terminal_icon command: the
-/// same script (src-tauri/src/app_icon.js) run against the same app bundles,
-/// so the onboarding can be looked at with real icons. Dev only, Mac only;
-/// anything else answers 404 and the page draws a plain icon.
+/// The browser preview's stand-in for the app's terminals and terminal_icon
+/// commands: which terminals are really on this Mac, looked for where
+/// terminal.rs looks, and their icons drawn by the same script
+/// (src-tauri/src/app_icon.js). Dev only, Mac only; anywhere else the list
+/// is empty and the page shows what it shows with no terminal.
 function terminalIcons(): Plugin {
-  const apps: Record<string, string> = {
-    ghostty: "Ghostty.app",
-    alacritty: "Alacritty.app",
-    kitty: "kitty.app",
-    wezterm: "WezTerm.app",
-    iterm: "iTerm.app",
-    terminal: "Terminal.app",
+  // Most wanted first, as in terminal.rs's KNOWN.
+  const apps: Record<string, { name: string; app: string; builtin: boolean }> = {
+    ghostty: { name: "Ghostty", app: "Ghostty.app", builtin: false },
+    alacritty: { name: "Alacritty", app: "Alacritty.app", builtin: false },
+    kitty: { name: "kitty", app: "kitty.app", builtin: false },
+    wezterm: { name: "WezTerm", app: "WezTerm.app", builtin: false },
+    iterm: { name: "iTerm", app: "iTerm.app", builtin: false },
+    terminal: { name: "Terminal", app: "Terminal.app", builtin: true },
   };
   const dirs = ["/Applications", "/Applications/Utilities", "/System/Applications/Utilities", join(homedir(), "Applications")];
   const script = join(__dirname, "src-tauri/src/app_icon.js");
+  const locate = (id: string) => apps[id] && dirs.map((d) => join(d, apps[id].app)).find((p) => existsSync(p));
   return {
     name: "makima-terminal-icons",
     apply: "serve",
     configureServer(server) {
+      server.middlewares.use("/dev/terminals", (_req, res) => {
+        const found = process.platform === "darwin" ? Object.keys(apps).filter((id) => locate(id)) : [];
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(found.map((id) => ({ id, name: apps[id].name, builtin: apps[id].builtin }))));
+      });
       server.middlewares.use("/dev/terminal-icon/", (req, res) => {
         const id = decodeURIComponent((req.url ?? "").replace(/^\//, "").split("?")[0]);
-        const app = apps[id] && dirs.map((d) => join(d, apps[id])).find((p) => existsSync(p));
+        const app = locate(id);
         if (process.platform !== "darwin" || !app) {
           res.statusCode = 404;
           res.end();

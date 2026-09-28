@@ -294,11 +294,13 @@ export const api = {
   /// The terminals on this device, most wanted first.
   terminals: async (): Promise<Terminal[]> => {
     if (inTauri) return invoke<Terminal[]>("terminals");
-    return [
-      { id: "ghostty", name: "Ghostty", builtin: false },
-      { id: "alacritty", name: "Alacritty", builtin: false },
-      { id: "terminal", name: "Terminal", builtin: true },
-    ];
+    // The browser preview asks vite which are really installed; see
+    // vite.config.ts.
+    try {
+      return await browser.get<Terminal[]>("/dev/terminals");
+    } catch {
+      return [];
+    }
   },
   /// A terminal's own app icon, as an image URL, or null when there is none
   /// to show. Asked for once per terminal per window.
