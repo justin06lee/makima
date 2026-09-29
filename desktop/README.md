@@ -225,22 +225,21 @@ devserver/        a pretend mesh, for working on the UI without root
 The app icon is a greyscale drawing of Makima, cropped in close on one eye so
 its ringed iris fills a macOS app tile (Apple's 824px grid in a 1024px canvas,
 185.4px corners). The tile shape matters: macOS boxes any other shape in a grey
-frame. The menu bar icon is the same iris, lifted out of the tile as a
-template: macOS tints it to suit the menu bar, and the disconnected state dims
-it.
+frame. The menu bar and in-app mark use a simplified monochrome iris; macOS
+tints the menu bar template automatically, and the existing disconnected state
+dims it.
 
-The one source is `src-tauri/icons/icon-source.png` (the finished 1024px
-tile). After changing it, run from `desktop/`:
+The sources are `src-tauri/icons/icon-source.png` (the finished 1024px tile)
+and `src-tauri/icons/tray.svg`. After changing either, run from `desktop/`:
 
 ```sh
 bun run tauri icon src-tauri/icons/icon-source.png --output /tmp/makima-icons
 for icon in 32x32.png 128x128.png 128x128@2x.png icon.png icon.icns icon.ico; do
   cp "/tmp/makima-icons/$icon" src-tauri/icons/
 done
-swift scripts/tray-icon.swift
+rsvg-convert src-tauri/icons/tray.svg -o src-tauri/icons/tray.png
 ```
 
-`scripts/tray-icon.swift` finds the iris by where it sits in the tile, so a
-new drawing may need its centre, reach and ink levels adjusted at the top of
-the script. Generated icons are checked in, so normal builds need neither
-step.
+Keep `Icon.Mark` in `src/icons.tsx` aligned with the tray SVG. The SVGs have
+no gradients, shadows, or reflections. Generated desktop assets are checked
+in, so normal builds do not need `rsvg-convert`.
