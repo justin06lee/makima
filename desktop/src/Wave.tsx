@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 
 // A line with a sharp, jagged pulse running along it from one end to the
-// other, as part of the line itself: traffic, going somewhere. The same
+// other, as part of the line itself: traffic, going somewhere. It leaves one
+// end, swells, and dies away into the line before the other end. The same
 // shape, small and still, says "connected" beside this device's name.
 
 /// The pulse, left to right, as [x, y] with y from -1 (up) to 1 (down): a
@@ -22,12 +23,22 @@ const SHAPE: [number, number][] = [
 const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 function path(width: number, mid: number, amp: number, pulse: number, at: number): string {
-  // The flat line runs past both ends so the pulse can enter and leave
-  // whole; the svg clips it.
-  let d = `M${-pulse} ${mid} L${at} ${mid}`;
+  let d = `M0 ${mid} L${at.toFixed(2)} ${mid}`;
   for (const [x, y] of SHAPE) d += ` L${(at + x * pulse).toFixed(2)} ${(mid + y * amp).toFixed(2)}`;
-  return d + ` L${width + pulse} ${mid}`;
+  return d + ` L${width} ${mid}`;
 }
+
+/// How big the pulse is `e` of the way along (0 to 1): nothing at either
+/// end, swelling fast to full size about a quarter of the way, then dying
+/// away slowly, so it fades into the line rather than hitting the end.
+const RISE = 0.3;
+const FALL = 0.9;
+const PEAK = RISE / (RISE + FALL);
+const size = (e: number) => (e <= 0 || e >= 1 ? 0 : (e / PEAK) ** RISE * ((1 - e) / (1 - PEAK)) ** FALL);
+
+/// The share of each period the pulse spends travelling; the rest is flat
+/// line, so each pulse reads as one going out.
+const TRAVEL = 0.8;
 
 /// Travelling: fills its container's width, one pulse crossing every
 /// `period` ms. Still (`live` off, or reduced motion): the pulse parked in
@@ -74,11 +85,17 @@ export function Wave({
     const start = performance.now();
     const tick = (t: number) => {
       const w = width();
-      const f = ((t - start) % period) / period;
-      // Ease in and out a little, so the pulse seems to gather speed across
-      // the line rather than slide at a constant rate.
-      const e = f < 0.5 ? 2 * f * f : 1 - Math.pow(-2 * f + 2, 2) / 2;
-      p.setAttribute("d", path(w, mid, amp, pulse, -pulse + e * (w + pulse)));
+      const f = ((t - start) % period) / (period * TRAVEL);
+      if (f >= 1) {
+        p.setAttribute("d", `M0 ${mid} L${w} ${mid}`);
+      } else {
+        // Half steady, half eased, so it leaves gently and slows as it fades.
+        const e = 0.5 * f + 0.25 * (1 - Math.cos(Math.PI * f));
+        const k = size(e);
+        // It narrows as it shrinks, and always ends inside the line.
+        const span = pulse * (0.25 + 0.75 * k);
+        p.setAttribute("d", path(w, mid, amp * k, span, e * (w - span)));
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

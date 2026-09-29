@@ -34,6 +34,9 @@ function Picture({ src, label, size, offline, className = "" }: { src: string | 
   );
 }
 
+/// A picture filling its tile, inset from the ring drawn round a chosen one.
+const FILL = "absolute left-[3px] top-[3px] h-[calc(100%-6px)] w-[calc(100%-6px)] rounded-full object-cover";
+
 /// Rename a device and choose its picture — for this app only.
 export function DeviceEditor({ name, onClose }: { name: string; onClose: () => void }) {
   const prefs = usePrefs();
@@ -96,36 +99,40 @@ export function DeviceEditor({ name, onClose }: { name: string; onClose: () => v
             </button>
           )}
         </div>
+        {/* Each tile is a square cell with the button laid over it. WebKit
+            (the Mac app) sizes a square button in a grid by its content, which
+            drew the faces as ovals; a cell with nothing in its flow can't be. */}
         <div className="grid grid-cols-7 gap-2">
-          <button
-            type="button"
-            onClick={() => file.current?.click()}
-            title="Upload a picture"
-            className={`flex aspect-square items-center justify-center rounded-full border border-dashed transition-colors hover:border-dim hover:text-ink
-              ${uploaded && picture === uploaded ? "border-ink text-ink" : "border-line-2 text-dim"}`}
-          >
-            {uploaded ? (
-              <span className={`size-full overflow-hidden rounded-full p-[3px] ${picture === uploaded ? "" : "opacity-80"}`}>
-                <img src={uploaded} alt="" className="size-full rounded-full object-cover" />
-              </span>
-            ) : (
-              <Icon.Upload size={16} />
-            )}
-          </button>
+          <div className="relative aspect-square">
+            <button
+              type="button"
+              onClick={() => file.current?.click()}
+              title="Upload a picture"
+              className={`absolute inset-0 flex items-center justify-center rounded-full border border-dashed transition-colors hover:border-dim hover:text-ink
+                ${uploaded && picture === uploaded ? "border-ink text-ink" : "border-line-2 text-dim"}`}
+            >
+              {uploaded ? (
+                <img src={uploaded} alt="" className={`${FILL} ${picture === uploaded ? "" : "opacity-80"}`} />
+              ) : (
+                <Icon.Upload size={16} />
+              )}
+            </button>
+          </div>
           {FACES.map((f) => {
             const on = picture === `face:${f.id}`;
             return (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setPicture(`face:${f.id}`)}
-                title={f.name}
-                aria-label={f.name}
-                aria-pressed={on}
-                className={`group relative aspect-square rounded-full p-[3px] transition ${on ? "shadow-[0_0_0_2px_var(--ink)]" : "hover:shadow-[0_0_0_2px_var(--line-2)]"}`}
-              >
-                <img src={f.url} alt="" draggable={false} className="size-full rounded-full object-cover transition-transform group-hover:scale-[1.04]" />
-              </button>
+              <div key={f.id} className="relative aspect-square">
+                <button
+                  type="button"
+                  onClick={() => setPicture(`face:${f.id}`)}
+                  title={f.name}
+                  aria-label={f.name}
+                  aria-pressed={on}
+                  className={`group absolute inset-0 rounded-full transition ${on ? "shadow-[0_0_0_2px_var(--ink)]" : "hover:shadow-[0_0_0_2px_var(--line-2)]"}`}
+                >
+                  <img src={f.url} alt="" draggable={false} className={`${FILL} transition-transform group-hover:scale-[1.04]`} />
+                </button>
+              </div>
             );
           })}
         </div>
