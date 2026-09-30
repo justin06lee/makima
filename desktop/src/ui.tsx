@@ -189,6 +189,10 @@ export function Tag({ children, tone = "plain" }: { children: React.ReactNode; t
   return <span className={`inline-flex h-[18px] shrink-0 items-center rounded-[5px] px-1.5 text-[10.5px] font-medium ${t}`}>{children}</span>;
 }
 
+/// A shortcut as this platform spells it: ⌘K on a Mac, Ctrl+K everywhere
+/// else. The keys are the same either way — the window answers to both.
+export const shortcut = (mac: boolean, key: string) => (mac ? `⌘${key}` : `Ctrl+${key}`);
+
 export function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[5px] border border-line-2 bg-panel px-1 font-sans text-[10.5px] font-medium text-dim">

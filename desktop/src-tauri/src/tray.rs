@@ -343,12 +343,20 @@ fn copy(app: &AppHandle, text: &str) {
 /// A template image: one colour and an alpha channel. macOS recolours it for
 /// the bar, so the "off" state is the same shape at a third of the opacity —
 /// what every other menu bar item does to say it is idle.
+///
+/// Linux has no template images: the panel shows the picture exactly as it
+/// is, and GNOME's top bar is dark in light mode and dark mode alike, so the
+/// black lines would vanish into it. There the glyph is drawn white, as the
+/// panel's own icons are.
 pub fn icon(on: bool) -> Image<'static> {
     let base = Image::from_bytes(include_bytes!("../icons/tray.png")).expect("tray icon is a PNG");
     let (w, h) = (base.width(), base.height());
     let mut rgba = base.rgba().to_vec();
-    if !on {
-        for px in rgba.chunks_mut(4) {
+    for px in rgba.chunks_mut(4) {
+        if !cfg!(target_os = "macos") {
+            px[..3].fill(255);
+        }
+        if !on {
             px[3] = (px[3] as u16 * 38 / 100) as u8;
         }
     }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, inTauri, type Action, type Environment, type Snapshot, type Status, type Tailscale } from "./api";
-import { Button, Copyable, Kbd, Notice, Toaster, Toggle, toast } from "./ui";
+import { Button, Copyable, Kbd, Notice, Toaster, Toggle, shortcut, toast } from "./ui";
 import { Icon } from "./icons";
 import { Setup } from "./Setup";
 import { Devices } from "./Devices";
@@ -180,7 +180,7 @@ export default function App() {
   };
 
   // The keyboard: ⌘K for everything, ⌘1–3 and ⌘, for the pages, ⌘N to add a
-  // device. Only once there is a network to move around in.
+  // device — Ctrl off a Mac. Only once there is a network to move around in.
   useEffect(() => {
     if (!onNetwork || migrating || !onboarded) return;
     const onKey = (e: KeyboardEvent) => {
@@ -305,6 +305,7 @@ export default function App() {
         <Palette
           status={status}
           running={running}
+          mac={mac}
           nav={nav}
           act={act}
           onClose={() => setPalette(false)}
@@ -456,7 +457,7 @@ function Sidebar({
           <Icon.Search size={14} />
           <span className="flex-1">Search or run…</span>
           <span className="flex gap-0.5">
-            <Kbd>⌘</Kbd>
+            <Kbd>{mac ? "⌘" : "Ctrl"}</Kbd>
             <Kbd>K</Kbd>
           </span>
         </button>
@@ -502,7 +503,7 @@ function Sidebar({
       )}
 
       <div className="space-y-2 px-2.5 pb-3">
-        <Button className="w-full" variant="primary" icon={<Icon.Plus size={15} />} onClick={nav.add} disabled={!running} title="Add another device to this network (⌘N)">
+        <Button className="w-full" variant="primary" icon={<Icon.Plus size={15} />} onClick={nav.add} disabled={!running} title={`Add another device to this network (${shortcut(mac, "N")})`}>
           Add device
         </Button>
         <div className="flex items-center justify-between px-1.5 text-[11px] text-dimmer">

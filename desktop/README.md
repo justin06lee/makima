@@ -72,7 +72,8 @@ particulars.
 **The keyboard.** ⌘K opens a palette over everything — devices, SSH, copying an
 address, opening any service, switching exit node, connecting — filtered by
 every word typed. ⌘1–3 and ⌘, go to the pages, ⌘N adds a device, the arrows
-walk the device table and Escape closes the inspector.
+walk the device table and Escape closes the inspector. Off a Mac every one of
+these is Ctrl, and the window spells them that way.
 
 **The look** is monochrome: ink on a pale window, content on an inset sheet,
 hairlines rather than filled boxes, Geist and Geist Mono bundled with the app.
@@ -95,8 +96,9 @@ committed. `scripts/avatars.ts` fetches each from the Chainsaw Man wiki, crops
 it and converts it to grey into `src/avatars/` (gitignored) the first time
 `bun run dev` or `bun run build` runs — which is every `make app` — and again
 for any face whose source or crop changes. The sources and crops are in
-`src/characters.ts`. Cropping uses `sips`, so off a Mac, or offline, the build
-goes on without them and devices show their initials.
+`src/characters.ts`. Cropping uses `sips` on a Mac and ImageMagick anywhere
+else (`magick`, or `convert` where it is still version 6), so without either,
+or offline, the build goes on without them and devices show their initials.
 
 The terminal question lists only terminals actually installed: the app looks
 for each one's app bundle (macOS) or program on PATH (Linux), and the browser
@@ -224,7 +226,9 @@ devserver/        a pretend mesh, for working on the UI without root
 
 One ringed iris is the whole mark. The menu bar and in-app mark draw it on its
 own; macOS tints the menu bar template automatically, and the disconnected
-state dims it. The app icon draws it large and pale on a dark macOS app tile
+state dims it. Linux panels draw a tray icon as it is, so there the same
+glyph is drawn white — GNOME's top bar is dark in either appearance. The app
+icon draws it large and pale on a dark macOS app tile
 (Apple's 824px grid in a 1024px canvas, 185.4px corners). The tile shape
 matters: macOS boxes any other shape in a grey frame.
 
