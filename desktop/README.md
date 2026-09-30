@@ -72,7 +72,8 @@ particulars.
 **The keyboard.** ⌘K opens a palette over everything — devices, SSH, copying an
 address, opening any service, switching exit node, connecting — filtered by
 every word typed. ⌘1–3 and ⌘, go to the pages, ⌘N adds a device, the arrows
-walk the device table and Escape closes the inspector.
+walk the device table and Escape closes the inspector. Off a Mac every one of
+these is Ctrl, and the window spells them that way.
 
 **The look** is monochrome: ink on a pale window, content on an inset sheet,
 hairlines rather than filled boxes, Geist and Geist Mono bundled with the app.
@@ -95,8 +96,9 @@ committed. `scripts/avatars.ts` fetches each from the Chainsaw Man wiki, crops
 it and converts it to grey into `src/avatars/` (gitignored) the first time
 `bun run dev` or `bun run build` runs — which is every `make app` — and again
 for any face whose source or crop changes. The sources and crops are in
-`src/characters.ts`. Cropping uses `sips`, so off a Mac, or offline, the build
-goes on without them and devices show their initials.
+`src/characters.ts`. Cropping uses `sips` on a Mac and ImageMagick anywhere
+else (`magick`, or `convert` where it is still version 6), so without either,
+or offline, the build goes on without them and devices show their initials.
 
 The terminal question lists only terminals actually installed: the app looks
 for each one's app bundle (macOS) or program on PATH (Linux), and the browser
@@ -126,7 +128,9 @@ joining a network, adding a device, choosing an exit node and moving off
 Tailscale ask every time. A standing grant for those would let anything else
 running as you put this machine on a network of its choosing without a prompt,
 since an invite carries the control plane it points at. Delete
-`/etc/sudoers.d/makima_<you>` to make everything ask again.
+`/etc/sudoers.d/makima_<you>` to make everything ask again. That is the Mac;
+on Linux every one of them asks through polkit each time (see *Building on
+Linux*).
 
 **Move from Tailscale** is the first run's *Take over a network*, the second
 first-open question when Tailscale is running here, the card above Add device,
@@ -176,15 +180,40 @@ packages:
 ```sh
 # Arch
 sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl \
-               libayatana-appindicator librsvg
+               libayatana-appindicator librsvg imagemagick
 
 # Debian / Ubuntu
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-                 libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+                 libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+                 imagemagick
 ```
 
-`libayatana-appindicator` is what puts the tray icon in the panel. Without it
-the app still runs; it just has nowhere to live when its window is closed.
+ImageMagick only crops the device faces; without it they are initials.
+
+`make` then builds the one package this machine installs — a .deb where there
+is dpkg, an .rpm where there is rpm, an AppImage anywhere else — and installs
+it: the .deb through apt, so what it depends on (pkexec among it) comes along.
+The package puts *makima* in the app grid with its icon, the app at
+`/usr/bin/makima-desktop`, and the four binaries it carries beside it.
+
+`libayatana-appindicator` is what puts the tray icon in the panel, and the
+panel has to be listening for one. On GNOME that is the AppIndicator
+extension: Ubuntu ships it, and its session turns it on — a GNOME session
+that has not, has no tray for any app until it is switched on:
+
+```sh
+gnome-extensions enable ubuntu-appindicators@ubuntu.com
+```
+
+Without a tray the app still runs; it just has nowhere to live when its
+window is closed. Clicking the tray icon opens the menu on Linux, as it does
+on a Mac; there is no tooltip, which AppIndicator does not have.
+
+Every button that needs root asks through polkit, every time: the remembered
+yes described above is the Mac's alone for now. The app also sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` for itself, unless it is already set,
+because WebKitGTK's DMA-BUF renderer can leave the window blank on NVIDIA's
+drivers.
 
 ## Layout
 
@@ -224,7 +253,9 @@ devserver/        a pretend mesh, for working on the UI without root
 
 One ringed iris is the whole mark. The menu bar and in-app mark draw it on its
 own; macOS tints the menu bar template automatically, and the disconnected
-state dims it. The app icon draws it large and pale on a dark macOS app tile
+state dims it. Linux panels draw a tray icon as it is, so there the same
+glyph is drawn white — GNOME's top bar is dark in either appearance. The app
+icon draws it large and pale on a dark macOS app tile
 (Apple's 824px grid in a 1024px canvas, 185.4px corners). The tile shape
 matters: macOS boxes any other shape in a grey frame.
 

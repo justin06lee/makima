@@ -27,7 +27,7 @@ export function Settings({
         <div className="mx-auto w-full max-w-[560px] space-y-8 px-6 pb-10 pt-6">
           <Section title="App">
             <Card>
-              <LoginItem />
+              <LoginItem mac={env.platform === "macos"} />
               <TerminalSetting />
               <Row
                 value="Command line"
@@ -128,7 +128,7 @@ export function Settings({
 
 /// Start at login. Switched on the first time a network is started or joined
 /// from this window (see App.tsx), and the person's to switch off from then on.
-function LoginItem() {
+function LoginItem({ mac }: { mac: boolean }) {
   const [on, setOn] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -162,7 +162,7 @@ function LoginItem() {
   return (
     <Row
       value="Open at login"
-      caption={error ?? "Keep makima in the menu bar from the moment you log in"}
+      caption={error ?? `Keep makima in the ${mac ? "menu bar" : "tray"} from the moment you log in`}
       right={<Toggle on={!!on} disabled={on === null} onChange={change} label="Open at login" />}
     />
   );

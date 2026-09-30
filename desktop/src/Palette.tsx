@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { copyText, fqdn, openExternal, type Status } from "./api";
 import type { Act, Nav } from "./App";
-import { Kbd, toast } from "./ui";
+import { Kbd, shortcut, toast } from "./ui";
 import { Avatar } from "./Avatar";
 import { labelOf, usePrefs } from "./prefs";
 import { Icon } from "./icons";
@@ -19,7 +19,7 @@ type Item = {
 
 /// ⌘K: every device, every service, and everything the window can do, found
 /// by typing any part of it.
-export function Palette({ status, running, nav, act, onClose }: { status?: Status; running: boolean; nav: Nav; act: Act; onClose: () => void }) {
+export function Palette({ status, running, mac, nav, act, onClose }: { status?: Status; running: boolean; mac: boolean; nav: Nav; act: Act; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const prefs = usePrefs();
   const L = (name: string) => labelOf(prefs, name);
@@ -30,7 +30,7 @@ export function Palette({ status, running, nav, act, onClose }: { status?: Statu
     const out: Item[] = [];
     const s = status;
     if (running && s) {
-      out.push({ id: "add", group: "Actions", label: "Add a device", icon: <Icon.Plus />, keys: "⌘N", words: "add device invite join new", run: nav.add });
+      out.push({ id: "add", group: "Actions", label: "Add a device", icon: <Icon.Plus />, keys: shortcut(mac, "N"), words: "add device invite join new", run: nav.add });
       for (const p of [...s.peers].sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name))) {
         out.push({
           id: `dev:${p.name}`,
@@ -84,17 +84,17 @@ export function Palette({ status, running, nav, act, onClose }: { status?: Statu
         run: () => void copyText(s.node.address).then(() => toast(`Copied ${s.node.address}`)),
       });
       out.push({ id: "down", group: "Actions", label: "Disconnect", icon: <Icon.Power />, words: "disconnect off down stop", run: () => void act({ kind: "down" }) });
-      out.push({ id: "go:devices", group: "Go to", label: "Devices", icon: <Icon.Devices />, keys: "⌘1", words: "devices go", run: () => nav.page("devices") });
-      out.push({ id: "go:services", group: "Go to", label: "Services", icon: <Icon.Services />, keys: "⌘2", words: "services go share port", run: () => nav.page("services") });
-      out.push({ id: "go:exit", group: "Go to", label: "Exit node", icon: <Icon.Exit />, keys: "⌘3", words: "exit node go", run: () => nav.page("exit") });
+      out.push({ id: "go:devices", group: "Go to", label: "Devices", icon: <Icon.Devices />, keys: shortcut(mac, "1"), words: "devices go", run: () => nav.page("devices") });
+      out.push({ id: "go:services", group: "Go to", label: "Services", icon: <Icon.Services />, keys: shortcut(mac, "2"), words: "services go share port", run: () => nav.page("services") });
+      out.push({ id: "go:exit", group: "Go to", label: "Exit node", icon: <Icon.Exit />, keys: shortcut(mac, "3"), words: "exit node go", run: () => nav.page("exit") });
       out.push({ id: "edit:self", group: "Actions", label: "Rename this device", icon: <Icon.Pencil />, words: "rename name picture photo avatar edit this device", run: () => nav.edit(s.node.name) });
-      out.push({ id: "go:settings", group: "Go to", label: "Settings", icon: <Icon.Gear />, keys: "⌘,", words: "settings preferences diagnostics go", run: () => nav.page("settings") });
+      out.push({ id: "go:settings", group: "Go to", label: "Settings", icon: <Icon.Gear />, keys: shortcut(mac, ","), words: "settings preferences diagnostics go", run: () => nav.page("settings") });
     } else {
       out.push({ id: "up", group: "Actions", label: "Connect", icon: <Icon.Power />, words: "connect on up start", run: () => void act({ kind: "up" }) });
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, running, nav, act, prefs]);
+  }, [status, running, mac, nav, act, prefs]);
 
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = useMemo(() => {

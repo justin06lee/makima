@@ -54,7 +54,7 @@
     "linux": {
       "deb": {
         "depends": [
-          "polkit"
+          "pkexec | policykit-1"
         ]
       }
     },
