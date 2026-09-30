@@ -241,9 +241,16 @@ app: app-build stop app-place reset-permissions trusted-copy start app-open
 # somebody else, and its packaging step leaves a mounted volume behind when it
 # is interrupted, after which every later build fails at that step. `make
 # dmg` produces one on purpose.
+#
+# On Linux, likewise, only the package app-place is going to install: a .deb
+# where there is dpkg, an .rpm where there is rpm, an AppImage elsewhere.
+# Building all three every time tripled the packaging, and on a small ARM
+# board packing ninety megabytes three ways is minutes.
+LINUX_BUNDLE := $(if $(shell command -v dpkg 2>/dev/null),deb,$(if $(shell command -v rpm 2>/dev/null),rpm,appimage))
+
 app-build: app-version sidecars
 	@cd desktop && bun install --frozen-lockfile && \
-		if [ "$$(uname -s)" = Darwin ]; then bun run tauri build $(APP_CONFIG) --bundles app; else bun run tauri build $(APP_CONFIG); fi
+		if [ "$$(uname -s)" = Darwin ]; then bun run tauri build $(APP_CONFIG) --bundles app; else bun run tauri build $(APP_CONFIG) --bundles $(LINUX_BUNDLE); fi
 
 dmg: app-version sidecars
 	@cd desktop && bun install --frozen-lockfile && bun run tauri build $(APP_CONFIG) --bundles dmg
@@ -251,17 +258,30 @@ dmg: app-version sidecars
 app-install: stop app-place reset-permissions trusted-copy start app-open
 
 # The app where apps go, over whatever was there. `stop` has already quit it.
+#
+# `stop` has taken makima down too, so a package that will not install must
+# not end `make` there: the tunnel is started again before the failure is
+# reported, rather than left off until somebody notices.
+#
+# A .deb goes in through apt rather than dpkg, so that what it depends on
+# comes with it: dpkg alone, missing one, leaves the package unconfigured and
+# every later apt command on the machine complaining about it.
 app-place:
 	@if [ "$$(uname -s)" = Darwin ] && [ -d $(APP) ]; then rm -rf $(APP); fi
 	@if [ "$$(uname -s)" = Darwin ]; then \
 		echo "  install $(APP)"; \
 		cp -R $(BUNDLE)/macos/makima.app $(APP); \
 	elif command -v dpkg >/dev/null 2>&1 && ls $(BUNDLE)/deb/*.deb >/dev/null 2>&1; then \
-		echo "  install $$(ls $(BUNDLE)/deb/*.deb | tail -1)"; \
-		sudo dpkg -i $$(ls $(BUNDLE)/deb/*.deb | tail -1); \
+		deb=$$(ls $(BUNDLE)/deb/*.deb | tail -1); echo "  install $$deb"; \
+		if command -v apt-get >/dev/null 2>&1; then \
+			sudo apt-get -o DPkg::Lock::Timeout=300 install -y --reinstall -q "$$(realpath $$deb)" >/dev/null || \
+				{ sudo sh dist/update.sh start; echo "  the app did not install: sudo apt-get install $$(realpath $$deb)"; exit 1; }; \
+		else \
+			sudo dpkg -i "$$deb" || { sudo sh dist/update.sh start; exit 1; }; \
+		fi; \
 	elif command -v rpm >/dev/null 2>&1 && ls $(BUNDLE)/rpm/*.rpm >/dev/null 2>&1; then \
 		echo "  install $$(ls $(BUNDLE)/rpm/*.rpm | tail -1)"; \
-		sudo rpm -U --replacepkgs $$(ls $(BUNDLE)/rpm/*.rpm | tail -1); \
+		sudo rpm -U --replacepkgs $$(ls $(BUNDLE)/rpm/*.rpm | tail -1) || { sudo sh dist/update.sh start; exit 1; }; \
 	elif ls $(BUNDLE)/appimage/*.AppImage >/dev/null 2>&1; then \
 		echo "  install /usr/local/bin/makima-desktop"; \
 		sudo install -m 0755 $$(ls $(BUNDLE)/appimage/*.AppImage | tail -1) /usr/local/bin/makima-desktop; \

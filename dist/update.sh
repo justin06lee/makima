@@ -35,7 +35,14 @@ say() { printf '  %-7s %s\n' "$1" "$2"; }
 who=${SUDO_USER:-}
 uid=
 if [ -n "$who" ] && [ "$who" != root ]; then uid=$(id -u "$who" 2>/dev/null); fi
-as_user() { [ -n "$uid" ] && launchctl asuser "$uid" sudo -u "$who" "$@"; }
+as_user() {
+	[ -n "$uid" ] || return 1
+	if [ "$os" = Darwin ]; then
+		launchctl asuser "$uid" sudo -u "$who" "$@"
+	else
+		sudo -H -u "$who" "$@"
+	fi
+}
 
 gone() { ! pgrep -x "$1" >/dev/null 2>&1; }
 
@@ -62,7 +69,17 @@ stop() {
 	if ! gone makima-desktop; then
 		say stop "the makima app"
 		touch "$STATE/app"
-		[ "$os" = Darwin ] && as_user osascript -e 'with timeout of 5 seconds' -e 'quit app "makima"' -e 'end timeout' >/dev/null 2>&1
+		if [ "$os" = Darwin ]; then
+			as_user osascript -e 'with timeout of 5 seconds' -e 'quit app "makima"' -e 'end timeout' >/dev/null 2>&1
+		else
+			# Which screen and which session it was on, so it comes back to
+			# them: sudo keeps none of this, and `make` may be run over SSH,
+			# with no screen of its own. The session bus is where its tray
+			# icon lives.
+			pid=$(pgrep -x makima-desktop | head -n 1)
+			tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null |
+				grep -E '^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_CURRENT_DESKTOP|XDG_SESSION_TYPE)=' > "$STATE/app"
+		fi
 		stop_proc makima-desktop
 	fi
 
@@ -153,7 +170,9 @@ start() {
 		if [ "$os" = Darwin ]; then
 			as_user open "$APP" >/dev/null 2>&1
 		else
-			as_user sh -c 'setsid makima-desktop >/dev/null 2>&1 &'
+			set --
+			while IFS= read -r kv; do set -- "$@" "$kv"; done < "$STATE/app"
+			as_user env "$@" sh -c 'setsid makima-desktop >/dev/null 2>&1 &'
 		fi
 	fi
 

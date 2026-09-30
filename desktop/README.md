@@ -128,7 +128,9 @@ joining a network, adding a device, choosing an exit node and moving off
 Tailscale ask every time. A standing grant for those would let anything else
 running as you put this machine on a network of its choosing without a prompt,
 since an invite carries the control plane it points at. Delete
-`/etc/sudoers.d/makima_<you>` to make everything ask again.
+`/etc/sudoers.d/makima_<you>` to make everything ask again. That is the Mac;
+on Linux every one of them asks through polkit each time (see *Building on
+Linux*).
 
 **Move from Tailscale** is the first run's *Take over a network*, the second
 first-open question when Tailscale is running here, the card above Add device,
@@ -178,15 +180,40 @@ packages:
 ```sh
 # Arch
 sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl \
-               libayatana-appindicator librsvg
+               libayatana-appindicator librsvg imagemagick
 
 # Debian / Ubuntu
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-                 libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+                 libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+                 imagemagick
 ```
 
-`libayatana-appindicator` is what puts the tray icon in the panel. Without it
-the app still runs; it just has nowhere to live when its window is closed.
+ImageMagick only crops the device faces; without it they are initials.
+
+`make` then builds the one package this machine installs — a .deb where there
+is dpkg, an .rpm where there is rpm, an AppImage anywhere else — and installs
+it: the .deb through apt, so what it depends on (pkexec among it) comes along.
+The package puts *makima* in the app grid with its icon, the app at
+`/usr/bin/makima-desktop`, and the four binaries it carries beside it.
+
+`libayatana-appindicator` is what puts the tray icon in the panel, and the
+panel has to be listening for one. On GNOME that is the AppIndicator
+extension: Ubuntu ships it, and its session turns it on — a GNOME session
+that has not, has no tray for any app until it is switched on:
+
+```sh
+gnome-extensions enable ubuntu-appindicators@ubuntu.com
+```
+
+Without a tray the app still runs; it just has nowhere to live when its
+window is closed. Clicking the tray icon opens the menu on Linux, as it does
+on a Mac; there is no tooltip, which AppIndicator does not have.
+
+Every button that needs root asks through polkit, every time: the remembered
+yes described above is the Mac's alone for now. The app also sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` for itself, unless it is already set,
+because WebKitGTK's DMA-BUF renderer can leave the window blank on NVIDIA's
+drivers.
 
 ## Layout
 

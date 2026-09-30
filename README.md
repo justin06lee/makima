@@ -823,6 +823,12 @@ appearance. It opens at login once a network has been started or joined from
 it — the tunnel is up anyway, and this is the menu bar coming back with it —
 and Settings turns that off.
 
+On Linux `make` installs it as a package — a .deb through apt, or an .rpm —
+so it is in the app grid with its icon, and the menu bar is the tray: on
+GNOME that needs the AppIndicator extension, which Ubuntu ships. There every
+change asks through polkit each time; the Mac remembers one yes for the
+everyday buttons.
+
 It reads over a **second Unix socket** the daemon opens beside its own:
 read-only by construction, and owned by the account this machine belongs to, so
 exactly one account can reach it and nothing sent down it can change anything.
