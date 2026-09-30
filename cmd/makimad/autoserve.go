@@ -154,7 +154,7 @@ func (n *node) refreshAutoServices() {
 		auto = append(auto, serve.Service{
 			Name:   l.Name(),
 			Port:   l.Port,
-			Target: serve.LocalTarget(l.Port),
+			Target: l.Target(),
 			Auto:   true,
 		})
 	}

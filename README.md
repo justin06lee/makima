@@ -336,13 +336,17 @@ set` command that stops it.
 
 ### Services publish themselves
 
-Anything listening on `127.0.0.1` is put on the mesh once it has stayed up for
-a few seconds, and taken off again once it has stayed down for fifteen. Start
-Ollama and it is at `desktop.makima:11434` from your laptop ten seconds later.
+Anything listening on `127.0.0.1` (or `::1`) is put on the mesh once it has
+stayed up for a few seconds, and taken off again once it has stayed down for
+fifteen. Start Ollama and it is at `desktop.makima:11434` from your laptop ten
+seconds later.
 Start a dev server and it is reachable from the sofa, and it stays reachable
 while it restarts on save. There is no command. Listeners on the dynamic range
 (49152 and up) are left alone: those are other programs' private helpers, on a
-different number every run. `makima allow` publishes one on purpose.
+different number every run. So are binds to the rest of `127.0.0.0/8`, like
+systemd-resolved's stub resolver on `127.0.0.53`: somebody chose that address,
+and a forward to localhost would not reach it. `makima allow` publishes one on
+purpose.
 
 That is a deliberate policy: **your mesh is trusted the way this machine is.**
 It is the right default for the machines one person owns, and the wrong one the
@@ -1296,7 +1300,7 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   connections, and cannot override **Block all incoming connections**. The
   rules makima adds to a bare nftables or iptables ruleset last until that
   ruleset is next reloaded; the daemon adds them again each time it starts.
-- **Automatic publishing trusts the whole mesh.** Every loopback service on a
+- **Automatic publishing trusts the whole mesh.** Every localhost service on a
   node is reachable by every node permitted to see it — including a Postgres
   with trust auth, a debug port, or an unauthenticated admin panel. Right for
   the machines one person owns; wrong the moment the mesh has somebody else's

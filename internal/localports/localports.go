@@ -14,8 +14,10 @@
 package localports
 
 import (
+	"net"
 	"net/netip"
 	"sort"
+	"strconv"
 )
 
 // Listener is one listening TCP socket.
@@ -34,6 +36,18 @@ type Listener struct {
 
 // LoopbackOnly reports whether this listener answers only its own machine.
 func (l Listener) LoopbackOnly() bool { return l.Addr.IsLoopback() }
+
+// Localhost reports whether it is bound to 127.0.0.1 or ::1 — localhost
+// itself, rather than one of the other addresses in 127/8.
+func (l Listener) Localhost() bool {
+	return l.Addr == netip.AddrFrom4([4]byte{127, 0, 0, 1}) || l.Addr == netip.IPv6Loopback()
+}
+
+// Target is where a forward reaches it: the address it is bound to. A service
+// listening only on ::1 refuses 127.0.0.1.
+func (l Listener) Target() string {
+	return net.JoinHostPort(l.Addr.String(), strconv.Itoa(int(l.Port)))
+}
 
 // Wildcard reports whether this listener answers on every address, which
 // includes the mesh address.
@@ -55,10 +69,14 @@ func Listening() ([]Listener, error) { return listening() }
 //
 //   - A port with a wildcard listener is dropped. It already answers on the
 //     mesh address, so there is nothing to forward and a bind would collide.
-//   - A port bound only to loopback is kept.
-//   - Anything bound to one specific non-loopback address is dropped. It is
+//   - A port bound only to localhost — 127.0.0.1 or ::1 — is kept, and where
+//     it is on both, it is forwarded to 127.0.0.1.
+//   - Anything bound to one specific other address is dropped. It is
 //     reachable at that address by whoever the operator meant, and second-
-//     guessing a deliberate bind is not this package's business.
+//     guessing a deliberate bind is not this package's business. That goes
+//     for the rest of 127/8 too: systemd-resolved's stub resolver on
+//     127.0.0.53, on every stock Ubuntu, is a bind nobody meant for the mesh,
+//     and one a forward to localhost would never reach.
 //   - Ports in exclude are dropped, which is how the daemon keeps its own
 //     listeners from being republished back onto the mesh.
 //
@@ -76,15 +94,25 @@ func Forwardable(ls []Listener, exclude map[uint16]bool) []Listener {
 	// is one thing to publish, not two.
 	seen := make(map[uint16]Listener, len(ls))
 	for _, l := range ls {
-		if !l.LoopbackOnly() || wildcard[l.Port] || exclude[l.Port] {
+		if !l.Localhost() || wildcard[l.Port] || exclude[l.Port] {
 			continue
 		}
-		// Prefer whichever record carries a process name, so the IPv6 twin of
-		// a socket does not erase the name learned from the IPv4 one.
-		if prev, ok := seen[l.Port]; ok && prev.Process != "" {
+		prev, ok := seen[l.Port]
+		if !ok {
+			seen[l.Port] = l
 			continue
 		}
-		seen[l.Port] = l
+		// The IPv4 address, so a service on both is forwarded where it
+		// always was; and whichever record carries a process name, so the
+		// IPv6 twin of a socket does not erase the name learned from the
+		// IPv4 one.
+		if l.Addr.Is4() {
+			prev.Addr = l.Addr
+		}
+		if prev.Process == "" {
+			prev.Process = l.Process
+		}
+		seen[l.Port] = prev
 	}
 
 	out := make([]Listener, 0, len(seen))

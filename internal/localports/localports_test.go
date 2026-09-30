@@ -75,6 +75,18 @@ func TestForwardable(t *testing.T) {
 			want:  nil,
 		},
 		{
+			// systemd-resolved's stub resolver, on every stock Ubuntu: a
+			// forward to localhost:53 finds nothing there, so publishing it
+			// put a dead "systemd-resolve" service in front of every peer.
+			name: "a bind to another loopback address is a deliberate one",
+			given: []Listener{
+				{Addr: netip.MustParseAddr("127.0.0.53"), Port: 53, Process: "systemd-resolve"},
+				{Addr: netip.MustParseAddr("127.0.0.54"), Port: 53, Process: "systemd-resolve"},
+				{Addr: netip.MustParseAddr("127.0.0.11"), Port: 40000},
+			},
+			want: nil,
+		},
+		{
 			name:    "excluded ports are dropped",
 			given:   []Listener{lo(8088), lo(11434)},
 			exclude: map[uint16]bool{8088: true},
@@ -114,6 +126,30 @@ func TestForwardableKeepsProcessName(t *testing.T) {
 		if got[0].Process != "node" {
 			t.Fatalf("process name lost: %+v", got[0])
 		}
+	}
+}
+
+// A forward has to dial the address the service is actually on: ::1 for
+// one that listens only there, where 127.0.0.1 would be refused.
+func TestForwardableTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		given []Listener
+		want  string
+	}{
+		{"IPv4 loopback", []Listener{lo(3000)}, "127.0.0.1:3000"},
+		{"IPv6 loopback only", []Listener{lo6(3000)}, "[::1]:3000"},
+		{"both prefer IPv4", []Listener{lo6(3000), lo(3000)}, "127.0.0.1:3000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Forwardable(tc.given, nil)
+			if len(got) != 1 {
+				t.Fatalf("got %d listeners, want 1", len(got))
+			}
+			if got[0].Target() != tc.want {
+				t.Fatalf("target %q, want %q", got[0].Target(), tc.want)
+			}
+		})
 	}
 }
 
