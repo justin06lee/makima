@@ -14,7 +14,7 @@
 use std::sync::Mutex;
 
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -178,8 +178,10 @@ fn build(app: &AppHandle, v: &View, member: bool) -> tauri::Result<Menu<tauri::W
         None::<&str>,
     )?;
 
-    // Devices: one row each, a dot for whether it is reachable, click to
-    // copy the address. Exactly what somebody about to type ssh wants.
+    // Devices: one row each, marked solid when reachable and hollow when not,
+    // click to copy the address. Exactly what somebody about to type ssh
+    // wants. The marks are text, not pictures: menu item pictures keep their
+    // colours, where text follows the menu through light, dark and highlight.
     let devices = if v.devices.is_empty() {
         let none = MenuItem::with_id(
             app,
@@ -192,12 +194,11 @@ fn build(app: &AppHandle, v: &View, member: bool) -> tauri::Result<Menu<tauri::W
     } else {
         let sub = Submenu::with_id(app, "devices", "Devices", true)?;
         for d in &v.devices {
-            let item = IconMenuItem::with_id(
+            let item = MenuItem::with_id(
                 app,
                 format!("peer:{}", d.name),
-                format!("{}    {}", d.name, d.address),
+                format!("{}  {}    {}", if d.online { "●" } else { "○" }, d.name, d.address),
                 true,
-                Some(dot(d.online)),
                 None::<&str>,
             )?;
             sub.append(&item)?;
@@ -352,34 +353,6 @@ pub fn icon(on: bool) -> Image<'static> {
         }
     }
     Image::new_owned(rgba, w, h)
-}
-
-/// A small filled circle: green for a device that is reachable, grey for one
-/// that is not. Drawn rather than shipped, because it is nine lines.
-fn dot(online: bool) -> Image<'static> {
-    const SIZE: u32 = 14;
-    let (r, g, b) = if online {
-        (52u8, 199u8, 89u8)
-    } else {
-        (174u8, 174u8, 178u8)
-    };
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    let centre = SIZE as f32 / 2.0;
-    let radius = 4.0f32;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 + 0.5 - centre;
-            let dy = y as f32 + 0.5 - centre;
-            let d = (dx * dx + dy * dy).sqrt();
-            let a = (radius - d + 0.5).clamp(0.0, 1.0);
-            let i = ((y * SIZE + x) * 4) as usize;
-            rgba[i] = r;
-            rgba[i + 1] = g;
-            rgba[i + 2] = b;
-            rgba[i + 3] = (a * 255.0) as u8;
-        }
-    }
-    Image::new_owned(rgba, SIZE, SIZE)
 }
 
 /// Build the tray for the first time.

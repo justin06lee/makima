@@ -5,21 +5,37 @@ import { inTauri } from "./api";
 ///
 /// The platform's drag events, not the browser's: Tauri hands over real
 /// paths, which is what the CLI needs, and it fires them for the whole window
-/// rather than one element. So while a device is selected, the whole window
-/// is its drop target and the zone merely lights up to say so — nobody has to
-/// aim.
+/// rather than one element. So the pointer is hit-tested here: anything
+/// marked `data-drop-peer="NAME"` under it is where the files go, and with
+/// nothing under it they go to `fallback` — the device open in the inspector
+/// — so nobody has to aim.
 ///
-/// Returns whether a drag is in progress. Passing null disables it.
-export function useDrop(onFiles: ((paths: string[]) => void) | null): boolean {
+/// Returns whether a drag is in progress and which device it is over.
+/// Passing null disables it.
+export function useDrop(
+  onFiles: ((paths: string[], peer: string) => void) | null,
+  fallback: string | null,
+): { dragging: boolean; over: string | null } {
   const [dragging, setDragging] = useState(false);
+  const [over, setOver] = useState<string | null>(null);
   const handler = useRef(onFiles);
   handler.current = onFiles;
+  const fb = useRef(fallback);
+  fb.current = fallback;
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let gone = false;
 
     if (!inTauri) return;
+
+    // Tauri reports physical pixels; the DOM works in CSS ones.
+    const target = (p: { x: number; y: number }): string | null => {
+      const r = window.devicePixelRatio || 1;
+      const el = document.elementFromPoint(p.x / r, p.y / r)?.closest<HTMLElement>("[data-drop-peer]");
+      return el?.dataset.dropPeer || fb.current;
+    };
+
     (async () => {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       const un = await getCurrentWebview().onDragDropEvent((e) => {
@@ -28,14 +44,19 @@ export function useDrop(onFiles: ((paths: string[]) => void) | null): boolean {
           case "enter":
           case "over":
             setDragging(true);
+            setOver(target(e.payload.position));
             break;
           case "leave":
             setDragging(false);
+            setOver(null);
             break;
-          case "drop":
+          case "drop": {
             setDragging(false);
-            if (e.payload.paths.length > 0) handler.current(e.payload.paths);
+            setOver(null);
+            const peer = target(e.payload.position);
+            if (peer && e.payload.paths.length > 0) handler.current(e.payload.paths, peer);
             break;
+          }
         }
       });
       if (gone) un();
@@ -48,5 +69,5 @@ export function useDrop(onFiles: ((paths: string[]) => void) | null): boolean {
     };
   }, []);
 
-  return dragging && !!onFiles;
+  return { dragging: dragging && !!onFiles, over: dragging && onFiles ? over : null };
 }

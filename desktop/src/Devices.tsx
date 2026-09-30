@@ -1,372 +1,543 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, fqdn, inTauri, ms, openExternal, openFolder, pathLabel, type Environment, type Peer, type Ping, type Status } from "./api";
-import type { Act } from "./App";
-import { Button, Card, CopyButton, Dot, Input, Row, Search, Section, Spinner, Toggle } from "./ui";
+import { api, fqdn, inTauri, ms, openExternal, openFolder, type Environment, type Peer, type Ping, type Status } from "./api";
+import type { Act, Nav } from "./App";
+import { Button, Copyable, Dot, IconButton, PageHeader, Search, Section, Signal, Spinner, Tag, Toggle, toast, useCopied } from "./ui";
 import { Icon } from "./icons";
 import { useDrop } from "./useDrop";
-import { useSSH } from "./Terminal";
+import { Avatar } from "./Avatar";
+import { Pulse } from "./Wave";
+import { labelOf, usePrefs, type Prefs } from "./prefs";
 
-/// The list on the left and the one thing it selects on the right.
+const SELF = "\u0000self";
+
+/// Every device on the network as a table you can read at a glance, and the
+/// one you pick in an inspector beside it.
 export function Devices({
   status,
   env,
   busy,
   act,
-  onAdd,
+  nav,
+  selected,
 }: {
   status: Status;
   env: Environment;
   busy: boolean;
   act: Act;
-  onAdd: () => void;
+  nav: Nav;
+  selected: string | null;
 }) {
-  const [selected, setSelected] = useState<string>("self");
   const [query, setQuery] = useState("");
-
-  // A device that leaves the network takes its selection with it.
-  useEffect(() => {
-    if (selected !== "self" && !status.peers.some((p) => p.name === selected)) setSelected("self");
-  }, [status.peers, selected]);
+  const prefs = usePrefs();
+  const { send, sending } = useSender(prefs);
 
   const q = query.trim().toLowerCase();
+  const matches = (name: string, address: string) => !q || name.toLowerCase().includes(q) || labelOf(prefs, name).toLowerCase().includes(q) || address.includes(q);
   const peers = useMemo(
     () =>
       [...status.peers]
-        .filter((p) => !q || p.name.toLowerCase().includes(q) || p.address.includes(q))
-        .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name)),
-    [status.peers, q],
+        .filter((p) => matches(p.name, p.address) || p.services?.some((s) => s.name?.toLowerCase().includes(q)))
+        .sort((a, b) => Number(b.online) - Number(a.online) || labelOf(prefs, a.name).localeCompare(labelOf(prefs, b.name))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [status.peers, q, prefs],
   );
-  const selfMatches = !q || status.node.name.toLowerCase().includes(q) || status.node.address.includes(q);
+  const selfMatches = matches(status.node.name, status.node.address);
 
-  const peer = selected === "self" ? null : status.peers.find((p) => p.name === selected) ?? null;
+  const self = selected === SELF || selected === status.node.name;
+  const peer = !self && selected ? status.peers.find((p) => p.name === selected) ?? null : null;
+  const open = self || !!peer;
+
+  // A device that leaves the network takes its selection with it.
+  useEffect(() => {
+    if (selected && !self && !peer) nav.device(null);
+  }, [selected, self, peer, nav]);
+
+  // Arrows walk the list, Escape closes the inspector — unless something
+  // else on the screen is taking the keys.
+  const order = useMemo(() => [...(selfMatches ? [SELF] : []), ...peers.map((p) => p.name)], [selfMatches, peers]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.closest("input, textarea, select, [role=dialog]") || document.querySelector("[role=dialog]")) return;
+      if (e.key === "Escape" && selected) {
+        nav.device(null);
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const at = order.indexOf(self ? SELF : selected ?? "");
+        const next = e.key === "ArrowDown" ? Math.min(order.length - 1, at + 1) : Math.max(0, at === -1 ? 0 : at - 1);
+        if (order[next]) nav.device(order[next]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [order, selected, self, nav]);
+
+  const online = status.peers.filter((p) => p.online).length;
+  const reachable = new Set(status.peers.filter((p) => p.online).map((p) => p.name));
+  const { dragging, over } = useDrop((paths, to) => reachable.has(to) && send(to, paths), peer?.online ? peer.name : null);
 
   return (
-    <>
-      <aside className="flex w-[272px] shrink-0 flex-col border-r border-line">
-        <div className="px-4 pb-3 pt-5">
-          <h1 className="text-[22px] font-semibold tracking-tight">Devices</h1>
-          <div className="mt-3">
-            <Search value={query} onChange={setQuery} />
-          </div>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <PageHeader
+        title="Devices"
+        sub={status.peers.length === 0 ? "Just this one so far" : `${online + 1} of ${status.peers.length + 1} online`}
+        right={<Search value={query} onChange={setQuery} placeholder="Filter devices" className="w-[200px]" />}
+      />
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+      <div className="flex min-h-0 flex-1">
+        <div className="@container min-w-0 flex-1 overflow-y-auto" onClick={(e) => e.target === e.currentTarget && nav.device(null)}>
+          <ColumnHeads />
           {selfMatches && (
-            <>
-              <GroupLabel>This device</GroupLabel>
-              <DeviceRow
-                name={status.node.name}
-                address={status.node.address}
-                online
-                active={selected === "self"}
-                onClick={() => setSelected("self")}
-              />
-            </>
+            <SelfRow status={status} active={self} onClick={() => nav.device(self ? null : SELF)} />
           )}
-
-          <GroupLabel>{status.domain ? `${status.domain} network` : "Network"}</GroupLabel>
-          {peers.length === 0 ? (
-            <div className="px-2.5 py-3 text-[12.5px] leading-relaxed text-dim">
-              {q ? (
-                "Nothing matches."
-              ) : (
-                <>
-                  <p>No other devices yet.</p>
-                  <button type="button" onClick={onAdd} className="mt-1 font-medium text-accent hover:underline">
-                    Add one
-                  </button>
-                </>
-              )}
-            </div>
-          ) : (
-            peers.map((p) => (
-              <DeviceRow
-                key={p.name}
-                name={p.name}
-                address={p.address}
-                online={p.online}
-                exit={status.exit_node === p.name}
-                active={selected === p.name}
-                onClick={() => setSelected(p.name)}
-              />
-            ))
+          {peers.map((p) => (
+            <PeerRow
+              key={p.name}
+              peer={p}
+              status={status}
+              active={selected === p.name}
+              dropTarget={over === p.name}
+              dragging={dragging}
+              sending={sending?.peer === p.name}
+              onClick={() => nav.device(selected === p.name ? null : p.name)}
+              onSSH={() => nav.ssh(p.name)}
+            />
+          ))}
+          {status.peers.length === 0 && !q && <Lonely onAdd={nav.add} />}
+          {q && peers.length === 0 && !selfMatches && (
+            <p className="px-5 py-8 text-center text-[12.5px] text-dim">Nothing matches “{query}”.</p>
+          )}
+          {status.peers.length > 0 && !open && (
+            <p className="px-5 py-4 text-[11.5px] text-dimmer">
+              {inTauri ? "Drop a file on a device to send it there." : "Select a device for its details."}
+            </p>
           )}
         </div>
-      </aside>
 
-      <div className="min-w-0 flex-1 overflow-y-auto">
-        {peer ? (
-          <PeerDetail key={peer.name} peer={peer} status={status} busy={busy} act={act} />
-        ) : (
-          <SelfDetail status={status} env={env} busy={busy} act={act} />
+        {self && <SelfInspector key="self" status={status} env={env} busy={busy} act={act} nav={nav} onClose={() => nav.device(null)} />}
+        {peer && (
+          <PeerInspector
+            key={peer.name}
+            peer={peer}
+            status={status}
+            busy={busy}
+            act={act}
+            nav={nav}
+            dragging={dragging}
+            sending={sending?.peer === peer.name ? sending.file : null}
+            onSend={(paths) => send(peer.name, paths)}
+            onClose={() => nav.device(null)}
+          />
         )}
       </div>
-    </>
-  );
-}
-
-function GroupLabel({ children }: { children: React.ReactNode }) {
-  return <div className="px-2.5 pb-1 pt-3 text-[12px] font-semibold text-dim">{children}</div>;
-}
-
-function DeviceRow({
-  name,
-  address,
-  online,
-  exit,
-  active,
-  onClick,
-}: {
-  name: string;
-  address: string;
-  online: boolean;
-  exit?: boolean;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="option"
-      aria-selected={active}
-      onClick={onClick}
-      className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition
-        ${active ? "bg-accent text-accent-ink" : "hover:bg-card"}`}
-    >
-      <span className="mt-[7px]">
-        <Dot tone={online ? "green" : "grey"} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-1.5">
-          <span className="truncate text-[13.5px] font-medium">{name}</span>
-          {exit && (
-            <span className={`rounded px-1 text-[10px] font-semibold uppercase tracking-wide ${active ? "bg-white/20" : "bg-card-2 text-dim"}`}>
-              exit
-            </span>
-          )}
-        </span>
-        <span className={`block truncate font-mono text-[12px] ${active ? "text-accent-ink/80" : "text-dim"}`}>{address}</span>
-      </span>
-    </button>
-  );
-}
-
-function Header({ title, tag, children }: { title: string; tag?: string; children?: React.ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-4">
-      <div className="min-w-0">
-        <h1 className="flex items-center gap-2 text-[22px] font-semibold tracking-tight">
-          <span className="truncate">{title}</span>
-          {tag && <span className="rounded-md bg-card-2 px-1.5 py-0.5 text-[11px] font-medium text-dim">{tag}</span>}
-        </h1>
-      </div>
-      {children && <div className="flex shrink-0 items-center gap-1.5 pt-1">{children}</div>}
     </div>
   );
 }
 
-function StatusLine({ tone, children }: { tone: "green" | "grey" | "amber"; children: React.ReactNode }) {
-  return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-dim">
-      <Dot tone={tone} />
-      {children}
-    </div>
-  );
-}
-
-/// Another machine: how it is reached, what it offers, and a place to drop a
-/// file for it.
-function PeerDetail({ peer, status, busy, act }: { peer: Peer; status: Status; busy: boolean; act: Act }) {
-  const [ping, setPing] = useState<Ping | null>(null);
-  const [pinging, setPinging] = useState(false);
-
-  const direct = ping ? ping.direct : peer.direct;
-  const latency = ping ? (ping.direct ? ping.latency : ping.relay_latency) : peer.latency;
-  const relay = ping?.relay_url ?? peer.relay_url;
-  const isExit = status.exit_node === peer.name;
-  const name = fqdn(peer.name, status);
-
-  async function probe() {
-    setPinging(true);
-    try {
-      setPing(await api.ping(peer.name));
-    } catch {
-      // The row already says what it knows; the next poll corrects it.
-    } finally {
-      setPinging(false);
-    }
-  }
-
-  const { ssh, picker, error: sshError } = useSSH();
-
-  return (
-    <div className="fade-in space-y-6 px-6 pb-8 pt-5">
-      {picker}
-      <div>
-        <Header title={peer.name}>
-          <Button icon={<Icon.Terminal />} onClick={() => ssh(peer.name)} disabled={!peer.online} title="Open a shell on this device in your terminal">
-            SSH
-          </Button>
-          <Button icon={<Icon.Pulse />} onClick={probe} busy={pinging} title="Probe the path to this device">
-            Ping
-          </Button>
-        </Header>
-        {sshError && <p className="selectable mt-1.5 text-[12.5px] text-red">{sshError}</p>}
-        <StatusLine tone={peer.online ? "green" : "grey"}>
-          <span>{peer.online ? "Connected" : "Offline"}</span>
-          {peer.online && (
-            <>
-              <span className="text-dimmer">·</span>
-              <span>{direct ? "Direct" : relay ? "Via relay" : pathLabel(peer)}</span>
-              {latency > 0 && <span className="text-dimmer">{ms(latency)}</span>}
-            </>
-          )}
-          {isExit && (
-            <>
-              <span className="text-dimmer">·</span>
-              <span className="text-accent">Your exit node</span>
-            </>
-          )}
-        </StatusLine>
-      </div>
-
-      <Section title="Addresses">
-        <Card>
-          {name && <Row value={name} caption="Name" mono right={<CopyButton value={name} />} />}
-          <Row value={peer.address} caption="IPv4" mono right={<CopyButton value={peer.address} />} />
-        </Card>
-      </Section>
-
-      {peer.services && peer.services.length > 0 && (
-        <Section title="Services">
-          <Card>
-            {peer.services.map((s) => {
-              const host = name ?? peer.address;
-              const url = s.scheme ? `${s.scheme}://${host}:${s.port}` : null;
-              return (
-                <Row
-                  key={s.port}
-                  value={s.name ?? `port ${s.port}`}
-                  caption={url ?? `${host}:${s.port}`}
-                  right={
-                    url ? (
-                      <Button size="sm" icon={<Icon.Open />} onClick={() => openExternal(url)}>
-                        Open
-                      </Button>
-                    ) : (
-                      <CopyButton value={`${host}:${s.port}`} />
-                    )
-                  }
-                />
-              );
-            })}
-          </Card>
-        </Section>
-      )}
-
-      <Section title="Send a file">
-        <DropZone peer={peer} enabled={peer.online} />
-      </Section>
-
-      {peer.exit_node && (
-        <Section title="Exit node">
-          <Card>
-            <Row
-              value={isExit ? `All of this device's internet traffic goes through ${peer.name}` : `${peer.name} offers to carry this device's internet traffic`}
-              caption={isExit ? "Stop to use your own connection again." : "Useful on an untrusted network."}
-              right={
-                <Button
-                  size="sm"
-                  variant={isExit ? "danger" : "default"}
-                  busy={busy}
-                  onClick={() => act({ kind: "exit-node", name: isExit ? "" : peer.name })}
-                >
-                  {isExit ? "Stop" : "Use as exit node"}
-                </Button>
-              }
-            />
-          </Card>
-        </Section>
-      )}
-    </div>
-  );
-}
-
-/// Drag a file here, or pick one, and it lands in the peer's inbox.
-function DropZone({ peer, enabled }: { peer: Peer; enabled: boolean }) {
-  const [log, setLog] = useState<{ file: string; ok: boolean; note?: string }[]>([]);
-  const [sending, setSending] = useState<string | null>(null);
-
-  async function send(paths: string[]) {
+/// Sending files, one after another, with the result said at the bottom of
+/// the window.
+function useSender(prefs: Prefs) {
+  const [sending, setSending] = useState<{ peer: string; file: string } | null>(null);
+  async function send(peer: string, paths: string[]) {
     for (const path of paths) {
       const file = path.split(/[\\/]/).pop() ?? path;
-      setSending(file);
+      setSending({ peer, file });
       try {
-        const out = await api.sendFile(peer.name, path);
-        setLog((l) => [{ file, ok: out.ok, note: out.ok ? undefined : out.output }, ...l].slice(0, 6));
+        const out = await api.sendFile(peer, path);
+        if (out.ok) toast(`Sent ${file} to ${labelOf(prefs, peer)}`);
+        else toast(`${file}: ${out.output}`, "error");
       } catch (e) {
-        setLog((l) => [{ file, ok: false, note: String(e) }, ...l].slice(0, 6));
+        toast(`${file}: ${String(e)}`, "error");
       } finally {
         setSending(null);
       }
     }
   }
+  return { send, sending };
+}
 
-  const dragging = useDrop(enabled ? send : null);
+// The table's columns. Wide, it is name · address · connection · services;
+// once the inspector takes half the room, just the name and the bars.
+const GRID = "grid grid-cols-[minmax(0,1fr)_auto] @[600px]:grid-cols-[minmax(0,1.3fr)_112px_132px_minmax(0,1fr)_56px] items-center gap-x-4";
 
-  async function pick() {
-    if (!inTauri) {
-      send(["/Users/you/Desktop/notes.txt"]);
-      return;
-    }
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const chosen = await open({ multiple: true, directory: false, title: `Send to ${peer.name}` });
-    if (chosen) send(Array.isArray(chosen) ? chosen : [chosen]);
-  }
-
+function ColumnHeads() {
   return (
-    <div>
-      <div
-        className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-7 text-center transition
-          ${dragging ? "border-accent bg-accent/8" : "border-line-2"} ${enabled ? "" : "opacity-50"}`}
-      >
-        <Icon.Upload size={22} className={dragging ? "text-accent" : "text-dimmer"} />
-        <p className="mt-2.5 text-[13px] text-dim">
-          {sending ? (
-            <span className="inline-flex items-center gap-2">
-              <Spinner /> Sending {sending}…
-            </span>
-          ) : dragging ? (
-            `Drop to send to ${peer.name}`
-          ) : enabled ? (
-            `Drop a file here to send it to ${peer.name}`
-          ) : (
-            `${peer.name} is offline`
-          )}
-        </p>
-        <Button className="mt-3" onClick={pick} disabled={!enabled || !!sending}>
-          Select a file…
-        </Button>
-      </div>
-      {log.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {log.map((e, i) => (
-            <li key={i} className="flex items-start gap-2 text-[12px]">
-              {e.ok ? <Icon.Check className="mt-px text-green" size={14} /> : <Icon.Warn className="mt-px text-red" size={14} />}
-              <span className="text-dim">
-                {e.ok ? `Sent ${e.file}` : `${e.file}: ${e.note}`}
-              </span>
-            </li>
-          ))}
-        </ul>
+    <div className={`${GRID} sticky top-0 z-10 hidden h-8 border-b border-line bg-panel/90 px-5 text-[11.5px] text-dimmer backdrop-blur @[600px]:grid`}>
+      <span className="pl-[38px]">Name</span>
+      <span>Address</span>
+      <span>Connection</span>
+      <span>Services</span>
+      <span />
+    </div>
+  );
+}
+
+function rowClass(active: boolean, extra = "") {
+  return `${GRID} relative h-[46px] w-full cursor-default border-b border-line px-5 text-left transition-colors
+    ${active ? "bg-active" : "hover:bg-hover"} ${extra}`;
+}
+
+function SelfRow({ status, active, onClick }: { status: Status; active: boolean; onClick: () => void }) {
+  const shared = status.services?.length ?? 0;
+  return (
+    <div role="option" aria-selected={active} tabIndex={-1} onClick={onClick} className={rowClass(active)}>
+      <span className="flex min-w-0 items-center gap-3">
+        <Avatar name={status.node.name} size={26} />
+        <Name name={status.node.name} />
+        <Tag>You</Tag>
+      </span>
+      <span className="hidden font-mono text-[12px] text-dim @[600px]:block">{status.node.address}</span>
+      <span className="hidden text-[12px] text-dim @[600px]:block">This device</span>
+      <span className="hidden truncate text-[12px] text-dim @[600px]:block">{shared > 0 ? `${shared} shared` : <span className="text-dimmer">—</span>}</span>
+      <span className="text-right @[600px]:hidden" />
+      <span className="hidden @[600px]:block" />
+    </div>
+  );
+}
+
+function PeerRow({
+  peer,
+  status,
+  active,
+  dropTarget,
+  dragging,
+  sending,
+  onClick,
+  onSSH,
+}: {
+  peer: Peer;
+  status: Status;
+  active: boolean;
+  dropTarget: boolean;
+  dragging: boolean;
+  sending: boolean;
+  onClick: () => void;
+  onSSH: () => void;
+}) {
+  const isExit = status.exit_node === peer.name;
+  const services = peer.services ?? [];
+  return (
+    <div
+      role="option"
+      aria-selected={active}
+      tabIndex={-1}
+      onClick={onClick}
+      onDoubleClick={() => peer.online && onSSH()}
+      data-drop-peer={peer.online ? peer.name : undefined}
+      className={`group ${rowClass(active, dropTarget ? "!bg-active ring-1 ring-inset ring-ink/40" : dragging && !peer.online ? "opacity-40" : "")}`}
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <Avatar name={peer.name} size={26} offline={!peer.online} />
+        <Name name={peer.name} dim={!peer.online} />
+        {isExit && <Tag tone="ink">Exit</Tag>}
+        {sending && <Spinner className="text-dim" />}
+      </span>
+      <span className="hidden font-mono text-[12px] text-dim @[600px]:block">{peer.address}</span>
+      <span className="hidden items-center gap-2 text-[12px] text-dim @[600px]:flex">
+        <Signal latency={peer.latency} direct={peer.direct} online={peer.online} />
+        <span className="truncate">{peer.online ? (peer.direct ? "Direct" : "Relay") : "Offline"}</span>
+        {peer.online && peer.latency > 0 && <span className="tabular text-dimmer">{ms(peer.latency)}</span>}
+      </span>
+      <span className="hidden min-w-0 truncate text-[12px] text-dim @[600px]:block">
+        {services.length === 0 ? (
+          <span className="text-dimmer">—</span>
+        ) : (
+          <>
+            {services
+              .slice(0, 2)
+              .map((s) => s.name ?? `:${s.port}`)
+              .join(", ")}
+            {services.length > 2 && <span className="text-dimmer"> +{services.length - 2}</span>}
+          </>
+        )}
+      </span>
+      {/* Narrow: the bars stand in for the whole connection column. */}
+      <span className="flex items-center justify-end @[600px]:hidden">
+        <Signal latency={peer.latency} direct={peer.direct} online={peer.online} />
+      </span>
+      <span className="hidden justify-end opacity-0 transition-opacity group-hover:opacity-100 @[600px]:flex">
+        {peer.online && (
+          <IconButton
+            size="sm"
+            title={`SSH to ${peer.name}`}
+            onClick={() => {
+              onSSH();
+            }}
+          >
+            <Icon.Terminal size={14} />
+          </IconButton>
+        )}
+      </span>
+      {dropTarget && (
+        <span className="pointer-events-none absolute inset-y-0 right-5 flex items-center gap-1.5 text-[12px] font-medium text-ink">
+          <Icon.Send size={14} /> Drop to send
+        </span>
       )}
     </div>
   );
 }
 
-/// This machine: its addresses, what it publishes, and where files land.
-function SelfDetail({ status, env, busy, act }: { status: Status; env: Environment; busy: boolean; act: Act }) {
-  const [port, setPort] = useState("");
+/// The only device on the network: say what to do next rather than show an
+/// empty table.
+function Lonely({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div className="flex flex-col items-center px-8 py-14 text-center">
+      <div className="relative mb-5 h-[54px] w-[132px]">
+        <span className="absolute left-0 top-1/2 flex size-[38px] -translate-y-1/2 items-center justify-center rounded-xl bg-primary text-primary-ink">
+          <Icon.Devices size={18} />
+        </span>
+        <span className="absolute left-[46px] right-[46px] top-1/2 border-t border-dashed border-line-2" />
+        <span className="absolute right-0 top-1/2 flex size-[38px] -translate-y-1/2 items-center justify-center rounded-xl border border-dashed border-line-2 text-dimmer">
+          <Icon.Plus size={16} />
+        </span>
+      </div>
+      <p className="text-[14px] font-medium">Add your next device</p>
+      <p className="mt-1 max-w-[300px] text-[12.5px] leading-relaxed text-dim">
+        Install makima on another computer. It shows fifteen words to type there, and the two can reach each other from then on.
+      </p>
+      <Button className="mt-4" variant="primary" icon={<Icon.Plus size={15} />} onClick={onAdd}>
+        Add device
+      </Button>
+    </div>
+  );
+}
+
+// --- the inspector ---------------------------------------------------------
+
+function Inspector({ children, onClose, highlight }: { children: React.ReactNode; onClose: () => void; highlight?: React.ReactNode }) {
+  return (
+    <aside className="slide-in relative flex w-[316px] shrink-0 flex-col border-l border-line bg-panel">
+      <div className="relative min-h-0 flex-1 space-y-6 overflow-y-auto px-5 pb-8 pt-5">
+        <div className="absolute right-3 top-3.5">
+          <IconButton title="Close (Esc)" onClick={onClose}>
+            <Icon.Close size={15} />
+          </IconButton>
+        </div>
+        {children}
+      </div>
+      {highlight}
+    </aside>
+  );
+}
+
+/// A device's name in the table: the one given here, and — when that is
+/// different — the device's own, quieter, beside it.
+function Name({ name, dim }: { name: string; dim?: boolean }) {
+  const prefs = usePrefs();
+  const label = labelOf(prefs, name);
+  return (
+    <span className="flex min-w-0 items-baseline gap-1.5">
+      <span className={`truncate text-[13px] font-medium ${dim ? "text-dim" : ""}`}>{label}</span>
+      {label !== name && <span className="hidden truncate font-mono text-[11px] text-dimmer @[600px]:inline">{name}</span>}
+    </span>
+  );
+}
+
+function Title({ name, offline, tag, onEdit, children }: { name: string; offline?: boolean; tag?: React.ReactNode; onEdit: () => void; children?: React.ReactNode }) {
+  const prefs = usePrefs();
+  const label = labelOf(prefs, name);
+  return (
+    <div className="pr-8">
+      <button type="button" onClick={onEdit} title="Change the name or picture" className="group relative mb-3 block rounded-full">
+        <Avatar name={name} size={56} offline={offline} />
+        <span className="absolute -bottom-0.5 -right-0.5 flex size-6 items-center justify-center rounded-full border border-line bg-panel text-dim opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
+          <Icon.Pencil size={12} />
+        </span>
+      </button>
+      <div className="flex items-center gap-2">
+        <h2 className="selectable truncate text-[18px] font-semibold tracking-[-0.02em]">{label}</h2>
+        {tag}
+      </div>
+      {label !== name && <div className="selectable mt-0.5 truncate font-mono text-[11.5px] text-dimmer">{name}</div>}
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12.5px] text-dim">{children}</div>
+    </div>
+  );
+}
+
+function Tile({ icon, label, onClick, disabled, busy, title }: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean; busy?: boolean; title?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || busy}
+      title={title}
+      className="flex h-[58px] flex-col items-center justify-center gap-1.5 rounded-[10px] border border-line bg-panel text-[12px] font-medium text-ink-2 transition hover:border-line-2 hover:bg-sunken active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
+    >
+      {busy ? <Spinner className="size-4" /> : icon}
+      {label}
+    </button>
+  );
+}
+
+function KV({ k, children }: { k: string; children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-[34px] items-center justify-between gap-3 border-b border-line py-1.5 last:border-0">
+      <span className="shrink-0 text-[12px] text-dim">{k}</span>
+      <span className="flex min-w-0 flex-1 items-center justify-end text-[12.5px] text-ink">{children}</span>
+    </div>
+  );
+}
+
+/// Another machine: how it is reached, what it offers, and what you can do
+/// with it.
+function PeerInspector({
+  peer,
+  status,
+  busy,
+  act,
+  nav,
+  dragging,
+  sending,
+  onSend,
+  onClose,
+}: {
+  peer: Peer;
+  status: Status;
+  busy: boolean;
+  act: Act;
+  nav: Nav;
+  dragging: boolean;
+  sending: string | null;
+  onSend: (paths: string[]) => void;
+  onClose: () => void;
+}) {
+  const [ping, setPing] = useState<Ping | null>(null);
+  const [pinging, setPinging] = useState(false);
+
+  const direct = ping ? ping.direct : peer.direct;
+  const latency = ping ? (ping.direct ? ping.latency : ping.relay_latency) : peer.latency;
+  const prefs = usePrefs();
+  const label = labelOf(prefs, peer.name);
+  const isExit = status.exit_node === peer.name;
+  const name = fqdn(peer.name, status);
+  const host = name ?? peer.address;
+
+  async function probe() {
+    setPinging(true);
+    try {
+      const p = await api.ping(peer.name);
+      setPing(p);
+      const l = p.direct ? p.latency : p.relay_latency;
+      toast(`${label}: ${p.direct ? "direct" : "via relay"}${l ? `, ${ms(l)}` : ""}`);
+    } catch {
+      toast(`${label} did not answer`, "error");
+    } finally {
+      setPinging(false);
+    }
+  }
+
+  async function pick() {
+    if (!inTauri) {
+      onSend(["/Users/you/Desktop/notes.txt"]);
+      return;
+    }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const chosen = await open({ multiple: true, directory: false, title: `Send to ${label}` });
+    if (chosen) onSend(Array.isArray(chosen) ? chosen : [chosen]);
+  }
+
+  return (
+    <Inspector
+      onClose={onClose}
+      highlight={
+        dragging && peer.online ? (
+          <div className="fade-in pointer-events-none absolute inset-2 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-ink/40 bg-panel/90 backdrop-blur-sm">
+            <Icon.Send size={22} className="text-ink" />
+            <p className="text-[13px] font-medium">Drop to send to {label}</p>
+            <p className="text-[12px] text-dim">It lands in their makima inbox</p>
+          </div>
+        ) : null
+      }
+    >
+      <Title name={peer.name} offline={!peer.online} onEdit={() => nav.edit(peer.name)} tag={isExit ? <Tag tone="ink">Exit</Tag> : undefined}>
+        <Signal latency={latency} direct={direct} online={peer.online} />
+        <span>{peer.online ? (direct ? "Direct" : "Via relay") : "Offline"}</span>
+        {peer.online && latency > 0 && (
+          <>
+            <span className="text-dimmer">·</span>
+            <span className="tabular">{ms(latency)}</span>
+          </>
+        )}
+      </Title>
+
+      <div className="grid grid-cols-3 gap-2">
+        <Tile icon={<Icon.Terminal size={17} />} label="SSH" onClick={() => nav.ssh(peer.name)} disabled={!peer.online} title="Open a shell on it in your terminal" />
+        <Tile icon={<Icon.Send size={17} />} label={sending ? "Sending…" : "Send file"} onClick={pick} disabled={!peer.online} busy={!!sending} title="Or drop a file anywhere on the window" />
+        <Tile icon={<Icon.Pulse size={17} />} label="Ping" onClick={probe} busy={pinging} title="Probe the path to it" />
+      </div>
+
+      <Section title="Addresses">
+        <div>
+          {name && (
+            <KV k="Name">
+              <Copyable value={name} align="end" />
+            </KV>
+          )}
+          <KV k="IPv4">
+            <Copyable value={peer.address} align="end" />
+          </KV>
+          {peer.online && !direct && (ping?.relay_url ?? peer.relay_url) && (
+            <KV k="Relay">
+              <span className="truncate font-mono text-[12px] text-dim">{ping?.relay_url ?? peer.relay_url}</span>
+            </KV>
+          )}
+        </div>
+      </Section>
+
+      {peer.services && peer.services.length > 0 && (
+        <Section title="Services">
+          <div className="-mx-2">
+            {peer.services.map((s) => {
+              const url = s.scheme ? `${s.scheme}://${host}:${s.port}` : null;
+              return (
+                <ServiceLine key={s.port} name={s.name ?? `port ${s.port}`} port={s.port} url={url} address={`${host}:${s.port}`} disabled={!peer.online} />
+              );
+            })}
+          </div>
+        </Section>
+      )}
+
+      {peer.exit_node && (
+        <Section title="Exit node" hint={isExit ? "All of this device's internet traffic goes through it." : "It offers to carry this device's internet traffic."}>
+          <div className="flex items-center justify-between gap-3 rounded-[10px] border border-line px-3 py-2.5">
+            <span className="truncate text-[12.5px]">Route traffic through {label}</span>
+            <Toggle
+              on={isExit}
+              busy={busy}
+              disabled={!peer.online && !isExit}
+              label={`Route traffic through ${label}`}
+              onChange={(next) => act({ kind: "exit-node", name: next ? peer.name : "" })}
+            />
+          </div>
+        </Section>
+      )}
+    </Inspector>
+  );
+}
+
+export function ServiceLine({ name, port, url, address, disabled }: { name: string; port: number; url: string | null; address: string; disabled?: boolean }) {
+  const [copied, copy] = useCopied();
+  return (
+    <div className="group flex h-[38px] items-center gap-2.5 rounded-lg px-2 transition-colors hover:bg-hover">
+      <span className="min-w-0 flex-1 truncate text-[12.5px]">
+        {name} <span className="font-mono text-[11.5px] text-dimmer">:{port}</span>
+      </span>
+      {url ? (
+        <Button size="sm" variant="ghost" icon={<Icon.Open size={14} />} onClick={() => openExternal(url)} disabled={disabled} title={url}>
+          Open
+        </Button>
+      ) : (
+        <Button size="sm" variant="ghost" icon={copied ? <Icon.Check size={14} className="text-ink" /> : <Icon.Copy size={14} />} onClick={() => copy(address, address)} disabled={disabled} title={address}>
+          Copy
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/// This machine: its addresses, what it shares, where files land, and what
+/// it offers the others.
+function SelfInspector({ status, env, busy, act, nav, onClose }: { status: Status; env: Environment; busy: boolean; act: Act; nav: Nav; onClose: () => void }) {
   const services = status.services ?? [];
   const name = fqdn(status.node.name, status);
 
@@ -378,139 +549,119 @@ function SelfDetail({ status, env, busy, act }: { status: Status; env: Environme
         ? `Joined via ${hostOf(status.server)}`
         : "Static network";
 
-  function publish() {
-    const n = Number(port);
-    if (!Number.isInteger(n) || n < 1 || n > 65535) return;
-    act({ kind: "allow", port: n });
-    setPort("");
-  }
-
   const openInbox = () => status.inbox.dir && openFolder(status.inbox.dir);
 
   return (
-    <div className="fade-in space-y-6 px-6 pb-8 pt-5">
-      <div>
-        <Header title={status.node.name} tag="This device" />
-        <StatusLine tone="green">
-          <span>Connected</span>
-          <span className="text-dimmer">·</span>
-          <span>{role}</span>
-          {status.relay.url && (
-            <>
-              <span className="text-dimmer">·</span>
-              <span>Relay {status.relay.connected ? "up" : "down"}</span>
-            </>
-          )}
-        </StatusLine>
+    <Inspector onClose={onClose}>
+      <Title name={status.node.name} onEdit={() => nav.edit(status.node.name)} tag={<Tag>You</Tag>}>
+        <Pulse on className="text-ink" />
+        <span>{role}</span>
+        {status.since && (
+          <>
+            <span className="text-dimmer">·</span>
+            <span>up {uptime(status.since)}</span>
+          </>
+        )}
+      </Title>
+
+      <div className="grid grid-cols-3 gap-2">
+        <Tile icon={<Icon.Plus size={17} />} label="Add device" onClick={nav.add} />
+        <Tile icon={<Icon.Inbox size={17} />} label="Inbox" onClick={openInbox} disabled={!status.inbox.active || !status.inbox.dir} title={status.inbox.dir} />
+        <Tile icon={<Icon.Services size={17} />} label="Share port" onClick={() => nav.page("services")} />
       </div>
 
       <Section title="Addresses">
-        <Card>
-          {name && <Row value={name} caption="Name" mono right={<CopyButton value={name} />} />}
-          <Row value={status.node.address} caption="IPv4" mono right={<CopyButton value={status.node.address} />} />
-        </Card>
+        <div>
+          {name && (
+            <KV k="Name">
+              <Copyable value={name} align="end" />
+            </KV>
+          )}
+          <KV k="IPv4">
+            <Copyable value={status.node.address} align="end" />
+          </KV>
+          <KV k="Interface">
+            <span className="font-mono text-[12px] text-dim">{status.node.interface}</span>
+          </KV>
+        </div>
       </Section>
 
       <Section
-        title="Published from this device"
+        title="Sharing"
         right={
-          <div className="flex items-center gap-1.5">
-            <Input value={port} onChange={(v) => setPort(v.replace(/\D/g, "").slice(0, 5))} placeholder="port" inputMode="numeric" onEnter={publish} className="!h-7 !w-20 text-center" mono />
-            <Button size="sm" onClick={publish} busy={busy} disabled={!port}>
-              Publish
-            </Button>
-          </div>
+          <button type="button" onClick={() => nav.page("services")} className="text-[12px] text-dim hover:text-ink">
+            Manage
+          </button>
         }
       >
-        <Card>
-          {services.length === 0 ? (
-            <p className="px-4 py-4 text-[13px] text-dim">
-              Nothing yet. Anything listening on 127.0.0.1 is published on its own as it starts — a dev server, Ollama, a database.
-            </p>
-          ) : (
-            services.map((s) => (
-              <Row
-                key={s.port}
-                value={
-                  <span className="flex items-center gap-2">
-                    <Dot tone={!s.listening ? "red" : s.target_up ? "green" : "amber"} />
-                    <span>{s.name ?? `port ${s.port}`}</span>
-                    <span className="font-mono text-[12px] text-dim">:{s.port}</span>
-                    {s.auto && <span className="rounded bg-card-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-dim">auto</span>}
-                  </span>
-                }
-                caption={!s.target_up && s.listening ? `${s.target} — nothing is answering behind it` : `→ ${s.target}${s.total ? ` · ${s.total} connection${s.total === 1 ? "" : "s"}` : ""}`}
-                right={
-                  <Button size="sm" busy={busy} onClick={() => act({ kind: "deny", port: s.port })} title="Take this off the network, and keep it off">
-                    Remove
-                  </Button>
-                }
-              />
-            ))
-          )}
-        </Card>
+        {services.length === 0 ? (
+          <p className="text-[12.5px] leading-relaxed text-dim">Nothing yet. Anything listening on localhost is shared on its own as it starts.</p>
+        ) : (
+          <div className="-mx-2">
+            {services.map((s) => (
+              <div key={s.port} className="flex h-[34px] items-center gap-2.5 px-2">
+                <Dot tone={!s.listening ? "red" : s.target_up ? "green" : "amber"} size="sm" />
+                <span className="min-w-0 flex-1 truncate text-[12.5px]">
+                  {s.name ?? `port ${s.port}`} <span className="font-mono text-[11.5px] text-dimmer">:{s.port}</span>
+                </span>
+                {s.total > 0 && <span className="tabular text-[11.5px] text-dimmer">{s.total}</span>}
+              </div>
+            ))}
+          </div>
+        )}
       </Section>
 
       <Section title="Incoming files">
-        <Card>
-          <Row
-            value={status.inbox.active ? status.inbox.dir ?? "On" : "Off"}
-            caption={
-              status.inbox.active
-                ? status.inbox.received > 0
-                  ? `${status.inbox.received} received since connecting`
-                  : "Files other devices send you land here"
-                : "This device does not accept files from other devices"
-            }
-            mono={status.inbox.active}
-            right={
-              status.inbox.active && status.inbox.dir ? (
-                <Button size="sm" icon={<Icon.Folder />} onClick={openInbox}>
-                  Open
-                </Button>
-              ) : undefined
-            }
-          />
-        </Card>
+        <div>
+          <KV k={status.inbox.active ? (status.inbox.received > 0 ? `${status.inbox.received} received` : "Folder") : "Off"}>
+            {status.inbox.active && status.inbox.dir ? (
+              <button type="button" onClick={openInbox} className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-dim transition-colors hover:bg-hover hover:text-ink">
+                <Icon.Folder size={13} />
+                <span className="truncate font-mono text-[12px]">{shortPath(status.inbox.dir)}</span>
+              </button>
+            ) : (
+              <span className="text-dim">Not accepting files</span>
+            )}
+          </KV>
+        </div>
       </Section>
 
-      <Section title="Exit node">
-        <Card>
-          <Row
-            value="Offer this device as an exit node"
-            caption={
-              status.node.advertises_exit
-                ? status.node.exit_approved
-                  ? "Other devices can send all their internet traffic through this one, if they choose to."
-                  : "Offered; waiting for the network to confirm."
-                : "Let other devices browse from here — a laptop on café wifi, through your home connection."
-            }
-            right={
-              <Toggle
-                on={status.node.advertises_exit}
-                busy={busy}
-                label="Offer this device as an exit node"
-                onChange={(next) => act({ kind: "advertise-exit", on: next })}
-              />
-            }
-          />
-        </Card>
+      <Section
+        title="Exit node"
+        hint={
+          status.node.advertises_exit
+            ? status.node.exit_approved
+              ? "Other devices can route their internet traffic through this one."
+              : "Offered; waiting for the network to confirm."
+            : "Let other devices browse from here — a laptop on café wifi, through your home connection."
+        }
+      >
+        <div className="flex items-center justify-between gap-3 rounded-[10px] border border-line px-3 py-2.5">
+          <span className="text-[12.5px]">Offer this device</span>
+          <Toggle on={status.node.advertises_exit} busy={busy} label="Offer this device as an exit node" onChange={(next) => act({ kind: "advertise-exit", on: next })} />
+        </div>
       </Section>
 
       <Section title="SSH">
-        <Card>
-          <Row
-            value={status.ssh.active ? `Built-in server on port ${status.ssh.addr?.split(":").pop() ?? "2222"}` : "Using the system's sshd, if it runs"}
-            caption={
-              status.ssh.active
-                ? `Sessions run as ${status.ssh.user ?? "you"} · ${status.ssh.keys} key${status.ssh.keys === 1 ? "" : "s"} accepted`
-                : "Other devices reach this one with: makima ssh " + status.node.name
-            }
-            right={status.ssh.fingerprint ? <CopyButton value={status.ssh.fingerprint} label="Copy host key fingerprint" /> : undefined}
-          />
-        </Card>
+        <div>
+          <KV k="Server">
+            <span className="text-dim">{status.ssh.active ? `Built in, port ${status.ssh.addr?.split(":").pop() ?? "2222"}` : "System sshd"}</span>
+          </KV>
+          {status.ssh.active && (
+            <KV k="Sessions run as">
+              <span className="text-dim">
+                {status.ssh.user ?? "you"} · {status.ssh.keys} key{status.ssh.keys === 1 ? "" : "s"}
+              </span>
+            </KV>
+          )}
+          {status.ssh.fingerprint && (
+            <KV k="Host key">
+              <Copyable value={status.ssh.fingerprint} display={status.ssh.fingerprint.replace(/^SHA256:/, "").slice(0, 14) + "…"} what="the host key fingerprint" align="end" className="text-dim" />
+            </KV>
+          )}
+        </div>
       </Section>
-    </div>
+    </Inspector>
   );
 }
 
@@ -520,4 +671,20 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+function shortPath(p: string): string {
+  return p.replace(/^\/(Users|home)\/[^/]+/, "~");
+}
+
+/// How long ago an RFC 3339 time was, in the two largest units.
+export function uptime(since: string): string {
+  const s = Math.max(0, (Date.now() - new Date(since).getTime()) / 1000);
+  if (!Number.isFinite(s)) return "";
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${Math.max(1, m)}m`;
 }

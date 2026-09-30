@@ -96,6 +96,12 @@ fn terminals() -> Vec<terminal::Terminal> {
     terminal::installed()
 }
 
+/// A terminal's app icon, as a data: URL.
+#[tauri::command]
+async fn terminal_icon(id: String) -> Option<String> {
+    terminal::icon(&id).await
+}
+
 /// A shell on another device, in a new window of the chosen terminal.
 #[tauri::command]
 async fn open_ssh(terminal: String, peer: String) -> Result<(), String> {
@@ -155,6 +161,7 @@ pub fn run() {
             migrate_run,
             migrate_stop,
             terminals,
+            terminal_icon,
             open_ssh
         ])
         .setup(|app| {
