@@ -618,6 +618,7 @@ func warnIfUnreachable(addr string, port int) {
 	fmt.Println("         prints exactly what to forward.")
 	fmt.Println()
 	fmt.Println("    Every machine learns the name on its own, and the relay rides the same port.")
+	fmt.Println("    makima duck walks through it, and shows what is left.")
 }
 
 // waitForPeers gives the first netmap a moment to land.

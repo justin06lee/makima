@@ -180,6 +180,7 @@ func ddnsStatus(args []string) error {
 		fmt.Println()
 		fmt.Println("to reach this network from anywhere, get a free name at https://www.duckdns.org, then:")
 		fmt.Println("  makima-server ddns set -name NAME")
+		fmt.Println("or let makima duck walk you through it, router and all.")
 		return nil
 	}
 

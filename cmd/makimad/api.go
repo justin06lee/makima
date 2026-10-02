@@ -53,6 +53,7 @@ func (n *node) Status() localapi.Status {
 		Managed:    f.Managed(),
 		Serverless: f.Serverless,
 		Server:     f.LoginServer,
+		ServerURLs: append([]string(nil), f.ControlURLs...),
 		Domain:     f.Domain,
 		ExitNode:   f.ExitNode,
 		Since:      n.startedAt,
