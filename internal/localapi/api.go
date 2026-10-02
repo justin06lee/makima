@@ -203,6 +203,11 @@ type InboxInfo struct {
 	Dir      string `json:"dir,omitempty"`
 	Active   bool   `json:"active"`
 	Received uint64 `json:"received"`
+
+	// Problem is why files are not landing where they were meant to: why
+	// receiving is not running although switched on, or why it fell back
+	// to somewhere other than Downloads.
+	Problem string `json:"problem,omitempty"`
 }
 
 // InboxRequest changes where files land, or switches receiving off.

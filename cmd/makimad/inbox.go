@@ -31,6 +31,16 @@ func defaultInboxDir(o *owner) (string, *drop.Owner) {
 	return filepath.Join(o.Home, "Downloads", "makima"), &drop.Owner{UID: o.UID, GID: o.GID, Home: o.Home}
 }
 
+// fallbackInboxDir is where files land when Downloads is off limits, which
+// on a Mac it is: macOS keeps Downloads from a background service that has
+// not been given Full Disk Access, root or not, and the daemon has nobody at
+// the screen to ask. Directly under the home, which macOS does not guard, and
+// named so that nobody's own ~/makima — a clone of this repository, say —
+// ever receives somebody else's files.
+func fallbackInboxDir(o *owner) string {
+	return filepath.Join(o.Home, "makima-inbox")
+}
+
 // inboxConfig resolves the flags and the stored settings into what the
 // receiver should actually do.
 //
@@ -52,7 +62,14 @@ func (n *node) inboxConfig(opts options) drop.Config {
 
 	own := n.owner()
 	dir, owner := defaultInboxDir(own)
+	fallback := ""
+	if owner != nil {
+		fallback = fallbackInboxDir(own)
+	}
 	if stored != "" {
+		// A directory chosen by hand is the one wanted, and landing files
+		// anywhere else would be a surprise: it works or it says why.
+		fallback = ""
 		dir = stored
 		// A directory chosen by hand may be anywhere, so the ownership guess
 		// no longer applies unless it is under the same user's home.
@@ -65,9 +82,10 @@ func (n *node) inboxConfig(opts options) drop.Config {
 	if opts.inbox != "" {
 		dir = opts.inbox
 		owner = nil
+		fallback = ""
 	}
 
-	return drop.Config{Dir: dir, Owner: owner, MaxSize: opts.maxFile}
+	return drop.Config{Dir: dir, Owner: owner, MaxSize: opts.maxFile, Fallback: fallback}
 }
 
 // isUnder reports whether path sits inside dir.
