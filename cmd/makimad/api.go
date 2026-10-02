@@ -7,10 +7,13 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
@@ -50,6 +53,7 @@ func (n *node) Status() localapi.Status {
 		Managed:    f.Managed(),
 		Serverless: f.Serverless,
 		Server:     f.LoginServer,
+		ServerURLs: append([]string(nil), f.ControlURLs...),
 		Domain:     f.Domain,
 		ExitNode:   f.ExitNode,
 		Since:      n.startedAt,
@@ -144,7 +148,7 @@ func (n *node) Status() localapi.Status {
 
 	if n.inbox != nil {
 		dir, active, received := n.inbox.Status()
-		st.Inbox = localapi.InboxInfo{Dir: dir, Active: active, Received: received}
+		st.Inbox = localapi.InboxInfo{Dir: dir, Active: active, Received: received, Problem: n.inbox.Problem()}
 	}
 
 	if n.ssh != nil {
@@ -436,7 +440,29 @@ func (n *node) Diagnose() localapi.Diagnosis {
 		}
 	}
 
-	// 10. An exit node that was selected but is not usable.
+	// 10. The inbox, not receiving although switched on, or receiving
+	// somewhere other than asked. A sender is told only "refused", by a
+	// machine that knows why and otherwise says so in its log alone.
+	if n.inbox != nil {
+		if why := n.inbox.Problem(); why != "" {
+			_, active, _ := n.inbox.Status()
+			c := localapi.Check{Name: "Inbox", Detail: why}
+			if active {
+				c.OK, c.Warning = true, true
+			} else {
+				c.Detail = "not accepting files from peers: " + why
+				c.Fix = "sudo makima inbox ~/makima-inbox   # or any folder this machine's makima may write to"
+			}
+			if runtime.GOOS == "darwin" && strings.Contains(why, "Downloads") {
+				c.Detail += " — macOS keeps Downloads from background services without Full Disk Access"
+				exe, _ := os.Executable()
+				c.Fix = fmt.Sprintf(`open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"   # add %s, for Downloads`, exe)
+			}
+			add(c)
+		}
+	}
+
+	// 11. An exit node that was selected but is not usable.
 	if exitNode != "" {
 		peer, found := findPeer(peers, exitNode)
 		switch {
@@ -771,15 +797,16 @@ func (n *node) Ping(name string) (localapi.Ping, error) {
 	var peer netmap.Node
 	found := false
 	bare := strings.TrimSuffix(name, "."+n.file.Domain)
-	for _, p := range n.file.Peers {
-		if p.Name == bare || p.Name == name {
-			peer, found = p, true
-			break
-		}
-	}
 	known := make([]string, 0, len(n.file.Peers))
 	for _, p := range n.file.Peers {
 		known = append(known, p.Name)
+	}
+	i := dnsserver.MatchName(known, name)
+	if i < 0 {
+		i = dnsserver.MatchName(known, bare)
+	}
+	if i >= 0 {
+		peer, found = n.file.Peers[i], true
 	}
 	n.mu.Unlock()
 

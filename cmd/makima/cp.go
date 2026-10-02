@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/drop"
 	"github.com/justin06lee/makima/internal/localapi"
 )
@@ -86,19 +87,30 @@ func cpCmd(args []string) error {
 	return nil
 }
 
+// peerNames is every peer's name, in the order status lists them.
+func peerNames(peers []localapi.PeerInfo) []string {
+	names := make([]string, 0, len(peers))
+	for _, p := range peers {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
 // peerAddress resolves a peer name to its mesh address.
 func peerAddress(st localapi.Status, name string) (netip.Addr, error) {
 	bare := strings.TrimSuffix(name, "."+st.Domain)
 
-	known := make([]string, 0, len(st.Peers))
-	for _, p := range st.Peers {
-		if p.Name == bare || p.Name == name {
-			if !p.Online && p.Path == "no path" {
-				fmt.Fprintf(os.Stderr, "note: %s has no working path right now; trying anyway\n", p.Name)
-			}
-			return p.Address, nil
+	known := peerNames(st.Peers)
+	i := dnsserver.MatchName(known, name)
+	if i < 0 {
+		i = dnsserver.MatchName(known, bare)
+	}
+	if i >= 0 {
+		p := st.Peers[i]
+		if !p.Online && p.Path == "no path" {
+			fmt.Fprintf(os.Stderr, "note: %s has no working path right now; trying anyway\n", p.Name)
 		}
-		known = append(known, p.Name)
+		return p.Address, nil
 	}
 
 	// An address typed directly still works, so a machine that has not been
@@ -223,6 +235,13 @@ func inboxCmd(args []string) error {
 		return err
 	}
 	if !st.Inbox.Active {
+		if st.Inbox.Problem != "" {
+			// Switched on and failing: -on would change nothing, and saying
+			// it would send somebody round in a circle.
+			fmt.Printf("Not accepting files: %s\n", st.Inbox.Problem)
+			fmt.Println("Choose a folder makima may write to: makima inbox DIR   ('makima doctor' says more)")
+			return nil
+		}
 		fmt.Println("Not accepting files. 'makima inbox -on' switches it back on.")
 		return nil
 	}
@@ -231,6 +250,9 @@ func inboxCmd(args []string) error {
 		fmt.Printf(" (%d received)", st.Inbox.Received)
 	}
 	fmt.Println()
+	if st.Inbox.Problem != "" {
+		fmt.Printf("  %s ('makima doctor' says how to change that)\n", st.Inbox.Problem)
+	}
 	fmt.Printf("Send one with: makima cp FILE %s:\n", st.Node.Name)
 	return nil
 }

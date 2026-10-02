@@ -34,9 +34,20 @@ type Receiver struct {
 	mu      sync.Mutex
 	ln      net.Listener
 	addr    netip.Addr
-	dir     string
 	maxSize int64
 	owner   *Owner
+
+	// want and fallback are the directories asked for; dir is the one files
+	// actually land in, which is fallback when want turned out off limits.
+	want     string
+	fallback string
+	dir      string
+
+	// problem is why files are not landing where they were meant to: why
+	// the receiver is not running although asked to, or why it fell back.
+	// Kept so status and the doctor can say it, and so the log says it
+	// once rather than on every netmap.
+	problem string
 
 	// root is the inbox directory itself, opened once: files are created
 	// inside it, never by path, so nothing done to the path afterwards — a
@@ -86,6 +97,12 @@ type Config struct {
 
 	// Owner is who new files belong to, or nil to leave them to the daemon.
 	Owner *Owner
+
+	// Fallback is where files land when Dir turns out to be off limits.
+	// macOS keeps Downloads from a background service that has not been
+	// given Full Disk Access, and says so only as "operation not
+	// permitted" — even to root. Empty means no second choice.
+	Fallback string
 }
 
 // Apply binds the receiver to an address and a directory, replacing whatever
@@ -108,17 +125,30 @@ func (r *Receiver) Apply(addr netip.Addr, cfg Config) {
 	r.maxSize = maxSize
 	r.owner = cfg.Owner
 
-	unchanged := r.ln != nil && r.addr == addr && r.dir == cfg.Dir
-	if unchanged {
-		r.mu.Unlock()
+	same := r.ln != nil && r.addr == addr && r.want == cfg.Dir && r.fallback == cfg.Fallback
+	settled := same && r.dir == cfg.Dir
+	r.mu.Unlock()
+	if settled {
 		return
 	}
 
+	// Landing in the fallback: worth a look at whether the place asked for
+	// has been opened up since — Full Disk Access granted — and nothing to
+	// do while it has not.
+	var root *os.Root
+	if same {
+		var err error
+		if root, err = openInbox(cfg.Dir, cfg.Owner); err != nil {
+			return
+		}
+	}
+
+	r.mu.Lock()
 	old, oldRoot := r.ln, r.root
 	r.ln = nil
 	r.root = nil
 	r.addr = addr
-	r.dir = cfg.Dir
+	r.want, r.fallback, r.dir = cfg.Dir, cfg.Fallback, cfg.Dir
 	r.mu.Unlock()
 
 	if old != nil {
@@ -128,29 +158,61 @@ func (r *Receiver) Apply(addr netip.Addr, cfg Config) {
 		oldRoot.Close()
 	}
 	if cfg.Dir == "" || !addr.IsValid() {
+		if root != nil {
+			root.Close()
+		}
+		r.note("")
 		return
 	}
 
-	root, err := openInbox(cfg.Dir, cfg.Owner)
-	if err != nil {
-		r.log.Printf("inbox %s: %v", cfg.Dir, err)
-		return
+	dir, problem := cfg.Dir, ""
+	if root == nil {
+		var err error
+		root, err = openInbox(cfg.Dir, cfg.Owner)
+		if err != nil && cfg.Fallback != "" && errors.Is(err, fs.ErrPermission) {
+			if fb, ferr := openInbox(cfg.Fallback, cfg.Owner); ferr == nil {
+				why := err
+				if pe := (*fs.PathError)(nil); errors.As(err, &pe) {
+					why = pe.Err
+				}
+				problem = fmt.Sprintf("%s is off limits (%v), so files land in %s instead", cfg.Dir, why, cfg.Fallback)
+				root, dir, err = fb, cfg.Fallback, nil
+			}
+		}
+		if err != nil {
+			r.note(fmt.Sprintf("cannot open %s: %v", cfg.Dir, err))
+			return
+		}
 	}
 
 	ln, err := net.Listen("tcp", net.JoinHostPort(addr.String(), fmt.Sprint(Port)))
 	if err != nil {
 		root.Close()
-		r.log.Printf("inbox: %v", err)
+		r.note(err.Error())
 		return
 	}
 
 	r.mu.Lock()
 	r.ln = ln
 	r.root = root
+	r.dir = dir
 	r.mu.Unlock()
+	r.note(problem)
 
-	r.log.Printf("inbox %s — peers can send files here", cfg.Dir)
+	r.log.Printf("inbox %s — peers can send files here", dir)
 	go r.accept(ln)
+}
+
+// note records why files are not landing where they were meant to, and logs
+// it when that changes.
+func (r *Receiver) note(problem string) {
+	r.mu.Lock()
+	changed := r.problem != problem
+	r.problem = problem
+	r.mu.Unlock()
+	if changed && problem != "" {
+		r.log.Printf("inbox: %s", problem)
+	}
 }
 
 // Close stops receiving.
@@ -162,6 +224,7 @@ func (r *Receiver) Close() {
 	ln, root := r.ln, r.root
 	r.ln = nil
 	r.root = nil
+	r.problem = ""
 	r.mu.Unlock()
 
 	if ln != nil {
@@ -278,6 +341,15 @@ func (r *Receiver) Status() (dir string, active bool, received uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.dir, r.ln != nil, r.received
+}
+
+// Problem is why files are not landing where they were meant to — why the
+// receiver is not running although asked to, or why it fell back — and empty
+// when they are.
+func (r *Receiver) Problem() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.problem
 }
 
 func (r *Receiver) accept(ln net.Listener) {
