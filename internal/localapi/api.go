@@ -105,6 +105,11 @@ type Status struct {
 	// ServerVersion is the release the control plane runs, as it last said.
 	ServerVersion string `json:"server_version,omitempty"`
 
+	// ServerURLs are the control plane's other addresses, as it last named
+	// them: a DuckDNS name among them once one is set, which is how a
+	// machine that is not the server can tell.
+	ServerURLs []string `json:"server_urls,omitempty"`
+
 	// Lock is the network lock as this machine holds it, nil when it has
 	// never been shown one.
 	Lock *LockInfo `json:"lock,omitempty"`
