@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/sshd"
 )
@@ -298,13 +299,12 @@ func resolvePeer(name string) (string, error) {
 	}
 
 	bare := strings.TrimSuffix(name, "."+st.Domain)
-	for _, p := range st.Peers {
-		if p.Name == bare {
-			if !p.Online {
-				fmt.Fprintf(os.Stderr, "note: %s is not currently reachable on the mesh\n", bare)
-			}
-			return p.Address.String(), nil
+	if i := dnsserver.MatchName(peerNames(st.Peers), bare); i >= 0 {
+		p := st.Peers[i]
+		if !p.Online {
+			fmt.Fprintf(os.Stderr, "note: %s is not currently reachable on the mesh\n", p.Name)
 		}
+		return p.Address.String(), nil
 	}
 
 	var names []string

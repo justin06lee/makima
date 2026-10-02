@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/drop"
 	"github.com/justin06lee/makima/internal/localapi"
 )
@@ -86,19 +87,30 @@ func cpCmd(args []string) error {
 	return nil
 }
 
+// peerNames is every peer's name, in the order status lists them.
+func peerNames(peers []localapi.PeerInfo) []string {
+	names := make([]string, 0, len(peers))
+	for _, p := range peers {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
 // peerAddress resolves a peer name to its mesh address.
 func peerAddress(st localapi.Status, name string) (netip.Addr, error) {
 	bare := strings.TrimSuffix(name, "."+st.Domain)
 
-	known := make([]string, 0, len(st.Peers))
-	for _, p := range st.Peers {
-		if p.Name == bare || p.Name == name {
-			if !p.Online && p.Path == "no path" {
-				fmt.Fprintf(os.Stderr, "note: %s has no working path right now; trying anyway\n", p.Name)
-			}
-			return p.Address, nil
+	known := peerNames(st.Peers)
+	i := dnsserver.MatchName(known, name)
+	if i < 0 {
+		i = dnsserver.MatchName(known, bare)
+	}
+	if i >= 0 {
+		p := st.Peers[i]
+		if !p.Online && p.Path == "no path" {
+			fmt.Fprintf(os.Stderr, "note: %s has no working path right now; trying anyway\n", p.Name)
 		}
-		known = append(known, p.Name)
+		return p.Address, nil
 	}
 
 	// An address typed directly still works, so a machine that has not been

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/conf"
+	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/localapi"
@@ -795,15 +796,16 @@ func (n *node) Ping(name string) (localapi.Ping, error) {
 	var peer netmap.Node
 	found := false
 	bare := strings.TrimSuffix(name, "."+n.file.Domain)
-	for _, p := range n.file.Peers {
-		if p.Name == bare || p.Name == name {
-			peer, found = p, true
-			break
-		}
-	}
 	known := make([]string, 0, len(n.file.Peers))
 	for _, p := range n.file.Peers {
 		known = append(known, p.Name)
+	}
+	i := dnsserver.MatchName(known, name)
+	if i < 0 {
+		i = dnsserver.MatchName(known, bare)
+	}
+	if i >= 0 {
+		peer, found = n.file.Peers[i], true
 	}
 	n.mu.Unlock()
 

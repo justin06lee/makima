@@ -16,6 +16,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/conf"
 	"github.com/justin06lee/makima/internal/control"
+	"github.com/justin06lee/makima/internal/dnsserver"
 	"github.com/justin06lee/makima/internal/hostaddr"
 	"github.com/justin06lee/makima/internal/invite"
 	"github.com/justin06lee/makima/internal/key"
@@ -320,10 +321,21 @@ func checkInvite(raw string) (invite.Invite, error) {
 	return inv, nil
 }
 
+// machineName is the name a machine joins under when it is given none: its
+// hostname, less the ".local" a Mac adds when no network has named it. That
+// suffix is Bonjour's, and kept it made the mesh name "name-local".
+func machineName() (string, error) {
+	h, err := os.Hostname()
+	if err != nil {
+		return "", err
+	}
+	return dnsserver.TrimLocal(h), nil
+}
+
 // joinWith joins the mesh an invite describes, then brings the tunnel up.
 func joinWith(ctx context.Context, path string, inv invite.Invite, name string) error {
 	if name == "" {
-		h, err := os.Hostname()
+		h, err := machineName()
 		if err != nil {
 			return fmt.Errorf("no -name given and the hostname is unreadable: %w", err)
 		}
