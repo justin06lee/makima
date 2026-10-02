@@ -74,7 +74,7 @@ func tryCmd(args []string) error {
 	}
 
 	if *name == "" {
-		if h, err := os.Hostname(); err == nil {
+		if h, err := machineName(); err == nil {
 			*name = h
 		} else {
 			*name = "somebody"
