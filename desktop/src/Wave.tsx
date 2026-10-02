@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react";
 
 // A line with a sharp, jagged pulse running along it from one end to the
-// other, as part of the line itself: traffic, going somewhere. It leaves one
-// end, swells, and dies away into the line before the other end. The same
-// shape, small and still, says "connected" beside this device's name.
+// other, as part of the line itself: traffic, going somewhere. The pulse
+// keeps its size and its pace the whole way; only the line's two ends are
+// held straight, so the pulse rises out of the line at one end and irons
+// flat into it at the other, spike by spike, front first. The same shape,
+// small and still, says "connected" beside this device's name.
 
 /// The pulse, left to right, as [x, y] with y from -1 (up) to 1 (down): a
 /// small lift, then the big swings, then settling back to the line.
@@ -20,25 +22,34 @@ const SHAPE: [number, number][] = [
   [1, 0],
 ];
 
+/// How far the line stands off straight at `x` along a line `width` long:
+/// not at all at either end, fully once `reach` in from it, eased between.
+/// Each point of the pulse is lifted by this where it is, so a spike
+/// flattens as it gets to the end, not the whole pulse at once.
+function lift(x: number, width: number, reach: number): number {
+  const d = Math.min(x, width - x) / reach;
+  return d <= 0 ? 0 : d >= 1 ? 1 : d * d * (3 - 2 * d);
+}
+
 const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 function path(width: number, mid: number, amp: number, pulse: number, at: number): string {
-  let d = `M0 ${mid} L${at.toFixed(2)} ${mid}`;
-  for (const [x, y] of SHAPE) d += ` L${(at + x * pulse).toFixed(2)} ${(mid + y * amp).toFixed(2)}`;
-  return d + ` L${width} ${mid}`;
+  // How far in from each end the line is held straight: half the pulse's
+  // length, so its front spikes are flat while the ones behind are still
+  // whole. Any longer and the pulse seems to shrink; any shorter and it
+  // seems to hit a wall.
+  const reach = Math.min(pulse * 0.5, width * 0.3);
+  let d = `M${Math.min(0, at).toFixed(2)} ${mid}`;
+  for (const [x, y] of SHAPE) {
+    const px = at + x * pulse;
+    d += ` L${px.toFixed(2)} ${(mid + y * amp * lift(px, width, reach)).toFixed(2)}`;
+  }
+  return d + ` L${Math.max(width, at + pulse).toFixed(2)} ${mid}`;
 }
 
-/// How big the pulse is `e` of the way along (0 to 1): nothing at either
-/// end, swelling fast to full size about a quarter of the way, then dying
-/// away slowly, so it fades into the line rather than hitting the end.
-const RISE = 0.3;
-const FALL = 0.9;
-const PEAK = RISE / (RISE + FALL);
-const size = (e: number) => (e <= 0 || e >= 1 ? 0 : (e / PEAK) ** RISE * ((1 - e) / (1 - PEAK)) ** FALL);
-
-/// The share of each period the pulse spends travelling; the rest is flat
+/// The share of each period the pulse spends crossing; the rest is plain
 /// line, so each pulse reads as one going out.
-const TRAVEL = 0.8;
+const TRAVEL = 0.85;
 
 /// Travelling: fills its container's width, one pulse crossing every
 /// `period` ms. Still (`live` off, or reduced motion): the pulse parked in
@@ -86,16 +97,9 @@ export function Wave({
     const tick = (t: number) => {
       const w = width();
       const f = ((t - start) % period) / (period * TRAVEL);
-      if (f >= 1) {
-        p.setAttribute("d", `M0 ${mid} L${w} ${mid}`);
-      } else {
-        // Half steady, half eased, so it leaves gently and slows as it fades.
-        const e = 0.5 * f + 0.25 * (1 - Math.cos(Math.PI * f));
-        const k = size(e);
-        // It narrows as it shrinks, and always ends inside the line.
-        const span = pulse * (0.25 + 0.75 * k);
-        p.setAttribute("d", path(w, mid, amp * k, span, e * (w - span)));
-      }
+      // From wholly past the left end to wholly past the right, at one pace;
+      // both ends are straight, so it is never cut off by the edge.
+      p.setAttribute("d", f >= 1 ? `M0 ${mid} L${w} ${mid}` : path(w, mid, amp, pulse, -pulse + f * (w + pulse)));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
