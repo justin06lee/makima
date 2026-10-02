@@ -38,7 +38,7 @@ func Send(peer netip.Addr, path, from string, progress func(sent, total int64)) 
 	addr := net.JoinHostPort(peer.String(), fmt.Sprint(Port))
 	c, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s is not accepting files (is its daemon running, and receiving switched on?)", ErrRefused, peer)
+		return "", fmt.Errorf("%w: %s is not accepting files (is its daemon running? 'makima inbox' on it says why not)", ErrRefused, peer)
 	}
 	defer c.Close()
 

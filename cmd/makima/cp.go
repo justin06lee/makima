@@ -223,6 +223,13 @@ func inboxCmd(args []string) error {
 		return err
 	}
 	if !st.Inbox.Active {
+		if st.Inbox.Problem != "" {
+			// Switched on and failing: -on would change nothing, and saying
+			// it would send somebody round in a circle.
+			fmt.Printf("Not accepting files: %s\n", st.Inbox.Problem)
+			fmt.Println("Choose a folder makima may write to: makima inbox DIR   ('makima doctor' says more)")
+			return nil
+		}
 		fmt.Println("Not accepting files. 'makima inbox -on' switches it back on.")
 		return nil
 	}
@@ -231,6 +238,9 @@ func inboxCmd(args []string) error {
 		fmt.Printf(" (%d received)", st.Inbox.Received)
 	}
 	fmt.Println()
+	if st.Inbox.Problem != "" {
+		fmt.Printf("  %s ('makima doctor' says how to change that)\n", st.Inbox.Problem)
+	}
 	fmt.Printf("Send one with: makima cp FILE %s:\n", st.Node.Name)
 	return nil
 }

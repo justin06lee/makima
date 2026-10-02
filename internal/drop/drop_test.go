@@ -545,3 +545,91 @@ func TestConcurrentAppliesAgree(t *testing.T) {
 		t.Errorf("the receiver says %s and wrote to %s", dir, filepath.Dir(landed))
 	}
 }
+
+// offLimits makes home/Downloads a folder the daemon may not write in — the
+// way macOS keeps Downloads from a background service without Full Disk
+// Access — and returns a way to lift that.
+func offLimits(t *testing.T, home string) (lift func()) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through any mode, so a folder cannot be put off limits")
+	}
+	downloads := filepath.Join(home, "Downloads")
+	if err := os.Mkdir(downloads, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	lift = func() { os.Chmod(downloads, 0o700) }
+	t.Cleanup(lift)
+	return lift
+}
+
+// A Downloads folder the daemon may not write in leaves files landing in the
+// fallback, and says so, rather than turning every sender away with nothing
+// on this machine to say why.
+func TestADownloadsFolderOffLimitsFallsBack(t *testing.T) {
+	home := t.TempDir()
+	offLimits(t, home)
+	want := filepath.Join(home, "Downloads", "makima")
+	fallback := filepath.Join(home, "makima-inbox")
+
+	addr, dir, r := receiver(t, Config{Dir: want, Owner: me(home), Fallback: fallback})
+	if dir != fallback {
+		t.Fatalf("files land in %s, want the fallback %s", dir, fallback)
+	}
+	if p := r.Problem(); !strings.Contains(p, want) || !strings.Contains(p, fallback) {
+		t.Errorf("the problem does not say what was refused and where files go instead: %q", p)
+	}
+
+	landed, err := Send(addr, writeFile(t, "notes.txt", "from a peer"), "laptop", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(landed) != fallback {
+		t.Errorf("landed in %s, want %s", filepath.Dir(landed), fallback)
+	}
+}
+
+// Once the place asked for opens up — Full Disk Access granted — the next
+// Apply moves there, without a restart.
+func TestAFallbackMovesBackWhenDownloadsOpensUp(t *testing.T) {
+	home := t.TempDir()
+	lift := offLimits(t, home)
+	want := filepath.Join(home, "Downloads", "makima")
+	cfg := Config{Dir: want, Owner: me(home), Fallback: filepath.Join(home, "makima-inbox")}
+
+	_, _, r := receiver(t, cfg)
+	lift()
+	r.Apply(netip.MustParseAddr("127.0.0.1"), cfg)
+
+	if dir, active, _ := r.Status(); !active || dir != want {
+		t.Errorf("after Downloads opened up: dir %s, active %v; want %s", dir, active, want)
+	}
+	if p := r.Problem(); p != "" {
+		t.Errorf("a problem is still reported: %q", p)
+	}
+}
+
+// Without a fallback the inbox stays shut, and says why — once in the log,
+// not on every netmap.
+func TestAnInboxThatCannotOpenSaysWhyOnce(t *testing.T) {
+	home := t.TempDir()
+	offLimits(t, home)
+
+	var logged strings.Builder
+	r := New(log.New(&logged, "", 0))
+	t.Cleanup(r.Close)
+	cfg := Config{Dir: filepath.Join(home, "Downloads", "makima"), Owner: me(home)}
+	for range 3 {
+		r.Apply(netip.MustParseAddr("127.0.0.1"), cfg)
+	}
+
+	if _, active, _ := r.Status(); active {
+		t.Fatal("the inbox opened in a folder it may not write in")
+	}
+	if p := r.Problem(); !strings.Contains(p, "cannot open") {
+		t.Errorf("the problem does not say the inbox could not open: %q", p)
+	}
+	if n := strings.Count(logged.String(), "inbox:"); n != 1 {
+		t.Errorf("the reason was logged %d times over three applies, want once:\n%s", n, logged.String())
+	}
+}
