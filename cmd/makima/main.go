@@ -292,7 +292,7 @@ func joinNode(args []string) error {
 		return fmt.Errorf("join needs -server and -authkey")
 	}
 	if *name == "" {
-		h, err := os.Hostname()
+		h, err := machineName()
 		if err != nil {
 			return fmt.Errorf("no -name given and the hostname is unreadable: %w", err)
 		}

@@ -367,3 +367,83 @@ func TestALongNameStillGetsAWorkingLabel(t *testing.T) {
 		t.Errorf("100.64.0.9 reverses to %q, want %s.makima", got, label)
 	}
 }
+
+// A Mac whose hostname still carried Bonjour's ".local" when it joined keeps
+// answering to the label it always had, and to the name its owner types.
+func TestAMacsBonjourNameAnswersBareToo(t *testing.T) {
+	s := &Server{}
+	s.SetRecords("makima",
+		netmap.Node{Name: "laptop", Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.1/32")}},
+		[]netmap.Node{
+			{Name: "Huiyuns-MacBook-Air-3.local", Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.2/32")}},
+		})
+
+	for _, name := range []string{"huiyuns-macbook-air-3-local.makima", "huiyuns-macbook-air-3.makima"} {
+		resp, err := s.respond(askFor(name, typeA))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rcode(resp) != rcodeNoError || answerCount(resp) != 1 {
+			t.Errorf("%s: rcode %d, %d answers; want one", name, rcode(resp), answerCount(resp))
+			continue
+		}
+		if got := firstAnswerA(t, resp); got.String() != "100.64.0.2" {
+			t.Errorf("%s resolved to %s", name, got)
+		}
+	}
+}
+
+// The bare name is only an alias: a machine actually called that keeps it.
+func TestABonjourAliasNeverTakesAnotherMachinesName(t *testing.T) {
+	s := &Server{}
+	s.SetRecords("makima",
+		netmap.Node{Name: "studio", Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.1/32")}},
+		[]netmap.Node{
+			{Name: "studio.local", Addresses: []netip.Prefix{netip.MustParsePrefix("100.64.0.2/32")}},
+		})
+
+	resp, err := s.respond(askFor("studio.makima", typeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := firstAnswerA(t, resp); got.String() != "100.64.0.1" {
+		t.Errorf("studio.makima resolved to %s, the alias's machine, not studio's", got)
+	}
+}
+
+func TestTrimLocal(t *testing.T) {
+	for in, want := range map[string]string{
+		"Huiyuns-MacBook-Air-3.local": "Huiyuns-MacBook-Air-3",
+		"studio.LOCAL":                "studio",
+		"tenet":                       "tenet",
+		".local":                      ".local",
+		"build-local":                 "build-local",
+	} {
+		if got := TrimLocal(in); got != want {
+			t.Errorf("TrimLocal(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Every way somebody writes a machine's name finds it, and a closer spelling
+// always beats a looser one.
+func TestMatchName(t *testing.T) {
+	names := []string{"tenet", "Huiyuns-MacBook-Air-3.local", "build", "build-local"}
+	for typed, want := range map[string]int{
+		"tenet":                       0,
+		"TENET":                       0,
+		"Huiyuns-MacBook-Air-3.local": 1,
+		"huiyuns-macbook-air-3-local": 1,
+		"huiyuns-macbook-air-3":       1,
+		"Huiyuns MacBook Air 3":       1,
+		"build":                       2,
+		"build-local":                 3,
+		"build.local":                 3,
+		"desktop":                     -1,
+		"":                            -1,
+	} {
+		if got := MatchName(names, typed); got != want {
+			t.Errorf("MatchName(%q) = %d, want %d", typed, got, want)
+		}
+	}
+}

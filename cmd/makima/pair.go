@@ -205,7 +205,7 @@ func ensureServerless(path, name, relayURL, relayKey string) error {
 // mesh entirely.
 func initServerless(path, name, relayURL, relayKey string) error {
 	if name == "" {
-		h, err := os.Hostname()
+		h, err := machineName()
 		if err != nil {
 			return fmt.Errorf("no -name given and the hostname is unreadable: %w", err)
 		}

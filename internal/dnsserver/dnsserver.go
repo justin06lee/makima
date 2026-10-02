@@ -133,6 +133,12 @@ func (s *Server) SetRecords(domain string, self netmap.Node, peers []netmap.Node
 	forward := make(map[string]netip.Addr, len(peers)+1)
 	reverse := make(map[netip.Addr]string, len(peers)+1)
 
+	type alias struct {
+		name string
+		addr netip.Addr
+	}
+	var aliases []alias
+
 	add := func(n netmap.Node) {
 		addr, err := n.Addr()
 		if err != nil {
@@ -144,6 +150,9 @@ func (s *Server) SetRecords(domain string, self netmap.Node, peers []netmap.Node
 		name := normaliseName(n.Name)
 		if name == "" {
 			return
+		}
+		if bare := TrimLocal(n.Name); bare != n.Name {
+			aliases = append(aliases, alias{normaliseName(bare), addr})
 		}
 		// Last writer wins, in both directions. Two nodes cannot share an
 		// address, so a collision in the reverse map means a stale record,
@@ -159,6 +168,16 @@ func (s *Server) SetRecords(domain string, self netmap.Node, peers []netmap.Node
 	add(self)
 	for _, p := range peers {
 		add(p)
+	}
+
+	// A Mac that joined with Bonjour's ".local" still in its hostname keeps
+	// the label it has always answered to, "name-local", and answers to the
+	// plain name too — the one its owner types — unless another machine
+	// already does. Forward only: the reverse answer stays the one label.
+	for _, a := range aliases {
+		if _, taken := forward[a.name]; !taken && a.name != "" {
+			forward[a.name] = a.addr
+		}
 	}
 
 	// A reverse answer is only given for a name that resolves back to the
@@ -446,6 +465,47 @@ func stripDomain(name, domain string) (string, bool) {
 // Label is the DNS label a node's name answers to: the name a lookup has to
 // ask for, as SetRecords serves it.
 func Label(name string) string { return normaliseName(name) }
+
+// TrimLocal drops a trailing ".local": Bonjour's suffix, which a Mac's
+// hostname carries whenever no network has given it a name of its own. It
+// says how the machine is found on a LAN, not what it is called, and kept in
+// a machine's name it comes out as "name-local" — a name nobody would guess.
+func TrimLocal(name string) string {
+	const suffix = ".local"
+	if len(name) > len(suffix) && strings.EqualFold(name[len(name)-len(suffix):], suffix) {
+		return name[:len(name)-len(suffix)]
+	}
+	return name
+}
+
+// MatchName finds the machine a typed name means among names as registered,
+// and returns its index, or -1.
+//
+// The registered name wins, then any spelling with the same DNS label —
+// "Huiyuns-MacBook-Air-3.local" and "huiyuns-macbook-air-3-local" are one
+// machine — then the same without Bonjour's ".local", which a Mac carries in
+// its hostname and its owner leaves off. Each rule is tried across every name
+// before the next, so a machine really called "build-local" is never taken
+// for "build" while a "build" exists.
+func MatchName(names []string, typed string) int {
+	rules := []func(string) string{
+		func(s string) string { return s },
+		Label,
+		func(s string) string { return strings.TrimSuffix(Label(s), "-local") },
+	}
+	for _, key := range rules {
+		want := key(typed)
+		if want == "" {
+			continue
+		}
+		for i, n := range names {
+			if key(n) == want {
+				return i
+			}
+		}
+	}
+	return -1
+}
 
 // normaliseName renders a node name as a DNS label.
 //
