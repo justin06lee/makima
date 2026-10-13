@@ -28,6 +28,7 @@ type Service struct {
 
 // Phases of publishing an onion service, in order.
 const (
+	PhaseOff          = "off"           // not publishing, on purpose
 	PhaseNotInstalled = "not-installed" // no tor binary on this machine
 	PhaseStarting     = "starting"      // starting tor
 	PhaseConnecting   = "connecting"    // tor is joining the network

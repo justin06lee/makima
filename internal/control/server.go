@@ -42,8 +42,8 @@ type Server struct {
 	// them. See SetTrustedProxies.
 	proxies clientip.Proxies
 
-	// listenPort is the port this server answers on, which a DuckDNS name is
-	// assumed to be forwarded to unless told otherwise.
+	// listenPort is the port this server answers on, which invites name for
+	// machines on the same network as it.
 	listenPort int
 }
 

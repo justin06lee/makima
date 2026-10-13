@@ -33,6 +33,7 @@ import (
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/relay"
+	"github.com/justin06lee/makima/internal/tor"
 	"github.com/justin06lee/makima/internal/update"
 )
 
@@ -70,8 +71,8 @@ func main() {
 		err = relayCmd(os.Args[2:])
 	case "urls":
 		err = urlsCmd(os.Args[2:])
-	case "ddns":
-		err = ddnsCmd(os.Args[2:])
+	case "tor":
+		err = torCmd(os.Args[2:])
 	case "routes":
 		err = routesCmd(os.Args[2:])
 	case "acl":
@@ -107,7 +108,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `makima-server — the coordination plane for a makima mesh
 
 running it:
-  makima-server serve   [-addr :PORT] [-no-relay] [-trusted-proxies CIDR,...]
+  makima-server serve   [-addr :PORT] [-no-relay] [-no-tor] [-trusted-proxies CIDR,...]
   makima-server key
 
 admitting machines:
@@ -121,9 +122,7 @@ keeping every machine current:
   makima-server update [vX.Y.Z]     move every machine to the latest release, or that one
 
 reaching this server from anywhere:
-  makima-server ddns set     -name NAME [-token T]   a free NAME.duckdns.org, kept pointed here
-  makima-server ddns                                 how that is going
-  makima-server ddns off
+  makima-server tor                                  its onion address, and whether tor has published it
   makima-server urls add     -url http://NAME:PORT   another address nodes can use
   makima-server urls ls
   makima-server urls rm      -url http://NAME:PORT
@@ -159,6 +158,7 @@ func serve(args []string) error {
 	socketPath := fs.String("socket", "", "admin socket path (default: beside the state file)")
 	addr := fs.String("addr", "", "address to listen on (default: the port this network's server has always used, or for a new one :8080 or the next free port)")
 	noRelay := fs.Bool("no-relay", false, "do not carry a relay on this port")
+	noTor := fs.Bool("no-tor", false, "do not publish this server as an onion service, so it is reachable only where this machine is")
 	trusted := fs.String("trusted-proxies", clientip.Loopback.String(),
 		"reverse proxies believed about whom they forward for (X-Forwarded-For), as addresses or prefixes; empty trusts none")
 	if err := fs.Parse(args); err != nil {
@@ -235,8 +235,33 @@ func serve(args []string) error {
 	ctx, stopForUpdate := context.WithCancel(ctx)
 	defer stopForUpdate()
 
-	go control.RunDDNS(ctx, store, log.Default())
 	go control.RunPresence(ctx, store)
+
+	// The onion service: this server reached from anywhere, through tor.
+	var onionSrv *http.Server
+	if *noTor {
+		if err := store.ClearOnion(); err != nil {
+			return err
+		}
+		store.NoteTor(tor.ServiceState{Phase: tor.PhaseOff, Since: time.Now()})
+	} else {
+		onionLn, onionHandler, err := startOnion(ctx, store, *statePath, handlers.Handler())
+		if err != nil {
+			return err
+		}
+		if onionLn != nil {
+			onionSrv = &http.Server{
+				Handler:           onionHandler,
+				ReadHeaderTimeout: srv.ReadHeaderTimeout,
+				IdleTimeout:       srv.IdleTimeout,
+			}
+			go func() {
+				if err := onionSrv.Serve(onionLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Printf("onion listener: %v", err)
+				}
+			}()
+		}
+	}
 
 	// An update swaps this binary on disk; the node daemon on this machine
 	// does that, and restarts itself, but this is a separate process. So it
@@ -261,6 +286,9 @@ func serve(args []string) error {
 		defer cancel()
 		if srv.Shutdown(shutdownCtx) != nil {
 			_ = srv.Close()
+		}
+		if onionSrv != nil && onionSrv.Shutdown(shutdownCtx) != nil {
+			_ = onionSrv.Close()
 		}
 		_ = adminSrv.Shutdown(shutdownCtx)
 	}()

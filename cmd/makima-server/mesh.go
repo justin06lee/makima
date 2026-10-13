@@ -199,7 +199,7 @@ func urlsCmd(args []string) error {
 func changeURL(args []string, add bool) error {
 	verb := map[bool]string{true: "urls add", false: "urls rm"}[add]
 	af := newAdminFlags(verb)
-	u := af.fs.String("url", "", "an address this server answers at, e.g. http://tenet.duckdns.org:PORT")
+	u := af.fs.String("url", "", "an address this server answers at, e.g. https://makima.example.dev")
 	t, err := af.open(args)
 	if err != nil {
 		return err
@@ -253,9 +253,9 @@ func listURLs(args []string) error {
 	}
 	if len(urls) == 0 {
 		fmt.Print("nodes know this server only by the address they joined through.\n\n")
-		fmt.Print("to reach it from outside this network, give it a public address and add it:\n")
-		fmt.Print("  makima-server ddns set -name NAME -token TOKEN   # a free NAME.duckdns.org, kept current\n")
-		fmt.Printf("  makima-server urls add -url http://HOST:%-5d    # or any address you already have\n", t.port(*af.state))
+		fmt.Print("with tor installed, the server publishes an onion address every node uses away\n")
+		fmt.Print("from here (see makima-server tor). An address of your own works too:\n")
+		fmt.Printf("  makima-server urls add -url http://HOST:%d\n", t.port(*af.state))
 		return nil
 	}
 	for _, u := range urls {

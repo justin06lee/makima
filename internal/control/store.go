@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +23,7 @@ import (
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/policy"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // State is everything the control plane knows, and the whole of what must
@@ -57,10 +61,11 @@ type State struct {
 	// to every node so it can fall back to them. See MapResponse.ControlURLs.
 	ControlURLs []string `json:"control_urls,omitempty"`
 
-	// DDNS is a DuckDNS name kept pointed at this server. Its URL is one of
-	// ControlURLs. The token lives here, in a file only root can read, beside
-	// the server's own private key.
-	DDNS *DDNS `json:"ddns,omitempty"`
+	// LegacyDDNS is the DuckDNS name an older makima kept pointed at this
+	// server, read only so its address can be dropped from ControlURLs when
+	// the state is opened. The onion service replaced it, and the token goes
+	// with it on the next save.
+	LegacyDDNS *legacyDDNS `json:"ddns,omitempty"`
 
 	// Domain is the DNS suffix mesh names live under.
 	Domain string `json:"domain,omitempty"`
@@ -225,10 +230,9 @@ type Store struct {
 	// as long as the process serving it does.
 	builtinRelay netmap.Relay
 
-	// ddnsKick asks RunDDNS to refresh now, and ddnsStatus is what its last
-	// refresh found. Neither is persisted.
-	ddnsKick   chan struct{}
-	ddnsStatus DDNSStatus
+	// torState is how publishing this server's onion service is going. Not
+	// persisted. See NoteTor.
+	torState tor.ServiceState
 
 	// serverVersion is the release this server runs, handed to every node.
 	serverVersion string
@@ -249,10 +253,9 @@ var DefaultPrefix = netip.MustParsePrefix("10.77.0.0/16")
 // identity — on first run.
 func OpenStore(path string) (*Store, error) {
 	s := &Store{
-		path:     path,
-		version:  uint64(time.Now().UnixMicro()),
-		changed:  make(chan struct{}),
-		ddnsKick: make(chan struct{}, 1),
+		path:    path,
+		version: uint64(time.Now().UnixMicro()),
+		changed: make(chan struct{}),
 	}
 
 	b, err := os.ReadFile(path)
@@ -288,7 +291,38 @@ func OpenStore(path string) (*Store, error) {
 	if s.state.NextID == 0 {
 		s.state.NextID = 1
 	}
+	if s.state.LegacyDDNS != nil {
+		if err := s.dropLegacyDDNS(); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// legacyDDNS is the DuckDNS setting as an older makima wrote it.
+type legacyDDNS struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
+	Port  int    `json:"port,omitempty"`
+}
+
+// url is the address the older makima handed every node for it.
+func (d *legacyDDNS) url() string {
+	host := d.Name + ".duckdns.org"
+	if d.Port == 0 || d.Port == 80 {
+		return "http://" + host
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(d.Port))
+}
+
+// dropLegacyDDNS forgets a DuckDNS name an older makima kept current: nothing
+// keeps it pointed here any more, so every node would be told an address that
+// drifts away from this server the next time the home connection's changes.
+func (s *Store) dropLegacyDDNS() error {
+	old := s.state.LegacyDDNS.url()
+	s.state.ControlURLs = slices.DeleteFunc(s.state.ControlURLs, func(u string) bool { return u == old })
+	s.state.LegacyDDNS = nil
+	return s.save()
 }
 
 // save writes state durably. Callers must hold the lock.

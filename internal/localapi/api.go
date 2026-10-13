@@ -106,8 +106,9 @@ type Status struct {
 	ServerVersion string `json:"server_version,omitempty"`
 
 	// ServerURLs are the control plane's other addresses, as it last named
-	// them: a DuckDNS name among them once one is set, which is how a
-	// machine that is not the server can tell.
+	// them: its onion address among them once tor has it, which is how a
+	// machine that is not the server can tell the network is reachable from
+	// anywhere.
 	ServerURLs []string `json:"server_urls,omitempty"`
 
 	// Lock is the network lock as this machine holds it, nil when it has

@@ -82,8 +82,6 @@ func main() {
 		err = migrateCmd(os.Args[2:])
 	case "update", "upgrade":
 		err = updateCmd(os.Args[2:])
-	case "duck":
-		err = duckCmd(os.Args[2:])
 
 	case "genkey":
 		err = genkey(os.Args[2:])
@@ -149,8 +147,6 @@ getting started:
   makima down                      stop, and put this machine back
   makima reset                     leave the network, and delete everything
                                    makima keeps here, to start over
-  makima duck                      reach it from anywhere, not just from home:
-                                   a free DuckDNS name, step by step
 
 coming from Tailscale:
   makima migrate                   move every machine on your tailnet to makima

@@ -103,14 +103,14 @@ func TestEveryAddressFailingIsReported(t *testing.T) {
 func TestSetAlternatesKeepsTheAddressInUse(t *testing.T) {
 	k, _ := key.NewPrivate()
 	c := NewClient("http://192.168.1.20:8080", k.Public(), k)
-	c.SetAlternates([]string{"http://tenet.duckdns.org:8080"})
+	c.SetAlternates([]string{"http://home.example.net:8080"})
 	c.cur = 1
 
-	c.SetAlternates([]string{"https://makima.example.dev", "http://tenet.duckdns.org:8080/"})
-	if got := c.BaseURL(); got != "http://tenet.duckdns.org:8080" {
+	c.SetAlternates([]string{"https://makima.example.dev", "http://home.example.net:8080/"})
+	if got := c.BaseURL(); got != "http://home.example.net:8080" {
 		t.Errorf("in use: %s, want it unchanged", got)
 	}
-	want := []string{"http://192.168.1.20:8080", "https://makima.example.dev", "http://tenet.duckdns.org:8080"}
+	want := []string{"http://192.168.1.20:8080", "https://makima.example.dev", "http://home.example.net:8080"}
 	if !slices.Equal(c.urls, want) {
 		t.Errorf("urls = %v, want %v", c.urls, want)
 	}
@@ -130,7 +130,7 @@ func TestControlURLsReachEveryNode(t *testing.T) {
 	mk, _ := joinNamed(t, store, "laptop")
 	before := store.Version()
 
-	if err := store.AddControlURL("tenet.duckdns.org:8080"); err != nil {
+	if err := store.AddControlURL("home.example.net:8080"); err != nil {
 		t.Fatal(err)
 	}
 	if store.Version() == before {
@@ -141,11 +141,11 @@ func TestControlURLsReachEveryNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(m.ControlURLs, []string{"http://tenet.duckdns.org:8080"}) {
+	if !slices.Equal(m.ControlURLs, []string{"http://home.example.net:8080"}) {
 		t.Errorf("control URLs = %v", m.ControlURLs)
 	}
 
-	if err := store.RemoveControlURL("http://tenet.duckdns.org:8080/"); err != nil {
+	if err := store.RemoveControlURL("http://home.example.net:8080/"); err != nil {
 		t.Fatal(err)
 	}
 	m, _ = store.NetMapFor(mk.Public())
@@ -156,10 +156,10 @@ func TestControlURLsReachEveryNode(t *testing.T) {
 
 func TestNormalizeControlURL(t *testing.T) {
 	good := map[string]string{
-		"tenet.duckdns.org:8080":         "http://tenet.duckdns.org:8080",
-		"http://tenet.duckdns.org:8080/": "http://tenet.duckdns.org:8080",
-		"https://makima.example.dev":     "https://makima.example.dev",
-		" 107.214.144.123:8080 ":         "http://107.214.144.123:8080",
+		"home.example.net:8080":         "http://home.example.net:8080",
+		"http://home.example.net:8080/": "http://home.example.net:8080",
+		"https://makima.example.dev":    "https://makima.example.dev",
+		" 107.214.144.123:8080 ":        "http://107.214.144.123:8080",
 	}
 	for in, want := range good {
 		got, err := NormalizeControlURL(in)
