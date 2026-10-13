@@ -157,3 +157,22 @@ func saveKey(path string, k Key) error {
 	}
 	return os.Rename(tmp.Name(), path)
 }
+
+// OnionHost is the onion address of an ed25519 public key.
+func OnionHost(pub ed25519.PublicKey) string { return hostOf(pub) }
+
+// ParseOnion reads an onion address back into the public key it was made
+// from, refusing one whose checksum or version is wrong — a mistyped address
+// fails here rather than as a minute of tor failing to find it.
+func ParseOnion(host string) (ed25519.PublicKey, error) {
+	label := strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(host), "."), ".onion")
+	b, err := base32.StdEncoding.DecodeString(strings.ToUpper(label))
+	if err != nil || len(b) != ed25519.PublicKeySize+3 {
+		return nil, fmt.Errorf("%q is not an onion address", host)
+	}
+	pub := ed25519.PublicKey(b[:ed25519.PublicKeySize])
+	if b[len(b)-1] != onionVersion || hostOf(pub) != label+".onion" {
+		return nil, fmt.Errorf("%q is not a valid onion address — a character is wrong", host)
+	}
+	return pub, nil
+}

@@ -173,3 +173,17 @@ func TestNormalizeControlURL(t *testing.T) {
 		}
 	}
 }
+
+// After a network change the client goes back to the address it joined
+// through, which on the home network answers again — and far faster than the
+// onion address it fell back to while away.
+func TestRehomeTriesTheFirstAddressAgain(t *testing.T) {
+	k, _ := key.NewPrivate()
+	c := NewClient("http://192.168.1.20:8080", k.Public(), k)
+	c.SetAlternates([]string{"http://aoqqpp7tzyil4hlq3umoos6atft6jvrqtosq2xy53sdgiesvgg4bqead.onion"})
+	c.cur = 1
+	c.Rehome()
+	if got := c.BaseURL(); got != "http://192.168.1.20:8080" {
+		t.Errorf("after Rehome the client uses %s", got)
+	}
+}

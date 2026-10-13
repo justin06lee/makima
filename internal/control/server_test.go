@@ -51,7 +51,7 @@ func joinClient(t *testing.T, store *Store, url, name, authKey string) (*Client,
 func TestFetchServerKeyMatches(t *testing.T) {
 	store, url := testMesh(t)
 
-	got, err := FetchServerKey(context.Background(), url)
+	got, err := FetchServerKey(context.Background(), nil, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestFetchServerKeyVerifiedByInvite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := FetchServerKeyVerified(context.Background(), url, handle, macKey)
+	got, err := FetchServerKeyVerified(context.Background(), nil, url, handle, macKey)
 	if err != nil {
 		t.Fatalf("verified fetch: %v", err)
 	}
@@ -246,16 +246,16 @@ func TestFetchServerKeyVerifiedByInvite(t *testing.T) {
 	}
 
 	// The wrong words: the MAC does not verify.
-	if _, err := FetchServerKeyVerified(context.Background(), url, handle, []byte("somebody else's mac key material")); err == nil {
+	if _, err := FetchServerKeyVerified(context.Background(), nil, url, handle, []byte("somebody else's mac key material")); err == nil {
 		t.Fatal("a key verified under the wrong MAC key")
 	}
 	// An unknown handle is refused by the server, and the reason is legible.
-	_, err = FetchServerKeyVerified(context.Background(), url, "no-such-handle", macKey)
+	_, err = FetchServerKeyVerified(context.Background(), nil, url, "no-such-handle", macKey)
 	if err == nil || !strings.Contains(err.Error(), "does not know") {
 		t.Fatalf("unknown handle: %v", err)
 	}
 	// The plain fetch still works, without a MAC.
-	if _, err := FetchServerKey(context.Background(), url); err != nil {
+	if _, err := FetchServerKey(context.Background(), nil, url); err != nil {
 		t.Fatal(err)
 	}
 }

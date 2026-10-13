@@ -31,6 +31,7 @@ import (
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/serve"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // GUISocketPath is a second socket, beside the first, for a desktop app.
@@ -110,6 +111,15 @@ type Status struct {
 	// machine that is not the server can tell the network is reachable from
 	// anywhere.
 	ServerURLs []string `json:"server_urls,omitempty"`
+
+	// ServerInUse is the address the control plane is being reached at right
+	// now: Server at home, the onion address away from it.
+	ServerInUse string `json:"server_in_use,omitempty"`
+
+	// Tor is how this machine's tor is doing, nil while it has never been
+	// needed. It carries the control plane's traffic only when ServerInUse is
+	// an onion address.
+	Tor *tor.Status `json:"tor,omitempty"`
 
 	// Lock is the network lock as this machine holds it, nil when it has
 	// never been shown one.

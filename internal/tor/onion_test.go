@@ -3,6 +3,7 @@ package tor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +79,30 @@ func TestBrokenKeyFileIsNotReplaced(t *testing.T) {
 	// file that does not parse is a problem to report, not to paper over.
 	if _, err := LoadKey(path); err == nil {
 		t.Fatal("a short seed loaded")
+	}
+}
+
+func TestParseOnionRoundTrips(t *testing.T) {
+	pub, err := ParseOnion(fixedHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if OnionHost(pub) != fixedHost {
+		t.Errorf("round trip gave %s", OnionHost(pub))
+	}
+	if _, err := ParseOnion(strings.ToUpper(fixedHost)); err != nil {
+		t.Errorf("upper case: %v", err)
+	}
+}
+
+func TestParseOnionCatchesATypo(t *testing.T) {
+	typo := "b" + fixedHost[1:]
+	if _, err := ParseOnion(typo); err == nil {
+		t.Errorf("%s parsed", typo)
+	}
+	for _, bad := range []string{"", "example.com", "abc.onion", fixedHost[:20] + ".onion"} {
+		if _, err := ParseOnion(bad); err == nil {
+			t.Errorf("%q parsed", bad)
+		}
 	}
 }

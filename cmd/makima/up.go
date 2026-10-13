@@ -507,6 +507,7 @@ func mintInvite(admin *control.AdminClient, serverURL string, serverKey key.Publ
 		AuthKey:   ak.Secret,
 		ServerKey: serverKey,
 		Expires:   time.Now().Add(inviteTTL),
+		Onion:     serverOnion(admin),
 	})
 }
 
@@ -525,8 +526,15 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 	// Words carry no server key. Fetch one, and refuse it unless the server
 	// can vouch for it under the words — see invite.EncodeWords for why that
 	// is as good as having carried it.
+	//
+	// At the address the invite names first — on the holding machine's own
+	// network, usually, and fast — and then, from anywhere else, at its
+	// onion address, through tor.
+	urls := inviteURLs(inv.Server, inv.Onion)
+	b, stopTor := onionBinder(nodeTorDir(path))
+	defer stopTor()
 	if handle, macKey, ok := inv.Verifier(); ok && inv.ServerKey.IsZero() {
-		k, err := control.FetchServerKeyVerified(ctx, inv.Server, handle, macKey)
+		k, err := fetchKeyVerified(ctx, b, urls, handle, macKey)
 		if err != nil {
 			return err
 		}
@@ -538,7 +546,9 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 		return err
 	}
 
-	client := control.NewClient(inv.Server, inv.ServerKey, machineKey)
+	client := control.NewClient(urls[0], inv.ServerKey, machineKey)
+	client.SetBinder(b)
+	client.SetAlternates(urls[1:])
 	resp, err := client.Register(ctx, &control.RegisterRequest{
 		Name:      name,
 		NodeKey:   nodeKey.Public(),
@@ -555,9 +565,13 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 		MachineKey:  machineKey,
 		DiscoKey:    discoKey,
 		ListenPort:  listenPort,
-		LoginServer: strings.TrimRight(inv.Server, "/"),
+		LoginServer: urls[0],
 		ServerKey:   inv.ServerKey,
 		AuthKey:     inv.AuthKey,
+		// The onion address goes in now, not with the first netmap: a machine
+		// that joined from somewhere else has to reach the server that way to
+		// get its first netmap at all.
+		ControlURLs: urls[1:],
 		Self: netmap.Node{
 			ID:        resp.NodeID,
 			Name:      name,

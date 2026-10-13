@@ -20,6 +20,7 @@ import (
 
 	"github.com/justin06lee/makima/internal/bypass"
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // clientTimeout must exceed pollTimeout, or every long poll is cancelled by
@@ -115,14 +116,29 @@ func (c *Client) SetAlternates(alts []string) {
 	c.cur = max(slices.Index(urls, current), 0)
 }
 
+// Rehome goes back to the address the node joined through, the next time
+// one is needed.
+//
+// For a network change: the address in use was the one that answered on the
+// old network — the onion address, from a café — and the one the node joined
+// through is usually the home network's, which answers again, and far faster,
+// once the laptop is back.
+func (c *Client) Rehome() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cur = 0
+}
+
 // FetchServerKey retrieves the control plane's public key.
 //
 // Only for bootstrapping a node whose invitation did not pin one. Trusting the
 // network for this single round trip is a real, if narrow, exposure: whoever
 // answers becomes the control plane. Pin the key in the join command when the
 // server is reachable over anything you do not control.
-func FetchServerKey(ctx context.Context, baseURL string) (key.Public, error) {
-	kr, err := fetchKey(ctx, baseURL, "")
+//
+// b says how to dial, an onion address included; nil dials directly.
+func FetchServerKey(ctx context.Context, b *bypass.Binder, baseURL string) (key.Public, error) {
+	kr, err := fetchKey(ctx, b, baseURL, "")
 	if err != nil {
 		return key.Public{}, err
 	}
@@ -135,8 +151,8 @@ func FetchServerKey(ctx context.Context, baseURL string) (key.Public, error) {
 // This is the words' answer to the question the mk1_ string answered by
 // carrying the key: a machine in the middle can hand over any key it likes,
 // but it cannot produce a MAC under a key it has never seen.
-func FetchServerKeyVerified(ctx context.Context, baseURL, handle string, macKey []byte) (key.Public, error) {
-	kr, err := fetchKey(ctx, baseURL, handle)
+func FetchServerKeyVerified(ctx context.Context, b *bypass.Binder, baseURL, handle string, macKey []byte) (key.Public, error) {
+	kr, err := fetchKey(ctx, b, baseURL, handle)
 	if err != nil {
 		return key.Public{}, err
 	}
@@ -148,7 +164,7 @@ func FetchServerKeyVerified(ctx context.Context, baseURL, handle string, macKey 
 	return kr.ServerKey, nil
 }
 
-func fetchKey(ctx context.Context, baseURL, handle string) (keyResponse, error) {
+func fetchKey(ctx context.Context, b *bypass.Binder, baseURL, handle string) (keyResponse, error) {
 	u, err := url.JoinPath(strings.TrimRight(baseURL, "/"), "key")
 	if err != nil {
 		return keyResponse{}, fmt.Errorf("build key URL: %w", err)
@@ -162,7 +178,20 @@ func fetchKey(ctx context.Context, baseURL, handle string) (keyResponse, error) 
 		return keyResponse{}, err
 	}
 
-	c := &http.Client{Timeout: 15 * time.Second}
+	// An onion address is found and connected to through tor, which can
+	// take most of a minute the first time; anything else either answers in
+	// seconds or is not going to.
+	timeout := 15 * time.Second
+	if tor.IsOnion(req.URL.Host) {
+		timeout = tor.ConnectTimeout
+	}
+	d := &net.Dialer{Timeout: dialTimeout}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return b.DialContext(ctx, d, network, address)
+	}
+	c := &http.Client{Timeout: timeout, Transport: t}
+	defer c.CloseIdleConnections()
 	resp, err := c.Do(req)
 	if err != nil {
 		return keyResponse{}, fmt.Errorf("reach control server: %w", err)

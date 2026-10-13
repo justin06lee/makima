@@ -50,13 +50,14 @@ func (n *node) Status() localapi.Status {
 			AdvertisedRoutes: f.AdvertiseRoutes,
 			AdvertisesExit:   f.AdvertiseExit,
 		},
-		Managed:    f.Managed(),
-		Serverless: f.Serverless,
-		Server:     f.LoginServer,
-		ServerURLs: append([]string(nil), f.ControlURLs...),
-		Domain:     f.Domain,
-		ExitNode:   f.ExitNode,
-		Since:      n.startedAt,
+		Managed:     f.Managed(),
+		Serverless:  f.Serverless,
+		Server:      f.LoginServer,
+		ServerURLs:  append([]string(nil), f.ControlURLs...),
+		ServerInUse: n.controlURL(),
+		Domain:      f.Domain,
+		ExitNode:    f.ExitNode,
+		Since:       n.startedAt,
 	}
 	if o := n.ownerLocked(); o != nil {
 		st.Owner = o.Name
@@ -112,6 +113,13 @@ func (n *node) Status() localapi.Status {
 	// Taken outside n.mu: setUpdateStatus holds updMu and then kicks the
 	// poll, and the two locks are never held together.
 	st.Update = n.updateStatus()
+
+	// Outside n.mu as well: asking tor how it is doing is a round trip to it.
+	if n.tor != nil {
+		if ts := n.tor.Status(); ts.Running || ts.Error != "" {
+			st.Tor = &ts
+		}
+	}
 
 	// Path state lives in the socket, not the config, and is keyed by node key
 	// rather than name.

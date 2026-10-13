@@ -20,6 +20,7 @@ import (
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/supervise"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // resetCmd puts makima on this machine back the way a fresh install leaves
@@ -209,7 +210,8 @@ func operatorDir() string {
 const inboxName = "inbox"
 
 // nodeFiles is what makima keeps of this machine's own: its config and the
-// copies of it an upgrade left, the daemon's sockets, and the update record.
+// copies of it an upgrade left, the daemon's sockets, the update record, and
+// its tor's directory.
 func (p resetPaths) nodeFiles() []string {
 	if p.wholeDir {
 		return existing(filepath.Dir(p.config))
@@ -228,6 +230,9 @@ func (p resetPaths) nodeFiles() []string {
 		if fi, err := os.Lstat(sock); err == nil && fi.Mode()&fs.ModeSocket != 0 {
 			out = append(out, sock)
 		}
+	}
+	if fi, err := os.Lstat(nodeTorDir(p.config)); err == nil && fi.IsDir() {
+		out = append(out, nodeTorDir(p.config))
 	}
 	return out
 }
@@ -535,7 +540,17 @@ func (r *resetState) leave(ctx context.Context) {
 	n := r.node
 	c := control.NewClient(n.LoginServer, n.ServerKey, n.MachineKey)
 	c.SetAlternates(n.ControlURLs)
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// Away from home the server is reached through tor, in the daemon's own
+	// tor directory — the daemon is stopped by now — which is far slower than
+	// the LAN, so it is given the time tor needs.
+	b, stopTor := onionBinder(nodeTorDir(r.paths.config))
+	defer stopTor()
+	c.SetBinder(b)
+	wait := 20 * time.Second
+	if slices.ContainsFunc(n.ControlURLs, func(u string) bool { return tor.IsOnion(hostOfURL(u)) }) {
+		wait = tor.ConnectTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
 	forget := "makima-server forget -name " + strconv.Quote(n.Self.Name)

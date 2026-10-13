@@ -425,7 +425,7 @@ func probeServer(ctx context.Context, server string) error {
 		return fmt.Errorf("%s does not answer on TCP %s — its firewall is probably dropping it; allow TCP %s there", host, port, port)
 	}
 	c.Close()
-	if _, err := control.FetchServerKey(ctx, server); err != nil {
+	if _, err := control.FetchServerKey(ctx, nil, server); err != nil {
 		return fmt.Errorf("%s answers, but not as a makima server", net.JoinHostPort(host, port))
 	}
 	return nil

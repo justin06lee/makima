@@ -315,7 +315,7 @@ func joinNode(args []string) error {
 	} else {
 		// Trust-on-first-use. Fine on a network you control, and the reason
 		// -serverkey exists for one you do not.
-		k, err := control.FetchServerKey(ctx, *server)
+		k, err := control.FetchServerKey(ctx, nil, *server)
 		if err != nil {
 			return err
 		}

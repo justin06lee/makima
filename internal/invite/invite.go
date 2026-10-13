@@ -18,6 +18,7 @@
 package invite
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // Prefix marks a string as an invite.
@@ -59,11 +61,26 @@ type Invite struct {
 	// differ, so nobody has to wonder whether they pasted a stale one.
 	Nonce string `json:"n,omitempty"`
 
+	// Onion is the control plane's onion address, "<56 letters>.onion":
+	// where the joining machine reaches it when Server — usually an address
+	// on the holding machine's own network — does not answer, because the
+	// machine joining is somewhere else. Carried as the key it is made from
+	// (see wire), which is shorter, and checked on the way back.
+	Onion string `json:"-"`
+
 	// handle and macKey are set when the invite came as words, which carry
 	// no server key: the joining machine fetches one and checks it against
 	// the MAC the server produces under macKey. Never serialised.
 	handle string
 	macKey []byte
+}
+
+// wire is an invite as it is encoded: the onion address goes as its 32-byte
+// key, 43 characters of base64 rather than 62 of address, which keeps an
+// invite that works from anywhere short enough to paste in one go.
+type wire struct {
+	Invite
+	OnionKey string `json:"o,omitempty"`
 }
 
 // FromWords turns decoded words into an invite with everything but the
@@ -128,7 +145,16 @@ func Encode(inv Invite) (string, error) {
 		inv.Expires = inv.Expires.Truncate(time.Second)
 	}
 
-	payload, err := json.Marshal(inv)
+	w := wire{Invite: inv}
+	if inv.Onion != "" {
+		pub, err := tor.ParseOnion(inv.Onion)
+		if err != nil {
+			return "", fmt.Errorf("invite: %w", err)
+		}
+		w.OnionKey = base64.RawURLEncoding.EncodeToString(pub)
+	}
+
+	payload, err := json.Marshal(w)
 	if err != nil {
 		return "", fmt.Errorf("invite: encode: %w", err)
 	}
@@ -159,9 +185,17 @@ func Decode(s string) (Invite, error) {
 		return Invite{}, errors.New("invite: damaged — it was probably cut short or line-wrapped in transit")
 	}
 
-	var inv Invite
-	if err := json.Unmarshal(raw, &inv); err != nil {
+	var w wire
+	if err := json.Unmarshal(raw, &w); err != nil {
 		return Invite{}, errors.New("invite: damaged — it was probably cut short or line-wrapped in transit")
+	}
+	inv := w.Invite
+	if w.OnionKey != "" {
+		pub, err := base64.RawURLEncoding.DecodeString(w.OnionKey)
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			return Invite{}, errors.New("invite: damaged — its onion address is not a key")
+		}
+		inv.Onion = tor.OnionHost(pub)
 	}
 	if inv.Server == "" || inv.AuthKey == "" || inv.ServerKey.IsZero() {
 		return Invite{}, errors.New("invite: incomplete — mint a fresh one with 'makima invite'")
