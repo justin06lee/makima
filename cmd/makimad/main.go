@@ -541,6 +541,9 @@ func (n *node) register(ctx context.Context) error {
 		Services:        n.advertisedServicesLocked(),
 		Version:         version,
 	}
+	if o := n.ownerLocked(); o != nil {
+		req.Owner = o.Name
+	}
 	nodeKey, discoKey := n.file.NodeKey, n.file.DiscoKey
 	n.mu.Unlock()
 

@@ -456,10 +456,27 @@ makima possess desktop     # the same command
 
 Sugar over `ssh desktop.makima`, which has always worked — `sshd` listens on
 every address, so a peer is reachable the moment the tunnel is up. What this
-removes is having to remember the suffix, and the account: with no `user@` and
-no `User` in your ssh config for it, it logs in as you when your keys open that
-account, and as root when that is what they open instead — which is where a
-move from Tailscale puts them on a server.
+removes is having to remember the suffix, and the account. With no `user@` and
+no `User` in your ssh config for it, it logs in as the far machine's owner —
+the account makima belongs to there, which every machine tells the rest of the
+network — when your keys open that account; as you, or as root, when that is
+what they open instead, root being where a move from Tailscale puts them on a
+server.
+
+When no key of yours opens anything there, ssh asks for a password, and
+`makima ssh` first says whose: the owner's, not an account named after you,
+which on a machine set up under another name does not exist and has no
+password that could ever be right. `makima ssh NAME@desktop` asks for another.
+A machine that takes no ssh at all says so, and how to switch it on.
+
+Host keys are remembered per machine, not per address. Addresses are handed
+out again — a network started over gives `10.77.0.1` to whichever machine holds
+it now — and ssh, which files keys by address, would call that machine an
+impostor. `makima ssh` files them under the machine's node key instead
+(`makima-…` in `~/.ssh/known_hosts`) and takes one on first sight, since the
+tunnel only delivers that address from the machine holding that key; a host
+key that changes while the machine stays the same is still the warning it
+always was. Plain `ssh 10.77.0.1` keeps ssh's own filing, and its warnings.
 
 The app's **SSH** button runs the same command, in a new window of your
 terminal. The first time there is more than one — Ghostty, Alacritty, kitty,
@@ -539,7 +556,11 @@ it, it opens a second, read-only one for **one account** — the machine's owner
 That account is what the desktop app reads, what lets `makima ping`, `makima
 cp` and `makima inbox` run from a shell without sudo, and whose
 `Downloads/makima` files from peers land in. It is also the account an incoming
-`makima possess` lands on when the other end names none. (`makima status` and
+`makima possess` lands on when the other end names none: its name is passed to
+the rest of the network, which is how the other machines know who to log in as
+here. A network without a server — machines paired directly — does not carry
+it yet, so there `makima possess` names the account it asks a password for
+instead. (`makima status` and
 `makima doctor` ask for root regardless: they read the config file, which holds
 this node's private keys.)
 

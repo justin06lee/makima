@@ -97,6 +97,8 @@ func (n *node) Status() localapi.Status {
 			Path:     "no path",
 			Version:  p.Version,
 			Update:   p.Update,
+			Key:      p.Key,
+			Owner:    p.Owner,
 		}
 		for _, r := range p.AllowedIPs {
 			if !netmap.IsDefaultHalf(r) {

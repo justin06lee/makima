@@ -66,6 +66,11 @@ type RegisterRequest struct {
 
 	// Version is the makima release this node runs.
 	Version string `json:"version,omitempty"`
+
+	// Owner is the account on this machine that makima belongs to, which the
+	// rest of the network logs in as by default. A server from before this
+	// field ignores it, as it ignores any it does not know.
+	Owner string `json:"owner,omitempty"`
 }
 
 // RegisterResponse is the server's answer to a join.

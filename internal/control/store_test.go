@@ -434,3 +434,49 @@ func TestANameCannotRewriteTheTerminal(t *testing.T) {
 		t.Errorf("registered as %q", n.Name)
 	}
 }
+
+// A machine's owner reaches every other machine's netmap, where `makima ssh`
+// logs in as it — and one that could not be an account's name does not.
+func TestTheOwnerReachesThePeers(t *testing.T) {
+	s := newStore(t)
+	a, _ := s.MintAuthKey(true, time.Hour)
+	mk := mustKey(t)
+	if _, err := s.Register(mk, &RegisterRequest{
+		Name: "mac", NodeKey: mustKey(t), DiscoKey: mustKey(t), AuthKey: a.Secret, Owner: "huiyunlee",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	other := mustKey(t)
+	if _, err := s.Register(other, &RegisterRequest{
+		Name: "midna", NodeKey: mustKey(t), DiscoKey: mustKey(t), AuthKey: a.Secret, Owner: "-oProxyCommand=sh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	owners := func(viewer key.Public) map[string]string {
+		resp, err := s.NetMapFor(viewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, p := range resp.Peers {
+			out[p.Name] = p.Owner
+		}
+		return out
+	}
+	if got := owners(other)["mac"]; got != "huiyunlee" {
+		t.Errorf("midna sees mac's owner as %q", got)
+	}
+	if got := owners(mk)["midna"]; got != "" {
+		t.Errorf("an owner that is no name was passed on: %q", got)
+	}
+
+	// Re-registering without one — a daemon that has lost track — keeps the
+	// last good answer rather than forgetting it.
+	if _, err := s.Register(mk, &RegisterRequest{Name: "mac", NodeKey: mustKey(t), DiscoKey: mustKey(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := owners(other)["mac"]; got != "huiyunlee" {
+		t.Errorf("after re-registering, mac's owner is %q", got)
+	}
+}
