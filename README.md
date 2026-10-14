@@ -463,10 +463,11 @@ network — when your keys open that account; as you, or as root, when that is
 what they open instead, root being where a move from Tailscale puts them on a
 server.
 
-When no key of yours opens anything there, ssh asks for a password, and
-`makima ssh` first says whose: the owner's, not an account named after you,
-which on a machine set up under another name does not exist and has no
-password that could ever be right. `makima ssh NAME@desktop` asks for another.
+When no key of yours opens anything there, it asks for the owner's password,
+and the prompt says only that — `huiyunlee's password:`, makima asking on
+ssh's behalf so that no address or ID is in it. Not for an account named after
+you, which on a machine set up under another name does not exist and has no
+password that could ever be right; `makima ssh NAME@desktop` asks for another.
 A machine that takes no ssh at all says so, and how to switch it on.
 
 Host keys are remembered per machine, not per address. Addresses are handed

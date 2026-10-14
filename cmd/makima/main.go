@@ -28,6 +28,11 @@ import (
 var version = "dev"
 
 func main() {
+	// ssh asking for a password, through makima: see askpass.go.
+	if isAskpass() {
+		os.Exit(askpass(os.Args[1]))
+	}
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)

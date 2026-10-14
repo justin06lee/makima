@@ -42,9 +42,9 @@ func names(as []sshd.Account) []string {
 }
 
 // The Jetson asking for a shell on the Mac with no key there: the password
-// asked for is the Mac's owner's, and it says so before ssh asks. It used to
-// be the Jetson's own account name, which does not exist on the Mac, so every
-// password was wrong.
+// asked for is the Mac's owner's, and the prompt — "huiyunlee's password:" —
+// is all that is said. It used to be the Jetson's own account name, which
+// does not exist on the Mac, so every password was wrong.
 func TestNoKeyAsksForTheFarEndOwnersPassword(t *testing.T) {
 	f := fakeFarEnd{
 		ports:    map[int]reach{sshd.DefaultPort: reachRefused, 22: reachOpen},
@@ -58,8 +58,8 @@ func TestNoKeyAsksForTheFarEndOwnersPassword(t *testing.T) {
 	if r.password != "huiyunlee" {
 		t.Errorf("asks for %q's password, want the owner's", r.password)
 	}
-	if !strings.Contains(r.note, "huiyunlee") || !strings.Contains(r.note, "NAME@mac") {
-		t.Errorf("the note does not name the account, or how to name another:\n%s", r.note)
+	if r.note != "" {
+		t.Errorf("said more than the prompt does: %q", r.note)
 	}
 	if got, _ := pickAccount("mac", r, f.sshUser); got != "huiyunlee" {
 		t.Errorf("logs in as %q", got)
@@ -216,7 +216,8 @@ func TestHostKeysAreFiledUnderTheMachine(t *testing.T) {
 
 	x := sshProber{p: farEnd{addr: "10.77.0.1", key: k}}
 	opts := strings.Join(x.options(0), " ")
-	if !strings.Contains(opts, "HostKeyAlias="+a) || !strings.Contains(opts, "StrictHostKeyChecking=accept-new") {
+	if !strings.Contains(opts, "HostKeyAlias="+a) || !strings.Contains(opts, "StrictHostKeyChecking=accept-new") ||
+		!strings.Contains(opts, "LogLevel=ERROR") {
 		t.Errorf("options %q", opts)
 	}
 	// With no key to go on — an older daemon — ssh's own filing stands.
@@ -235,5 +236,23 @@ func TestAnOwnerThatIsNoNameIsDropped(t *testing.T) {
 	}
 	if p := peerFrom(localapi.PeerInfo{Owner: "huiyunlee"}); p.owner != "huiyunlee" {
 		t.Errorf("dropped a good owner")
+	}
+}
+
+// ssh's prompt names the machine by its host-key alias, which reads like an
+// ID; what is asked is only whose password it is.
+func TestThePasswordPromptNamesOnlyTheAccount(t *testing.T) {
+	for in, want := range map[string]string{
+		"huiyunlee@makima-3f9a1c0e5b2d7a64's password: ":                        "huiyunlee's password: ",
+		"midna@10.77.0.1's password: ":                                          "midna's password: ",
+		"(huiyunlee@makima-3f9a1c0e5b2d7a64) Password:":                         "huiyunlee's password: ",
+		"(midna@10.77.0.1) Password: ":                                          "midna's password: ",
+		"(midna@10.77.0.1) Verification code:":                                  "Verification code: ",
+		"Enter passphrase for key '/Users/h/.ssh/id_ed25519': ":                 "Enter passphrase for key '/Users/h/.ssh/id_ed25519': ",
+		"Are you sure you want to continue connecting (yes/no/[fingerprint])? ": "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+	} {
+		if got := plainPrompt(in); got != want {
+			t.Errorf("plainPrompt(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
