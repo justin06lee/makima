@@ -24,6 +24,13 @@ const stamp = (c: (typeof CHARACTERS)[number]) => `${c.url}#${c.crop.join(",")}`
 const STAMPS = join(OUT, "sources.json");
 const made: Record<string, string> = existsSync(STAMPS) ? JSON.parse(readFileSync(STAMPS, "utf8")) : {};
 
+// A published release is built without them: it is a public download, and
+// these are somebody else's pages. The release workflow sets this.
+if (process.env.MAKIMA_NO_AVATARS) {
+  console.log(`  avatars skipped: MAKIMA_NO_AVATARS is set; devices will show their initials`);
+  process.exit(0);
+}
+
 const missing = CHARACTERS.filter((c) => !existsSync(join(OUT, `${c.id}.jpg`)) || made[c.id] !== stamp(c));
 if (missing.length === 0) process.exit(0);
 

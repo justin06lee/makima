@@ -3,6 +3,11 @@ name: release
 on:
   push:
     tags: ['v*']
+  # A dry run. Everything a release would publish is built — the archives, the
+  # app on each platform it ships for, the checksums over all of it — and left
+  # on the run as artifacts, and nothing is published. For changing this file
+  # without cutting a release to find out whether it works.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,7 +16,78 @@ permissions:
   packages: write
 
 jobs:
+  # The desktop app, which dist/install.sh puts in place beside the binaries.
+  #
+  # Built on the platform it is for, unlike the binaries: Tauri links against
+  # the system's web view, so there is no cross-building it. Linux is built on
+  # Ubuntu 22.04 because a package made against an older system installs on
+  # newer ones and not the other way round — and 22.04 is what a Jetson runs.
+  # There is no Intel Mac build; an Intel Mac gets the binaries, and the
+  # installer says why there is no app.
+  app:
+    strategy:
+      matrix:
+        include:
+          - { runner: macos-latest, platform: darwin-arm64 }
+          - { runner: ubuntu-22.04, platform: linux-amd64 }
+          - { runner: ubuntu-22.04-arm, platform: linux-arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The version is stamped from `git describe`, as below.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: the web view and tray libraries, to build against
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libwebkit2gtk-4.1-dev build-essential file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      # Exactly what `make` builds on a machine of this kind. The device faces
+      # are pages of Chainsaw Man (desktop/src/characters.ts): fine in an app
+      # somebody builds for themselves, not in a public download.
+      - name: build
+        env:
+          MAKIMA_NO_AVATARS: '1'
+        run: make app-build
+
+      # Named the way dist/install.sh looks for them. The Mac's is the .app in
+      # a tarball, without the AppleDouble files and extended attributes a
+      # Mac's tar would otherwise add.
+      - name: name it for the release
+        run: |
+          version=$(git describe --tags --match 'v*' --always)
+          out=dist/app/makima-desktop-$version-${{ matrix.platform }}
+          bundle=desktop/src-tauri/target/release/bundle
+          mkdir -p dist/app
+          if [ "$RUNNER_OS" = macOS ]; then
+            COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$out.tar.gz" -C "$bundle/macos" makima.app
+          else
+            cp "$bundle"/deb/*.deb "$out.deb"
+          fi
+          ls -l dist/app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.platform }}
+          path: dist/app/*
+          if-no-files-found: error
+
   release:
+    # A release with an app missing for one platform would have the installer
+    # quietly hand that platform the binaries alone, so all of it or none.
+    needs: app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +108,29 @@ jobs:
       - name: build release archives
         run: make release
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: app-*
+          merge-multiple: true
+          path: dist/release
+
+      # make release summed the archives alone. One file covers everything the
+      # installer downloads, the app included.
+      - name: checksums, with the app in them
+        run: |
+          cd dist/release
+          sha256sum -- *.tar.gz *.zip *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: keep what a release would have published
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist/release/*
+
       - name: publish
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -45,6 +143,7 @@ jobs:
       # an ordinary network service with no interest in the host's network
       # stack, and something you want running somewhere permanently.
       - name: publish the container image
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -62,6 +161,7 @@ jobs:
       # can only be known once the tag exists. Filled in here rather than left
       # as SKIP, which would mean the package builds whatever that URL serves.
       - name: checksum the PKGBUILD source
+        if: github.event_name == 'push'
         run: |
           url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
           sum=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
@@ -82,7 +182,7 @@ jobs:
       - name: update the homebrew formula
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
-        if: env.GH_TOKEN != ''
+        if: github.event_name == 'push' && env.GH_TOKEN != ''
         run: |
           version="${GITHUB_REF_NAME#v}"
           formula=dist/packaging/makima.rb
@@ -122,7 +222,7 @@ jobs:
       - name: say when the tap was not updated
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
-        if: env.GH_TOKEN == ''
+        if: github.event_name == 'push' && env.GH_TOKEN == ''
         run: |
           echo "::warning::TAP_TOKEN is not set, so the homebrew formula was not published."
           echo "::warning::'brew install justin06lee/makima/makima' will not work for this release."
