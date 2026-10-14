@@ -70,8 +70,10 @@ make
 
 `make` is the whole golden path: build the four binaries, put them in
 `/usr/local/bin`, build the app where Rust and bun are present, and start again
-exactly what was running. Requires Go 1.26 or newer; the app is skipped with a
-note when its toolchain is absent.
+exactly what was running. It needs Go 1.26 or newer, and where there is none —
+or only an older one, like the Go a Jetson's Ubuntu ships — it installs the
+current release from go.dev into `/usr/local/go` first. The app is skipped with
+a note when its toolchain is absent.
 
 ```sh
 make            # the golden path, above

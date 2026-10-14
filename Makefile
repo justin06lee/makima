@@ -30,6 +30,16 @@ APP_VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null |
 APP_CONFIG  := --config '{"version":"$(APP_VERSION)"}'
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
+# The oldest Go that builds this, which ensure-go installs a newer one over.
+# /usr/local/go/bin goes first on make's PATH because that is where ensure-go
+# puts it: a Go installed there earlier in this same `make` — or on some
+# earlier day, by somebody who never added it to their PATH — is the one that
+# builds, ahead of an older one a distribution put in /usr/bin. Every recipe
+# that runs go does it through the shell — a loop, an && — because a bare
+# command make runs itself, with the PATH it was started with.
+GO_NEED     := $(shell sed -n 's/^go //p' go.mod)
+export PATH := /usr/local/go/bin:$(PATH)
+
 # Platforms a release is built for. One line, so adding a platform is a
 # one-word change and every part of the release machinery follows — `cross`
 # included, which is what proves the one-binary-per-platform promise still
@@ -45,7 +55,7 @@ RELEASE := dist/release
 TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-.PHONY: all build install install-bins ensure-tor update stop start uninstall reset-permissions trusted-copy app-version clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
+.PHONY: all build install install-bins ensure-go ensure-tor update stop start uninstall reset-permissions trusted-copy app-version clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
 
 # `make` is the whole golden path: build everything, put it in place, and start
 # again exactly what was running.
@@ -67,7 +77,7 @@ install: build $(if $(HAVE_APP),app-build) ensure-tor stop install-bins $(if $(H
 # it is the one people type when they mean "pick up my changes".
 update: install
 
-build:
+build: ensure-go
 	@mkdir -p $(BUILD)
 	@for b in $(BINS); do \
 		echo "  build  $$b"; \
@@ -83,6 +93,13 @@ install-bins:
 		sudo install -m 0755 $(BUILD)/$$b $(BINDIR)/$$b || exit 1; \
 	done
 	@$(if $(HAVE_APP),true,echo "  makima installed. start with: makima up")
+
+# Go, which every binary here is built with. Missing or older than go.mod asks
+# for — a fresh Jetson has none, Ubuntu's own is years behind — it is installed
+# from go.dev rather than reported, since nothing gets further without it.
+# dist/ensure-go.sh says where it goes.
+ensure-go:
+	@sh dist/ensure-go.sh $(GO_NEED)
 
 # tor, which is how the network is reached from anywhere (internal/tor): the
 # one program makima needs at run time that it does not build. Installed here
@@ -155,20 +172,20 @@ reset-permissions:
 
 check: fmt vet test race
 
-race:
+race: ensure-go
 	@go test -race ./... >/dev/null && echo "  race ok"
 
-fmt:
+fmt: ensure-go
 	@gofmt -l . | grep -v '^$$' && { echo "unformatted files above"; exit 1; } || echo "  fmt ok"
 
-vet:
+vet: ensure-go
 	@go vet ./... && echo "  vet ok"
 
-test:
-	@go test ./... 
+test: ensure-go
+	@go test ./... && echo "  test ok"
 
 # Proof that the one-binary-per-platform promise actually holds.
-cross:
+cross: ensure-go
 	@for t in $(PLATFORMS); do \
 		os=$${t%/*}; arch=$${t#*/}; \
 		printf "  %-16s" "$$t"; \
@@ -186,7 +203,7 @@ cross:
 # -trimpath and a fixed -buildid make the output reproducible: two people
 # building the same tag get byte-identical archives, so a published checksum is
 # something anybody can check rather than something they have to trust.
-release: release-clean
+release: ensure-go release-clean
 	@mkdir -p $(RELEASE)
 	@for t in $(PLATFORMS); do \
 		os=$${t%/*}; arch=$${t#*/}; \
@@ -245,11 +262,14 @@ sidecars: kits
 # internal/migrate/kit.go reads them as makima-<os>-<arch>.tar.gz.
 KITS          := desktop/src-tauri/kits
 KIT_PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 linux/arm
-HOST_PLATFORM := $(shell go env GOOS)/$(shell go env GOARCH)
 
-kits:
+# This machine's own platform is asked of go in the recipe rather than when the
+# Makefile is read, which is before ensure-go has had the chance to install it.
+kits: ensure-go
 	@mkdir -p $(KITS)
-	@for t in $(filter-out $(HOST_PLATFORM),$(KIT_PLATFORMS)); do \
+	@host=$$(go env GOOS)/$$(go env GOARCH); \
+	for t in $(KIT_PLATFORMS); do \
+		[ "$$t" = "$$host" ] && continue; \
 		os=$${t%/*}; arch=$${t#*/}; \
 		dir=$$(mktemp -d)/makima; mkdir -p $$dir; \
 		printf "  kit     %s\n" "$$t"; \
