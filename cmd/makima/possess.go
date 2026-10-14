@@ -58,7 +58,8 @@ func sshCmd(args []string) error {
 
 	x := sshProber{ssh: ssh, p: p}
 	var r route
-	if account == "" {
+	asked := account == ""
+	if asked {
 		r, err = planRoute(target, p, x)
 		if err != nil {
 			return err
@@ -81,9 +82,23 @@ func sshCmd(args []string) error {
 	args = append(append(x.options(r.port), host), rest...)
 	cmd := exec.Command(ssh, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+
+	// Asked through makima where there is somebody to ask and the machine is
+	// one the mesh knows — "huiyunlee's password:", not the alias ssh would
+	// otherwise put in the prompt. Only there, because only there is its
+	// host key taken without a yes/no, which a password prompt would hide.
+	if !p.key.IsZero() && interactive() {
+		cmd.Env = append(os.Environ(), askpassEnviron()...)
+	}
+
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
+			// 255 is ssh's own failure — after the password, the account
+			// is the likeliest thing to have been wrong.
+			if asked && len(r.accounts) == 0 && ee.ExitCode() == 255 {
+				fmt.Fprintf(os.Stderr, "Not your account on %s? makima possess NAME@%s\n", target, target)
+			}
 			os.Exit(ee.ExitCode())
 		}
 		return err
@@ -206,24 +221,18 @@ func planRoute(name string, p farEnd, x prober) (route, error) {
 		return route{accounts: sshd.SortAccounts(open)}, nil
 	}
 
-	// No key opens anything, so ssh will ask for a password: for an account
-	// that exists, and said out loud, because "Permission denied" after every
-	// password does not say that the account was the problem.
+	// No key opens anything, so ssh will ask for a password — for an account
+	// that exists. The owner's needs no introduction: the prompt names it,
+	// "huiyunlee's password:". Any other is said first, because it is a
+	// guess, and "Permission denied" after every password would not say that
+	// the account was what was wrong.
 	switch {
 	case configured:
-		return route{note: fmt.Sprintf(
-			"No key of yours opens an account on %s, so it will ask for the password of %s — the account your ssh config names.",
-			name, def)}, nil
+		return route{note: fmt.Sprintf("Logging in to %s as %s, the account your ssh config names.", name, def)}, nil
 	case p.owner != "":
-		return route{password: p.owner, note: fmt.Sprintf(
-			"No key of yours opens an account on %s yet, so it will ask for the password of %s — the account makima belongs to there.\n"+
-				"Another account: makima possess NAME@%s",
-			name, p.owner, name)}, nil
+		return route{password: p.owner}, nil
 	default:
-		return route{note: fmt.Sprintf(
-			"No key of yours opens an account on %s, so it will ask for the password of %s — your name on this machine.\n"+
-				"If %s knows you by another: makima possess NAME@%s",
-			name, def, name, name)}, nil
+		return route{note: fmt.Sprintf("Logging in to %s as %s (your name here).", name, def)}, nil
 	}
 }
 
@@ -404,9 +413,13 @@ func (x sshProber) probeArgs(port int) []string {
 func (x sshProber) options(port int) []string {
 	var args []string
 	if !x.p.key.IsZero() {
+		// LogLevel=ERROR keeps ssh from announcing each first sight —
+		// "Permanently added 'makima-3f9a…'" — while a host key that has
+		// changed is an error, and still says so.
 		args = append(args,
 			"-o", "HostKeyAlias="+hostKeyAlias(x.p.key, port),
-			"-o", "StrictHostKeyChecking=accept-new")
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "LogLevel=ERROR")
 	}
 	if port != 0 {
 		args = append(args, "-p", strconv.Itoa(port))
