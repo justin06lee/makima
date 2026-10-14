@@ -78,6 +78,16 @@ jobs:
           fi
           ls -l dist/app
 
+      # Installed the way the installer installs it, on the system it was
+      # built for, so that a package whose dependencies cannot be had is found
+      # here rather than on somebody's machine.
+      - name: install the package
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y -q ./dist/app/*.deb
+          dpkg -s makima | grep -E '^(Status|Version)'
+          /usr/bin/makima version
+
       - uses: actions/upload-artifact@v4
         with:
           name: app-${{ matrix.platform }}
