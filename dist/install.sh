@@ -139,3 +139,15 @@ Or set up a real mesh, which needs root:
   makima up
 
 EOF
+
+# tor is how the network is reached from anywhere. Installing system
+# packages is not this script's business, so it only says so.
+if ! command -v tor >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tor ] && [ ! -x /usr/bin/tor ] && [ ! -x /usr/sbin/tor ]; then
+	cat <<EOF
+To reach the network from anywhere, not just from where its server is,
+install tor too:
+  brew install tor          # macOS
+  sudo apt install tor      # Debian, Ubuntu
+
+EOF
+fi

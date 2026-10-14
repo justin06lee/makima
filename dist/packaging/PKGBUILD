@@ -11,6 +11,8 @@ arch=('x86_64' 'aarch64' 'armv7h')
 url="https://github.com/justin06lee/makima"
 license=('MIT')
 makedepends=('go>=1.26')
+# tor is how the network is reached from anywhere: makima runs a private one.
+depends=('tor')
 backup=('etc/makima/node.json')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # Filled in by the release workflow from the tag's own source archive. SKIP

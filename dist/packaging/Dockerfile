@@ -28,10 +28,11 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 # Distroless-by-hand: the binaries are static, so the image needs nothing but
 # certificates — the SSH server's github: key source is the one thing here that
-# makes an outbound TLS connection.
+# makes an outbound TLS connection — and tor, which makima-server runs to be
+# reachable from anywhere at its onion address.
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates && adduser -D -u 10001 makima
+RUN apk add --no-cache ca-certificates tor && adduser -D -u 10001 makima
 
 COPY --from=build /out/makima        /usr/local/bin/makima
 COPY --from=build /out/makimad       /usr/local/bin/makimad

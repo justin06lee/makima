@@ -45,7 +45,7 @@ RELEASE := dist/release
 TRIPLE   := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 HAVE_APP := $(and $(TRIPLE),$(shell command -v bun 2>/dev/null))
 
-.PHONY: all build install install-bins update stop start uninstall reset-permissions trusted-copy app-version clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
+.PHONY: all build install install-bins ensure-tor update stop start uninstall reset-permissions trusted-copy app-version clean test race fmt vet check cross service release release-clean sidecars kits app app-build app-install app-place app-open app-skip app-dev dmg
 
 # `make` is the whole golden path: build everything, put it in place, and start
 # again exactly what was running.
@@ -61,7 +61,7 @@ all: install
 
 # Everything is built before anything is taken down, so a build that fails
 # leaves the machine exactly as it was rather than with nothing on it.
-install: build $(if $(HAVE_APP),app-build) stop install-bins $(if $(HAVE_APP),app-place reset-permissions trusted-copy,app-skip) start $(if $(HAVE_APP),app-open)
+install: build $(if $(HAVE_APP),app-build) ensure-tor stop install-bins $(if $(HAVE_APP),app-place reset-permissions trusted-copy,app-skip) start $(if $(HAVE_APP),app-open)
 
 # update is the same path: stop, replace, start. Kept as its own name because
 # it is the one people type when they mean "pick up my changes".
@@ -83,6 +83,33 @@ install-bins:
 		sudo install -m 0755 $(BUILD)/$$b $(BINDIR)/$$b || exit 1; \
 	done
 	@$(if $(HAVE_APP),true,echo "  makima installed. start with: makima up")
+
+# tor, which is how the network is reached from anywhere (internal/tor): the
+# one program makima needs at run time that it does not build. Installed here
+# when it is missing, and never fatal when it cannot be — the network still
+# works where its server is. The system's own tor service, which makima never
+# uses (it runs a private tor of its own), is not left running when installing
+# tor is what started it.
+ensure-tor:
+	@if command -v tor >/dev/null 2>&1 || [ -x /opt/homebrew/bin/tor ] || [ -x /usr/local/bin/tor ] || [ -x /usr/bin/tor ] || [ -x /usr/sbin/tor ]; then \
+		true; \
+	elif [ "$$(uname -s)" = Darwin ] && command -v brew >/dev/null 2>&1; then \
+		echo "  install tor (brew)"; \
+		brew install -q tor >/dev/null || echo "  tor did not install — run: brew install tor"; \
+	elif command -v apt-get >/dev/null 2>&1; then \
+		echo "  install tor (apt)"; \
+		if sudo apt-get -o DPkg::Lock::Timeout=300 install -y -q tor >/dev/null; then \
+			sudo systemctl disable --now tor >/dev/null 2>&1 || true; \
+		else echo "  tor did not install — run: sudo apt-get install tor"; fi; \
+	elif command -v dnf >/dev/null 2>&1; then \
+		echo "  install tor (dnf)"; \
+		sudo dnf install -y -q tor >/dev/null || echo "  tor did not install — run: sudo dnf install tor"; \
+	elif command -v pacman >/dev/null 2>&1; then \
+		echo "  install tor (pacman)"; \
+		sudo pacman -S --noconfirm --needed tor >/dev/null || echo "  tor did not install — run: sudo pacman -S tor"; \
+	else \
+		echo "  no tor here, and no package manager makima knows — install tor to reach the network from anywhere"; \
+	fi
 
 # Root's copy of the binaries, which the app runs through sudo so its buttons
 # stop asking for a password (desktop/src-tauri/src/privileged.rs).
