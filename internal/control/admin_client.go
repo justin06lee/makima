@@ -8,6 +8,7 @@ import (
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/policy"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // AddRelay registers a relay with the running server.
@@ -53,24 +54,11 @@ func (c *AdminClient) UpdateOrdered() (o UpdateOrder, ok bool, err error) {
 	return *p, true, nil
 }
 
-// DDNS reports the DuckDNS name and how keeping it current is going.
-func (c *AdminClient) DDNS() (DDNSStatus, error) {
-	var st DDNSStatus
-	err := c.call(http.MethodGet, "/admin/ddns", nil, &st)
+// Tor reports how publishing the server's onion service is going.
+func (c *AdminClient) Tor() (tor.ServiceState, error) {
+	var st tor.ServiceState
+	err := c.call(http.MethodGet, "/admin/tor", nil, &st)
 	return st, err
-}
-
-// SetDDNS starts keeping a DuckDNS name pointed at the server, returning the
-// address every node is now told about.
-func (c *AdminClient) SetDDNS(name, token string, port int) (string, error) {
-	var resp DDNSSetResponse
-	err := c.call(http.MethodPost, "/admin/ddns", DDNSRequest{Name: name, Token: token, Port: port}, &resp)
-	return resp.URL, err
-}
-
-// ClearDDNS stops it.
-func (c *AdminClient) ClearDDNS() error {
-	return c.call(http.MethodPost, "/admin/ddns/off", struct{}{}, nil)
 }
 
 // ControlURLs lists the server's other addresses.

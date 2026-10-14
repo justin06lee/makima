@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/supervise"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // The three long-running processes, and where each keeps its things.
@@ -216,7 +218,9 @@ func upCmd(args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Long enough to join through tor from somewhere else, the first time
+	// this machine has ever run it; on the same network it is seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if inv.Server != "" {
@@ -299,7 +303,7 @@ func bootstrap(ctx context.Context, path, name, advertise string) error {
 
 	fmt.Println()
 	printInvite(words, inv)
-	warnIfUnreachable(reachable, port)
+	reportReach(admin, reachable)
 	linkCLIQuietly()
 	offerAlias()
 	return nil
@@ -417,7 +421,7 @@ func inviteCmd(args []string) error {
 
 	printInvite(words, inv)
 	fmt.Printf("\nGood for one device, for %s.\n", inviteTTL)
-	warnIfUnreachable(reachable, port)
+	reportReach(admin, reachable)
 	return nil
 }
 
@@ -441,7 +445,10 @@ func mintWords(admin *control.AdminClient, serverURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := admin.MintInviteKey(invite.AuthKey(secret), invite.Handle(secret), invite.MACKey(secret), inviteTTL); err != nil {
+	// The onion address the words lead to, published by the server for as
+	// long as the invite lasts, so they work from anywhere.
+	onion := invite.JoinOnionSeed(secret)
+	if _, err := admin.MintInviteKey(invite.AuthKey(secret), invite.Handle(secret), invite.MACKey(secret), onion[:], inviteTTL); err != nil {
 		return "", fmt.Errorf("mint a credential: %w", err)
 	}
 	return invite.EncodeWords(serverURL, secret)
@@ -505,6 +512,7 @@ func mintInvite(admin *control.AdminClient, serverURL string, serverKey key.Publ
 		AuthKey:   ak.Secret,
 		ServerKey: serverKey,
 		Expires:   time.Now().Add(inviteTTL),
+		Onion:     serverOnion(admin),
 	})
 }
 
@@ -523,8 +531,15 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 	// Words carry no server key. Fetch one, and refuse it unless the server
 	// can vouch for it under the words — see invite.EncodeWords for why that
 	// is as good as having carried it.
+	//
+	// At the address the invite names first — on the holding machine's own
+	// network, usually, and fast — and then, from anywhere else, at its
+	// onion address, through tor.
+	urls := inviteURLs(inv.Server, inv.Onion)
+	b, stopTor := onionBinder(nodeTorDir(path))
+	defer stopTor()
 	if handle, macKey, ok := inv.Verifier(); ok && inv.ServerKey.IsZero() {
-		k, err := control.FetchServerKeyVerified(ctx, inv.Server, handle, macKey)
+		k, err := fetchKeyVerified(ctx, b, urls, handle, macKey)
 		if err != nil {
 			return err
 		}
@@ -536,7 +551,9 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 		return err
 	}
 
-	client := control.NewClient(inv.Server, inv.ServerKey, machineKey)
+	client := control.NewClient(urls[0], inv.ServerKey, machineKey)
+	client.SetBinder(b)
+	client.SetAlternates(urls[1:])
 	resp, err := client.Register(ctx, &control.RegisterRequest{
 		Name:      name,
 		NodeKey:   nodeKey.Public(),
@@ -553,9 +570,15 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 		MachineKey:  machineKey,
 		DiscoKey:    discoKey,
 		ListenPort:  listenPort,
-		LoginServer: strings.TrimRight(inv.Server, "/"),
+		LoginServer: urls[0],
 		ServerKey:   inv.ServerKey,
 		AuthKey:     inv.AuthKey,
+		// The server's other addresses go in now, not with the first netmap:
+		// a machine that joined from somewhere else has to reach the server
+		// at its onion address to get its first netmap at all — the server's
+		// lasting one, not the one an invite's words led to, which goes when
+		// the invite does.
+		ControlURLs: joinedURLs(resp.ControlURLs, urls),
 		Self: netmap.Node{
 			ID:        resp.NodeID,
 			Name:      name,
@@ -592,33 +615,48 @@ func guessReachableAddr() string {
 	return "127.0.0.1"
 }
 
-// warnIfUnreachable says so when the mesh is being held somewhere the rest of
-// the world cannot get to, and what makes it reachable.
-//
-// The one thing about self-hosting that cannot be automated away: a router
-// has to let the traffic in. Everything else — a name that follows the home
-// address, every node learning it, the relay riding along — makima does once
-// asked. Better said now than discovered in a hotel.
-func warnIfUnreachable(addr string, port int) {
-	ip, err := netip.ParseAddr(addr)
-	if err != nil || !ip.IsPrivate() {
+// reportReach says how the rest of the world reaches this network: through
+// tor, from anywhere, when the server has published its onion service — and
+// what to install when it cannot, rather than letting it be discovered in a
+// hotel.
+func reportReach(admin *control.AdminClient, addr string) {
+	st, err := admin.Tor()
+	if err != nil {
 		return
 	}
+	onion := ""
+	if urls, err := admin.ControlURLs(); err == nil {
+		for _, u := range urls {
+			if p, err := url.Parse(u); err == nil && tor.IsOnion(p.Hostname()) {
+				onion = p.Hostname()
+			}
+		}
+	}
+
 	fmt.Println()
-	fmt.Printf("  ⚠ For now, this network only works inside this building.\n\n")
-	fmt.Printf("    %s is a private address, so a machine somewhere else cannot reach it.\n", addr)
-	fmt.Println("    Machines added here keep working when they leave, but lose track of the")
-	fmt.Println("    others until they are back.")
-	fmt.Println()
-	fmt.Println("    To reach it from anywhere, give it a name and let the traffic in:")
-	fmt.Println()
-	fmt.Println("      1. get a free name at https://www.duckdns.org, then run here:")
-	fmt.Println("           sudo makima-server ddns set -name NAME")
-	fmt.Printf("      2. forward TCP %d on your router to this machine — the command above\n", port)
-	fmt.Println("         prints exactly what to forward.")
-	fmt.Println()
-	fmt.Println("    Every machine learns the name on its own, and the relay rides the same port.")
-	fmt.Println("    makima duck walks through it, and shows what is left.")
+	switch {
+	case onion != "":
+		fmt.Println("  Reachable from anywhere, through tor, at")
+		fmt.Printf("    %s\n", onion)
+		fmt.Println("  Machines use it on their own when they are away from here. Nothing to")
+		fmt.Println("  forward on any router; their traffic still goes straight between them.")
+		if st.Phase != tor.PhaseReachable {
+			fmt.Println("  (Tor takes a minute to publish it the first time; makima-server tor says when.)")
+		}
+
+	case st.Phase == tor.PhaseNotInstalled:
+		ip, err := netip.ParseAddr(addr)
+		if err != nil || !ip.IsPrivate() {
+			return
+		}
+		fmt.Printf("  ⚠ For now, this network only works inside this building.\n\n")
+		fmt.Printf("    %s is a private address, so a machine somewhere else cannot reach it.\n", addr)
+		fmt.Println("    Install tor on this machine and it is reachable from anywhere within five")
+		fmt.Println("    minutes, with nothing to change on your router:")
+		fmt.Println()
+		fmt.Println("      brew install tor           # macOS")
+		fmt.Println("      sudo apt install tor       # Debian, Ubuntu")
+	}
 }
 
 // waitForPeers gives the first netmap a moment to land.
@@ -674,7 +712,9 @@ func joinCmd(args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// As long as `makima up` gives a join: through tor, from far away, on a
+	// machine that has never run tor, takes minutes rather than seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	return joinWith(ctx, *path, inv, *name)
 }

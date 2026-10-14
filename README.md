@@ -46,6 +46,7 @@ who belongs.
 | **M5** | DNS names, ACLs, exit nodes, subnet routes | **done** |
 | **M6** | network lock — node-key signing, key rotation | **done** |
 | **M7** | one-command setup — `up`, invites, services that publish themselves | **done** |
+| **M8** | tor — the control plane reachable from anywhere as an onion service | **done** |
 
 What this has *not* had is a week of running on real machines behind real NATs.
 The protocol packages are well covered — policy, disco, serve and the DNS
@@ -188,12 +189,14 @@ makima up
 **Pick it deliberately.** It is the one machine every other has to be able to
 reach: they check in with it to learn where each other are, and when two of
 them cannot connect directly, they meet on the relay it carries on the same
-port. A desktop at home is a fine choice. Out of the box it only works inside
-the house, and `makima up` says so; two steps make it work from anywhere —
-see [Working from anywhere](#working-from-anywhere).
+port. A desktop at home is a fine choice. With tor installed it is reachable
+from anywhere the moment it starts — it publishes itself as a tor onion
+service, and nothing on your router changes. Without tor it only works inside
+the house, and `makima up` says so. See [Working from
+anywhere](#working-from-anywhere).
 
-If you already self-host something on a public name, you have already solved
-this and can reuse it. Whatever carries `something.example.dev` into your
+If you already self-host something on a public name, that works too, beside
+the onion address. Whatever carries `something.example.dev` into your
 network — a reverse proxy, a port forward — can carry the coordination plane
 too. Point it at the server's port and say so. The server takes 8080, or the
 next free port if something already has 8080, and keeps that port for good:
@@ -679,30 +682,50 @@ different routers need somewhere to meet, and the machine holding the network
 is it: every node checks in with it to learn where the others are, and it
 carries a relay on its own port, at `/relay`, for pairs that cannot connect
 directly. Sessions start relayed when they have to and move to a direct path
-the moment one is found. Nothing to configure.
+the moment one is found.
 
-What has to be true is that the holding machine can be reached. On a VPS it
-already can. At home, it takes a name and a way in:
+What has to be true is that the holding machine can be reached, and makima
+does that through tor. The server publishes its own port as an onion service:
+it connects out to the tor network, which works from behind any router —
+carrier-grade NAT included — and is found at an address made from its own key,
+kept beside its state, so the address never changes. Nothing to forward, no
+public address, no name to keep pointed at a home connection whose address
+moves, and no company in the path.
 
 ```sh
-# on the machine holding the network — a free name from https://www.duckdns.org
-sudo makima-server ddns set -name tenet
+makima-server tor
+#   address    http://aoqqpp7tzyil4hlq3umoos6atft6jvrqtosq2xy53sdgiesvgg4bqead.onion
+#   status     reachable from anywhere, through tor (for 3m12s)
 ```
 
-It checks the name and token (asked for, never echoed) with DuckDNS, keeps
-`tenet.duckdns.org` pointed at your home's public address from then on — home
-addresses change, and the name follows — and tells every node about it. A node
-that cannot reach the server at the address it joined through, because the
-laptop left the house, tries the name instead, and the relay follows it there.
-The command ends by printing exactly what to forward on your router: one TCP
-port for the server and the relay, one UDP port so the others can connect to
-this machine directly.
+Every node is told the address. A node uses the address it joined through
+while that answers — the home network, at home — and the onion address when
+it does not, because the laptop has left the house; the relay follows it
+there. After every network change it tries home first again. A node that will
+need tor starts it ahead of time, so leaving the house costs a few seconds of
+failover rather than tor's whole start.
 
-That one step is the only one no program can take, and it is also the one that
-can make it impossible. If your ISP puts you behind carrier-grade NAT — your
-router's WAN address is not the one https://ifconfig.co shows, or starts with
-`100.64`–`100.127` — there is no public address to forward, and the holding
-machine has to live somewhere that has one.
+Invites carry it as well, so a machine can join from anywhere. The pasted
+`mk1_` string carries the onion address outright. Fifteen words have no room
+for one, so they lead to an onion address of the invite's own, derived from
+the words, which the server publishes the moment the invite is minted and
+takes down when it expires; the joining machine still checks the server's key
+against the words. Whoever holds the words could publish that address too —
+and could just as well join with them, which is why the words are yours to
+keep.
+
+Only coordination goes over tor: check-ins, the netmap, and the setting-up of
+direct paths. Traffic between machines still goes straight between them once a
+path is punched, and over the relay only when it cannot be — which, away from
+home, means over tor, and slowly. Tor carries a long poll well and a tunnel
+badly, and makima only asks it for the first.
+
+makima runs a tor of its own in each process that needs one — a child
+process, configured from the command line, never the system's tor service,
+and started as an unprivileged user when makima is root. The one thing to
+install is tor itself, which `make` does, and every package depends on:
+`brew install tor`, or `apt install tor`. A server without it is reachable only
+where it is, and says so; `makima-server serve -no-tor` makes that a choice.
 
 Any other address the server answers at can be handed out the same way:
 
@@ -1183,7 +1206,9 @@ I talk to? A node holds a request open against the server, and the server holds
 it until the mesh actually changes, which turns polling into push without
 either side maintaining a connection protocol of its own. Every minute it
 answers anyway, so a poll killed by some intermediary shows up as a missed
-heartbeat rather than a silent desync.
+heartbeat rather than a silent desync. Away from home a node holds
+that request through tor, at the server's onion address — see [Working from
+anywhere](#working-from-anywhere).
 
 **Relay.** A dumb forwarder keyed by public key. It learns which node sits on
 which connection and copies frames between them, and that is the entire
@@ -1264,12 +1289,23 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 
 ## Known limits
 
-- **The machine holding the mesh has to be reachable by the others.** That is
-  self-hosting rather than a limitation of makima, but it is the thing most
-  likely to surprise: a coordination plane behind a home NAT makes a mesh that
-  only works from inside that house until a port is forwarded to it (see
-  [Working from anywhere](#working-from-anywhere)) — and behind carrier-grade
-  NAT, no port forward can make it reachable at all.
+- **The machine holding the mesh has to be reachable by the others,** and
+  makima makes it so through tor (see [Working from
+  anywhere](#working-from-anywhere)). That needs tor on every machine; `make`
+  installs it and every package depends on it. Without it, a coordination
+  plane behind a home NAT makes a mesh that only works inside that house.
+- **Away from home, the control plane is reached through tor, and tor is
+  slow.** Seconds to connect, and most of a minute the first time a machine
+  ever runs it — fine for check-ins and the netmap. Two machines away from
+  home that cannot punch a direct path relay over tor as well, which is fine
+  for a shell and slow for a large file.
+- **Some networks block tor** — some offices, schools and countries. A node on
+  one cannot reach its control plane from there, and keeps the mesh as it last
+  knew it until it can. Tor bridges are not configured.
+- **Tor here is about reachability, not anonymity.** The onion service means
+  nobody needs the holding machine's address; it does not hide machines from
+  each other once they talk directly, nor from the public STUN servers that
+  tell each machine its own address.
 - **The built-in relay runs on the holding machine's upload bandwidth.** Fine
   for shells and web pages; slow for large files between two machines that are
   both away from home and cannot connect directly.
@@ -1366,7 +1402,7 @@ internal/disco      the probe protocol that finds direct paths, and knocks
 internal/pair       serverless pairing addresses: two machines, no server
 internal/invite     a whole join as one pasteable string, or as fifteen words
 internal/stun       asking a public server what address we appear to come from
-internal/ddns       keeping a DuckDNS name pointed at the holding machine
+internal/tor        a private tor: the control plane as an onion service, and reaching it
 internal/update     moving a machine to a release, and back if it will not run
 internal/portmap    asking the router to forward a port (NAT-PMP, PCP)
 internal/bypass     keeping the tunnel's own sockets out of an exit node's tunnel

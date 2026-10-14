@@ -29,6 +29,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // Interface is a network interface the tunnel's traffic is sent out of.
@@ -55,6 +57,29 @@ type Binder struct {
 	// have to be rebound in place: the WireGuard socket, above all, whose
 	// port every peer holds and which cannot simply be reopened.
 	socks map[syscall.Conn]struct{}
+
+	// onion reaches onion addresses, through tor. Nil until SetOnion.
+	onion func(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// SetOnion is how this binder's dials reach an onion address: through tor,
+// since nothing else can. Every connection makima makes to its own control
+// plane and relay goes through DialContext, so this is the one place a node
+// learns to reach them at an onion address when it is away from home.
+func (b *Binder) SetOnion(dial func(ctx context.Context, network, address string) (net.Conn, error)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onion = dial
+}
+
+// onionDialer is the onion route, if address needs one and there is one.
+func (b *Binder) onionDialer(address string) func(ctx context.Context, network, address string) (net.Conn, error) {
+	if b == nil || !tor.IsOnion(address) {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.onion
 }
 
 // Bind binds every tracked socket, and every one opened from now on, to ifc.
@@ -157,7 +182,14 @@ func (b *Binder) Control(network, address string, c syscall.RawConn) error {
 // bound interface while there is one, name lookups included — a lookup sent
 // into a tunnel that is not up yet is a control plane that can never be
 // found by name.
+//
+// An onion address goes to tor instead, when SetOnion said how. Tor's own
+// connections are its process's, and are not bound: with an exit node in use
+// they go through the tunnel, which works for as long as the tunnel does.
 func (b *Binder) DialContext(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
+	if onion := b.onionDialer(address); onion != nil {
+		return onion(ctx, network, address)
+	}
 	dd := *d
 	if _, ok := b.Bound(); ok {
 		dd.Control = b.Control

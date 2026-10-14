@@ -91,10 +91,12 @@ func (f *fake) Status() localapi.Status {
 			Address:   addr("10.77.0.3"),
 			Interface: "utun6",
 		},
-		Managed: true,
-		Server:  "http://tenet:8080",
-		Domain:  "makima",
-		Relay:   localapi.RelayInfo{URL: "relay.example:3478", Connected: true},
+		Managed:     true,
+		Server:      "http://tenet:8080",
+		ServerURLs:  []string{"http://aoqqpp7tzyil4hlq3umoos6atft6jvrqtosq2xy53sdgiesvgg4bqead.onion"},
+		ServerInUse: "http://tenet:8080",
+		Domain:      "makima",
+		Relay:       localapi.RelayInfo{URL: "relay.example:3478", Connected: true},
 		Peers: []localapi.PeerInfo{
 			{
 				Name: "tenet", Address: addr("10.77.0.1"), Online: true,

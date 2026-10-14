@@ -54,7 +54,13 @@
     "linux": {
       "deb": {
         "depends": [
-          "pkexec | policykit-1"
+          "pkexec | policykit-1",
+          "tor"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "tor"
         ]
       }
     },

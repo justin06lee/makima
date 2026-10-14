@@ -79,6 +79,12 @@ type RegisterResponse struct {
 	// wonder why nothing is routing.
 	PendingRoutes []netip.Prefix `json:"pending_routes,omitempty"`
 	PendingExit   bool           `json:"pending_exit,omitempty"`
+
+	// ControlURLs are the server's other addresses, as in MapResponse:
+	// handed over at once, because a machine that joined through an invite's
+	// own onion address needs the server's lasting one before its first
+	// netmap. Empty from a server older than onion addresses.
+	ControlURLs []string `json:"control_urls,omitempty"`
 }
 
 // MapRequest asks for the caller's view of the mesh.

@@ -55,6 +55,12 @@ export type Status = {
   managed: boolean;
   serverless: boolean;
   server?: string;
+  /// The server's other addresses — its onion address among them once tor
+  /// has it — and the one in use right now.
+  server_urls?: string[];
+  server_in_use?: string;
+  /// This device's tor, once it has been needed.
+  tor?: { running: boolean; progress: number; summary?: string; error?: string };
   relay: { url?: string; connected: boolean };
   domain?: string;
   dns_active: boolean;
@@ -225,6 +231,15 @@ export const api = {
       // ?exit=NAME pretends this device already sends its traffic through NAME.
       const exit = browser.params().get("exit");
       if (exit !== null) status.exit_node = exit || undefined;
+      // ?tor=0 pretends the network has no onion address; ?away=1 that this
+      // device is away from home and reaching it through tor, and
+      // ?away=connecting that its tor is still joining the tor network.
+      if (browser.params().get("tor") === "0") status.server_urls = status.server_urls?.filter((u) => !isOnion(u));
+      const away = browser.params().get("away");
+      if (away && onionOf(status)) {
+        status.server_in_use = onionOf(status);
+        status.tor = away === "connecting" ? { running: true, progress: 45, summary: "Loading relay descriptors" } : { running: true, progress: 100, summary: "Done" };
+      }
       return { running: true, status };
     } catch (e) {
       return { running: false, error: String(e) };
@@ -482,6 +497,41 @@ export function isPrivateServer(url: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/// Whether a URL names an onion address.
+export function isOnion(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    return new URL(url).hostname.toLowerCase().endsWith(".onion");
+  } catch {
+    return false;
+  }
+}
+
+/// The network's onion address, as a URL: how devices reach it from anywhere,
+/// through tor. Undefined when the server has not published one.
+export function onionOf(status: Status): string | undefined {
+  return status.server_urls?.find(isOnion);
+}
+
+/// An onion address short enough to read: its start and end, which is what
+/// anybody comparing two of them looks at.
+export function shortOnion(url: string): string {
+  let host = url;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    /* already a host */
+  }
+  const label = host.replace(/\.onion$/i, "");
+  return label.length > 24 ? `${label.slice(0, 12)}…${label.slice(-6)}.onion` : host;
+}
+
+/// Whether this device is reaching the network through tor right now — it is
+/// away from home.
+export function viaTor(status: Status): boolean {
+  return isOnion(status.server_in_use);
 }
 
 /// One phrase for how a peer is being reached.

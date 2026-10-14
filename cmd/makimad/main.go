@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -48,6 +49,7 @@ import (
 	"github.com/justin06lee/makima/internal/serve"
 	"github.com/justin06lee/makima/internal/sshd"
 	"github.com/justin06lee/makima/internal/stun"
+	"github.com/justin06lee/makima/internal/tor"
 	"github.com/justin06lee/makima/internal/update"
 	"github.com/justin06lee/makima/internal/wg"
 )
@@ -195,6 +197,11 @@ type node struct {
 	exitMu      sync.Mutex
 	exitProblem string
 
+	// tor reaches the control plane at its onion address, which is how a
+	// node away from home reaches it at all. Started when first needed, or
+	// ahead of time on a node that will need it; see warmTor.
+	tor *tor.Dialer
+
 	// sshProblem is why the SSH server is not running although switched
 	// on. Guarded by mu.
 	sshProblem string
@@ -307,6 +314,9 @@ func run(opts options, upd *update.Installer) error {
 		stopRun:   stopRun,
 		binder:    &bypass.Binder{},
 	}
+	n.tor = &tor.Dialer{DataDir: tor.DataDir(n.cfgPath), Logger: log.Default()}
+	n.binder.SetOnion(n.tor.DialContext)
+	defer n.tor.Close()
 	n.loadUpdateFailure()
 	defer n.serve.Close()
 	defer n.inbox.Close()
@@ -356,6 +366,7 @@ func run(opts options, upd *update.Installer) error {
 		n.client = control.NewClient(f.LoginServer, f.ServerKey, f.MachineKey)
 		n.client.SetAlternates(f.ControlURLs)
 		n.client.SetBinder(n.binder)
+		n.warmTor(f.LoginServer, f.ControlURLs)
 
 		// A node with a cached netmap comes up on it at once and registers
 		// from the poll loop. Registering first held the tunnel down for as
@@ -745,6 +756,7 @@ func (n *node) apply(ctx context.Context, resp *control.MapResponse) {
 	if !slices.Equal(n.file.ControlURLs, resp.ControlURLs) {
 		n.file.ControlURLs = resp.ControlURLs
 		n.client.SetAlternates(resp.ControlURLs)
+		n.warmTor(n.file.LoginServer, resp.ControlURLs)
 	}
 
 	m := n.netMapLocked()
@@ -839,6 +851,55 @@ func (n *node) followControlURL() {
 	}
 	log.Printf("control plane: reaching it at %s now", base)
 	n.applyNetwork(m)
+}
+
+// warmTor starts tor ahead of need on a node that will need it: one with an
+// onion address for its control plane, which it reaches through that address
+// whenever it is away from home. Started now, tor is connected by then, and
+// leaving the house costs a few seconds of failover rather than tor's whole
+// start.
+//
+// Not on the machine holding the network, which reaches its own control plane
+// at one of its own addresses wherever it is; there tor starts only if a dial
+// to the onion address is ever actually made.
+func (n *node) warmTor(loginServer string, urls []string) {
+	if n.tor == nil || !slices.ContainsFunc(urls, isOnionURL) || isOwnAddress(loginServer) {
+		return
+	}
+	n.tor.Warm()
+}
+
+// isOnionURL reports whether a control URL is an onion address.
+func isOnionURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && tor.IsOnion(u.Hostname())
+}
+
+// isOwnAddress reports whether a control URL names this machine: loopback, or
+// an address one of its interfaces holds.
+func isOwnAddress(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	ip, err := netip.ParseAddr(u.Hostname())
+	if err != nil {
+		return u.Hostname() == "localhost"
+	}
+	ip = ip.Unmap()
+	if ip.IsLoopback() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if p, err := netip.ParsePrefix(a.String()); err == nil && p.Addr().Unmap() == ip {
+			return true
+		}
+	}
+	return false
 }
 
 // controlURL is the address this node is currently reaching its control plane

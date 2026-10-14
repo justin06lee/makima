@@ -67,6 +67,12 @@ func (n *node) networkChanged(ctx context.Context) {
 		n.sock.NetworkChanged()
 		go n.refreshEndpoints(ctx)
 	}
+	// The address the control plane answered at on the old network — its
+	// onion address, away from home — may not be the best one on this; the
+	// one the node joined through is tried first again.
+	if n.client != nil {
+		n.client.Rehome()
+	}
 	// The poll open now went out over the old network; start another, which
 	// also carries the new endpoints to the control plane straight away.
 	n.kickPoll()

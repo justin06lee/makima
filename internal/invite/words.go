@@ -113,6 +113,19 @@ func MACKey(secret []byte) []byte {
 	return sum[:]
 }
 
+// JoinOnionSeed is the seed of the onion address the words lead to, for a
+// machine joining from somewhere other than the server's own network.
+//
+// The words have no room for the server's onion address, so the address comes
+// from the secret instead: the server publishes this one, beside its own, for
+// as long as the invite lasts, and the joining machine works out the same
+// address from the words. Whoever holds the words could publish it too, which
+// is no more than they could already do — the words are a bearer credential,
+// and they could simply join with them.
+func JoinOnionSeed(secret []byte) [32]byte {
+	return sha256.Sum256(append([]byte("makima-invite-onion\x00"), secret...))
+}
+
 // ServerKeyMAC is the server's proof that a key is its own, to somebody who
 // holds the words.
 func ServerKeyMAC(macKey []byte, k key.Public) []byte {

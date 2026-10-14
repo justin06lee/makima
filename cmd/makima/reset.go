@@ -20,6 +20,7 @@ import (
 	"github.com/justin06lee/makima/internal/control"
 	"github.com/justin06lee/makima/internal/localapi"
 	"github.com/justin06lee/makima/internal/supervise"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 // resetCmd puts makima on this machine back the way a fresh install leaves
@@ -354,7 +355,9 @@ func (r *resetState) list() {
 		nodeFiles = p.nodeFiles()
 	}
 	r.state = slices.Concat(nodeFiles, runFiles)
-	r.doomed = slices.Concat(r.state, existing(p.log), p.resolverFiles())
+	// Tor's state, the daemon's and the server's both, is a cache of the tor
+	// network and nothing of the machine's: deleted, never copied aside.
+	r.doomed = slices.Concat(r.state, existing(p.log), p.resolverFiles(), existing(tor.RootDir))
 	r.backup = nil
 	if r.held != nil {
 		r.backup = r.state
@@ -535,7 +538,17 @@ func (r *resetState) leave(ctx context.Context) {
 	n := r.node
 	c := control.NewClient(n.LoginServer, n.ServerKey, n.MachineKey)
 	c.SetAlternates(n.ControlURLs)
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// Away from home the server is reached through tor, in the daemon's own
+	// tor directory — the daemon is stopped by now — which is far slower than
+	// the LAN, so it is given the time tor needs.
+	b, stopTor := onionBinder(nodeTorDir(r.paths.config))
+	defer stopTor()
+	c.SetBinder(b)
+	wait := 20 * time.Second
+	if slices.ContainsFunc(n.ControlURLs, func(u string) bool { return tor.IsOnion(hostOfURL(u)) }) {
+		wait = tor.ConnectTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
 	forget := "makima-server forget -name " + strconv.Quote(n.Self.Name)

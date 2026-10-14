@@ -166,3 +166,37 @@ func TestDecodeErrorIsShort(t *testing.T) {
 		t.Fatalf("error is %d characters long:\n%s", len(err.Error()), err)
 	}
 }
+
+func TestOnionTravelsWithTheInvite(t *testing.T) {
+	priv, _ := key.NewPrivate()
+	const onion = "aoqqpp7tzyil4hlq3umoos6atft6jvrqtosq2xy53sdgiesvgg4bqead.onion"
+	s, err := Encode(Invite{Server: "http://192.168.1.50:8080", AuthKey: "makima_x", ServerKey: priv.Public(), Onion: onion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Decode(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.Onion != onion {
+		t.Errorf("onion came back as %q", inv.Onion)
+	}
+
+	// An older invite, with no onion address, still decodes.
+	old, err := Encode(Invite{Server: "http://192.168.1.50:8080", AuthKey: "makima_x", ServerKey: priv.Public()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv, err := Decode(old); err != nil || inv.Onion != "" {
+		t.Errorf("an invite without an onion address: %+v, %v", inv, err)
+	}
+}
+
+func TestMistypedOnionIsRefusedWhenMinting(t *testing.T) {
+	priv, _ := key.NewPrivate()
+	_, err := Encode(Invite{Server: "http://192.168.1.50:8080", AuthKey: "makima_x", ServerKey: priv.Public(),
+		Onion: "boqqpp7tzyil4hlq3umoos6atft6jvrqtosq2xy53sdgiesvgg4bqead.onion"})
+	if err == nil {
+		t.Fatal("an invite with a broken onion address was minted")
+	}
+}

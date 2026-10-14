@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { isPrivateServer, parseInvite, type Environment, type Invite, type Status } from "./api";
+import { isPrivateServer, onionOf, parseInvite, type Environment, type Invite, type Status } from "./api";
 import type { Act } from "./App";
 import { Button, Code, Modal, Spinner, useCopied } from "./ui";
 import { Icon } from "./icons";
@@ -62,7 +62,10 @@ export function AddDevice({
   const command = invite ? `makima ${verb} ${invite.invite}` : "";
   const [copiedWords, copyWords] = useCopied();
   const [copiedCommand, copyCommand] = useCopied();
-  const local = !serverless && isPrivateServer(status.server);
+  // An invite works from anywhere once the network has an onion address;
+  // without one, only on the network that holds it.
+  const anywhere = !serverless && !!onionOf(status);
+  const local = !serverless && !anywhere && isPrivateServer(status.server);
   const expires = serverless && status.pairing ? new Date(status.pairing.expires).getTime() : made ? made + INVITE_LIFE : null;
   const left = useCountdown(expires);
   const words = invite?.words?.split(/\s+/).filter(Boolean) ?? [];
@@ -136,6 +139,12 @@ export function AddDevice({
             )}
           </div>
 
+          {anywhere && (
+            <p className="flex gap-2.5 px-0.5 text-[12px] leading-relaxed text-dim">
+              <Icon.Globe size={14} className="mt-0.5 shrink-0 text-ink" />
+              Works from anywhere. If the other device isn't on this network, it joins through Tor — that takes a moment longer.
+            </p>
+          )}
           {local && (
             <p className="flex gap-2.5 rounded-xl border border-line bg-sunken/60 px-3.5 py-2.5 text-[12px] leading-relaxed text-ink-2">
               <Icon.Warn size={14} className="mt-0.5 shrink-0 text-ink" />

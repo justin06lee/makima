@@ -190,7 +190,7 @@ func TestAnUntrustedForwardedForIsIgnored(t *testing.T) {
 func TestResolve(t *testing.T) {
 	cases := []struct{ relay, control, want string }{
 		{"/relay", "http://192.168.1.20:8080", "http://192.168.1.20:8080/relay"},
-		{"/relay", "http://tenet.duckdns.org:8080/", "http://tenet.duckdns.org:8080/relay"},
+		{"/relay", "http://home.example.net:8080/", "http://home.example.net:8080/relay"},
 		{"/relay", "https://makima.example.dev", "https://makima.example.dev/relay"},
 		// Absolute relays are an operator's choice and are left alone.
 		{"relay.example:3478", "http://192.168.1.20:8080", "relay.example:3478"},

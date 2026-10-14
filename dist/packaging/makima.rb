@@ -15,6 +15,9 @@ class Makima < Formula
   version "0.0.0"
   license "MIT"
 
+  # How the network is reached from anywhere: makima runs a private tor.
+  depends_on "tor"
+
   on_macos do
     on_arm do
       url "https://github.com/justin06lee/makima/releases/download/v#{version}/makima-v#{version}-darwin-arm64.tar.gz"
