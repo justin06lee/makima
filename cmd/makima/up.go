@@ -218,7 +218,9 @@ func upCmd(args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Long enough to join through tor from somewhere else, the first time
+	// this machine has ever run it; on the same network it is seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if inv.Server != "" {
@@ -443,7 +445,10 @@ func mintWords(admin *control.AdminClient, serverURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := admin.MintInviteKey(invite.AuthKey(secret), invite.Handle(secret), invite.MACKey(secret), inviteTTL); err != nil {
+	// The onion address the words lead to, published by the server for as
+	// long as the invite lasts, so they work from anywhere.
+	onion := invite.JoinOnionSeed(secret)
+	if _, err := admin.MintInviteKey(invite.AuthKey(secret), invite.Handle(secret), invite.MACKey(secret), onion[:], inviteTTL); err != nil {
 		return "", fmt.Errorf("mint a credential: %w", err)
 	}
 	return invite.EncodeWords(serverURL, secret)
@@ -568,10 +573,12 @@ func registerNode(ctx context.Context, path string, inv invite.Invite, name stri
 		LoginServer: urls[0],
 		ServerKey:   inv.ServerKey,
 		AuthKey:     inv.AuthKey,
-		// The onion address goes in now, not with the first netmap: a machine
-		// that joined from somewhere else has to reach the server that way to
-		// get its first netmap at all.
-		ControlURLs: urls[1:],
+		// The server's other addresses go in now, not with the first netmap:
+		// a machine that joined from somewhere else has to reach the server
+		// at its onion address to get its first netmap at all — the server's
+		// lasting one, not the one an invite's words led to, which goes when
+		// the invite does.
+		ControlURLs: joinedURLs(resp.ControlURLs, urls),
 		Self: netmap.Node{
 			ID:        resp.NodeID,
 			Name:      name,
@@ -705,7 +712,9 @@ func joinCmd(args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// As long as `makima up` gives a join: through tor, from far away, on a
+	// machine that has never run tor, takes minutes rather than seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	return joinWith(ctx, *path, inv, *name)
 }

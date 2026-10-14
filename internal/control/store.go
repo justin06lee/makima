@@ -195,6 +195,12 @@ type AuthKey struct {
 	// are never stored anywhere.
 	Handle string `json:"handle,omitempty"`
 	MACKey []byte `json:"mac_key,omitempty"`
+
+	// JoinOnion is the seed of the onion address the same words lead to (see
+	// invite.JoinOnionSeed): published beside the server's own until the key
+	// expires, so the words work from anywhere and not only on the server's
+	// network. Not secret beyond the words themselves.
+	JoinOnion []byte `json:"join_onion,omitempty"`
 }
 
 // Valid reports whether the key may still be redeemed.
@@ -230,9 +236,11 @@ type Store struct {
 	// as long as the process serving it does.
 	builtinRelay netmap.Relay
 
-	// torState is how publishing this server's onion service is going. Not
-	// persisted. See NoteTor.
+	// torState is how publishing this server's onion service is going, and
+	// joinKick says an invite's onion address wants publishing. Neither is
+	// persisted. See NoteTor and JoinOnions.
 	torState tor.ServiceState
+	joinKick chan struct{}
 
 	// serverVersion is the release this server runs, handed to every node.
 	serverVersion string
@@ -253,9 +261,10 @@ var DefaultPrefix = netip.MustParsePrefix("10.77.0.0/16")
 // identity — on first run.
 func OpenStore(path string) (*Store, error) {
 	s := &Store{
-		path:    path,
-		version: uint64(time.Now().UnixMicro()),
-		changed: make(chan struct{}),
+		path:     path,
+		version:  uint64(time.Now().UnixMicro()),
+		changed:  make(chan struct{}),
+		joinKick: make(chan struct{}, 1),
 	}
 
 	b, err := os.ReadFile(path)
@@ -954,15 +963,52 @@ func (s *Store) MintAuthKeyTagged(reusable bool, ttl time.Duration, tags []strin
 // MintInviteKey stores a credential that was derived from words, together
 // with the handle and MAC key derived from the same words. Single-use: an
 // invite is for one machine.
-func (s *Store) MintInviteKey(secret, handle string, macKey []byte, ttl time.Duration) (*AuthKey, error) {
+//
+// joinOnion, when given, is the seed of the onion address the words lead to,
+// published from now until the key expires.
+func (s *Store) MintInviteKey(secret, handle string, macKey, joinOnion []byte, ttl time.Duration) (*AuthKey, error) {
 	if !strings.HasPrefix(secret, "makima_") || len(secret) < 24 {
 		return nil, fmt.Errorf("that is not an auth key")
 	}
 	if handle == "" || len(macKey) < 16 {
 		return nil, fmt.Errorf("an invite key needs a handle and a MAC key")
 	}
-	return s.mint(&AuthKey{Secret: secret, Handle: handle, MACKey: macKey}, ttl)
+	if len(joinOnion) != 0 && len(joinOnion) != 32 {
+		return nil, fmt.Errorf("an invite's onion seed is 32 bytes, not %d", len(joinOnion))
+	}
+	a, err := s.mint(&AuthKey{Secret: secret, Handle: handle, MACKey: macKey, JoinOnion: joinOnion}, ttl)
+	if err == nil && len(joinOnion) != 0 {
+		select {
+		case s.joinKick <- struct{}{}:
+		default:
+		}
+	}
+	return a, err
 }
+
+// JoinOnions are the onion addresses unexpired invites lead to, to publish
+// beside the server's own.
+//
+// Until the invite expires, used or not: the machine that joined through one
+// still reaches the server there for the moment between registering and its
+// first netmap, and the address admits nobody without the words.
+func (s *Store) JoinOnions() []tor.Key {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var keys []tor.Key
+	for _, a := range s.state.AuthKeys {
+		if len(a.JoinOnion) != 32 || (!a.Expires.IsZero() && now.After(a.Expires)) {
+			continue
+		}
+		keys = append(keys, tor.KeyFromSeed([32]byte(a.JoinOnion)))
+	}
+	return keys
+}
+
+// JoinOnionsChanged is signalled when an invite with an onion address is
+// minted, so it is published straight away rather than at the next check.
+func (s *Store) JoinOnionsChanged() <-chan struct{} { return s.joinKick }
 
 func (s *Store) mint(a *AuthKey, ttl time.Duration) (*AuthKey, error) {
 	if ttl < 0 {

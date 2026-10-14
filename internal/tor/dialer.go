@@ -29,9 +29,10 @@ type Dialer struct {
 
 // ConnectTimeout bounds tor joining the network plus one onion connection,
 // when the caller has set no tighter deadline of its own. Onion circuits are
-// built on demand and a cold start downloads the network's consensus; a
-// minute and a half covers both on a poor connection.
-const ConnectTimeout = 90 * time.Second
+// built on demand, and a tor that has never run downloads the network's
+// consensus first: half a minute usually, but well over a minute on a slow
+// connection or an unlucky choice of relays.
+const ConnectTimeout = 2 * time.Minute
 
 // retryAfter is how long a failed start is remembered, so a node polling
 // every few seconds does not spawn tor every few seconds while it is missing.

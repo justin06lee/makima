@@ -34,6 +34,10 @@ func NewKey() (Key, error) {
 	return k, nil
 }
 
+// KeyFromSeed is the onion identity a seed makes. For a key two machines
+// derive from a secret they share, rather than one either of them draws.
+func KeyFromSeed(seed [ed25519.SeedSize]byte) Key { return Key{seed: seed} }
+
 // Public is the ed25519 public key the address is made from.
 func (k Key) Public() ed25519.PublicKey {
 	return ed25519.NewKeyFromSeed(k.seed[:]).Public().(ed25519.PublicKey)

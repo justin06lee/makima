@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
+	"sync"
 	"time"
 )
 
@@ -24,6 +26,45 @@ type Service struct {
 
 	// OnState is told every change in how publishing is going.
 	OnState func(ServiceState)
+
+	// extra are other onion services published beside Key's, forwarding to
+	// the same target — the addresses fifteen-word invites lead to. Changed
+	// by SetExtra, which kicks the running tor to catch up.
+	mu    sync.Mutex
+	extra []Key
+	kick  chan struct{}
+}
+
+// SetExtra publishes these keys' onion services too, for as long as they are
+// set, and takes down any that are no longer in the list.
+func (s *Service) SetExtra(keys []Key) {
+	s.mu.Lock()
+	s.extra = slices.Clone(keys)
+	kick := s.kickLocked()
+	s.mu.Unlock()
+	select {
+	case kick <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Service) extras() []Key {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.extra)
+}
+
+func (s *Service) kicked() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.kickLocked()
+}
+
+func (s *Service) kickLocked() chan struct{} {
+	if s.kick == nil {
+		s.kick = make(chan struct{}, 1)
+	}
+	return s.kick
 }
 
 // Phases of publishing an onion service, in order.
@@ -114,17 +155,57 @@ func (s *Service) once(ctx context.Context, host string) (healthy bool, err erro
 	}
 	s.note(ServiceState{Host: host, Phase: PhasePublishing})
 
-	if err := s.reach(ctx, t, host); err != nil {
-		return false, err
-	}
-	s.note(ServiceState{Host: host, Phase: PhaseReachable})
-	s.Logger.Printf("onion service: reachable from anywhere at %s", host)
+	published := map[string]bool{}
+	s.syncExtras(t, published)
 
-	select {
-	case <-ctx.Done():
-		return true, ctx.Err()
-	case <-t.Done():
-		return true, t.Err()
+	// Reaching the service is checked alongside rather than before anything
+	// else, so an invite minted in the meantime is published at once.
+	reached := make(chan error, 1)
+	go func() { reached <- s.reach(ctx, t, host) }()
+	for {
+		select {
+		case err := <-reached:
+			if err != nil {
+				return false, err
+			}
+			healthy = true
+			reached = nil
+			s.note(ServiceState{Host: host, Phase: PhaseReachable})
+			s.Logger.Printf("onion service: reachable from anywhere at %s", host)
+		case <-s.kicked():
+			s.syncExtras(t, published)
+		case <-ctx.Done():
+			return healthy, ctx.Err()
+		case <-t.Done():
+			return healthy, t.Err()
+		}
+	}
+}
+
+// syncExtras publishes the extra services not yet up and takes down the ones
+// no longer wanted. published is what this tor has up, by address.
+func (s *Service) syncExtras(t *Tor, published map[string]bool) {
+	want := map[string]Key{}
+	for _, k := range s.extras() {
+		want[k.Host()] = k
+	}
+	for host := range published {
+		if _, ok := want[host]; !ok {
+			if err := t.Unpublish(host); err != nil {
+				s.Logger.Printf("onion service: take down %s: %v", host, err)
+			}
+			delete(published, host)
+		}
+	}
+	for host, k := range want {
+		if published[host] {
+			continue
+		}
+		if _, err := t.Publish(k, s.VirtPort, s.Target); err != nil {
+			s.Logger.Printf("onion service: publish %s: %v", host, err)
+			continue
+		}
+		published[host] = true
 	}
 }
 

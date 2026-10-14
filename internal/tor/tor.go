@@ -316,6 +316,14 @@ func (t *Tor) Publish(k Key, virtPort int, target string) (string, error) {
 	return host, nil
 }
 
+// Unpublish takes down an onion service Publish put up.
+func (t *Tor) Unpublish(host string) error {
+	if err := t.Err(); err != nil {
+		return err
+	}
+	return t.ctl.delOnion(strings.TrimSuffix(host, ".onion"))
+}
+
 // Close stops tor. Closing the control connection is what stops it — tor was
 // told it is owned by that connection — and it is killed if it lingers.
 func (t *Tor) Close() {

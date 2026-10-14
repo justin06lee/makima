@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/justin06lee/makima/internal/bypass"
 	"github.com/justin06lee/makima/internal/control"
@@ -60,19 +61,44 @@ func inviteURLs(s string, onion string) []string {
 //
 // A wrong key at one address is no reason to give up on the next: away from
 // home, the LAN address can be somebody else's machine entirely.
+//
+// An onion address that is not published yet is waited for: the server puts
+// up an invite's own address when the invite is minted, and tor takes a
+// little while to spread the word.
 func fetchKeyVerified(ctx context.Context, b *bypass.Binder, urls []string, handle string, macKey []byte) (key.Public, error) {
 	var errs []error
 	for _, u := range urls {
-		k, err := control.FetchServerKeyVerified(ctx, b, u, handle, macKey)
-		if err == nil {
-			return k, nil
+		for {
+			k, err := control.FetchServerKeyVerified(ctx, b, u, handle, macKey)
+			if err == nil {
+				return k, nil
+			}
+			if ctx.Err() != nil {
+				return key.Public{}, err
+			}
+			var de *tor.DialError
+			if errors.As(err, &de) && de.Unpublished() {
+				select {
+				case <-ctx.Done():
+				case <-time.After(5 * time.Second):
+					continue
+				}
+			}
+			errs = append(errs, err)
+			break
 		}
-		if ctx.Err() != nil {
-			return key.Public{}, err
-		}
-		errs = append(errs, err)
 	}
 	return key.Public{}, errors.Join(errs...)
+}
+
+// joinedURLs are the addresses a machine that just joined keeps for its
+// server: those the server named when it registered the machine, or, from a
+// server too old to name them, the invite's own.
+func joinedURLs(named, invite []string) []string {
+	if len(named) > 0 {
+		return named
+	}
+	return invite[1:]
 }
 
 // serverOnion is the onion address the network's server is published at, or

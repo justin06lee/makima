@@ -233,7 +233,7 @@ func TestFetchServerKeyVerifiedByInvite(t *testing.T) {
 
 	secret := []byte("fourteen bytes")
 	handle, macKey := "handle-1", []byte("mac key material, 32 bytes long!")
-	if _, err := store.MintInviteKey("makima_"+string(secret)+"padding-to-length", handle, macKey, time.Hour); err != nil {
+	if _, err := store.MintInviteKey("makima_"+string(secret)+"padding-to-length", handle, macKey, nil, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 

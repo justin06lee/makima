@@ -74,6 +74,23 @@ func startOnion(ctx context.Context, store *control.Store, statePath string, han
 	}
 	go svc.Run(ctx)
 
+	// Fifteen-word invites lead to onion addresses of their own; each is
+	// published as soon as its invite is minted, and taken down when it
+	// expires.
+	go func() {
+		tick := time.NewTicker(time.Minute)
+		defer tick.Stop()
+		for {
+			svc.SetExtra(store.JoinOnions())
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			case <-store.JoinOnionsChanged():
+			}
+		}
+	}()
+
 	log.Printf("onion    %s (publishing through tor)", k.Host())
 	return ln, stripForwarded(handler), nil
 }

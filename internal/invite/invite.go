@@ -89,6 +89,7 @@ func FromWords(w WordInvite) Invite {
 	return Invite{
 		Server:  w.Server,
 		AuthKey: AuthKey(w.Secret),
+		Onion:   tor.KeyFromSeed(JoinOnionSeed(w.Secret)).Host(),
 		handle:  Handle(w.Secret),
 		macKey:  MACKey(w.Secret),
 	}

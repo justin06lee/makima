@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 const (
@@ -116,5 +119,32 @@ func TestOldDuckDNSNameIsForgotten(t *testing.T) {
 	}
 	if after["ddns"] != nil {
 		t.Error("the DuckDNS token is still in the state file")
+	}
+}
+
+func TestInvitesLeadToTheirOwnOnion(t *testing.T) {
+	s := newStore(t)
+	seed := make([]byte, 32)
+	seed[0] = 7
+	if _, err := s.MintInviteKey("makima_0123456789abcdefghijkl", "handle-1", make([]byte, 32), seed, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.JoinOnionsChanged():
+	default:
+		t.Error("minting an invite with an onion address did not say so")
+	}
+	// One that has already expired leads nowhere.
+	if _, err := s.MintInviteKey("makima_zyxwvutsrqponmlkjihgfe", "handle-2", make([]byte, 32), make([]byte, 32), time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+
+	keys := s.JoinOnions()
+	if len(keys) != 1 || keys[0].Host() != tor.KeyFromSeed([32]byte(seed)).Host() {
+		t.Fatalf("JoinOnions = %v, want just the unexpired invite's", keys)
+	}
+	if _, err := s.MintInviteKey("makima_0123456789abcdefghijkm", "handle-3", make([]byte, 32), seed[:5], time.Hour); err == nil {
+		t.Error("a short onion seed was accepted")
 	}
 }

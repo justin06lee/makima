@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/justin06lee/makima/internal/key"
+	"github.com/justin06lee/makima/internal/tor"
 )
 
 func TestWordsRoundTrip(t *testing.T) {
@@ -230,5 +231,26 @@ func TestTheServerKeepsItsCase(t *testing.T) {
 	}
 	if inv.Server != "https://example.com/Makima" {
 		t.Errorf("server came back as %s", inv.Server)
+	}
+}
+
+func TestWordsLeadToTheServersJoinOnion(t *testing.T) {
+	secret, err := NewSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	words, err := EncodeWords("http://192.168.1.50:8080", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Parse(words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The address the server publishes for these words, worked out from the
+	// words alone on the joining machine.
+	want := tor.KeyFromSeed(JoinOnionSeed(secret)).Host()
+	if inv.Onion != want {
+		t.Errorf("words lead to %q, the server publishes %q", inv.Onion, want)
 	}
 }

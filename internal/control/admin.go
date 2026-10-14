@@ -67,6 +67,9 @@ type AuthKeyRequest struct {
 	Secret string `json:"secret,omitempty"`
 	Handle string `json:"handle,omitempty"`
 	MACKey []byte `json:"mac_key,omitempty"`
+
+	// JoinOnion is the seed of the onion address the words lead to.
+	JoinOnion []byte `json:"join_onion,omitempty"`
 }
 
 // ForgetRequest removes a node.
@@ -96,7 +99,7 @@ func (s *Server) AdminHandler() http.Handler {
 		var a *AuthKey
 		var err error
 		if req.Secret != "" {
-			a, err = s.store.MintInviteKey(req.Secret, req.Handle, req.MACKey, req.TTL)
+			a, err = s.store.MintInviteKey(req.Secret, req.Handle, req.MACKey, req.JoinOnion, req.TTL)
 		} else {
 			a, err = s.store.MintAuthKeyTagged(req.Reusable, req.TTL, req.Tags)
 		}
@@ -215,9 +218,9 @@ func (c *AdminClient) MintAuthKeyTagged(reusable bool, ttl time.Duration, tags [
 }
 
 // MintInviteKey stores a credential derived from words. See invite.EncodeWords.
-func (c *AdminClient) MintInviteKey(secret, handle string, macKey []byte, ttl time.Duration) (*AuthKey, error) {
+func (c *AdminClient) MintInviteKey(secret, handle string, macKey, joinOnion []byte, ttl time.Duration) (*AuthKey, error) {
 	var a AuthKey
-	req := AuthKeyRequest{TTL: ttl, Secret: secret, Handle: handle, MACKey: macKey}
+	req := AuthKeyRequest{TTL: ttl, Secret: secret, Handle: handle, MACKey: macKey, JoinOnion: joinOnion}
 	if err := c.call(http.MethodPost, "/admin/authkey", req, &a); err != nil {
 		return nil, err
 	}

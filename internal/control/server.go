@@ -183,8 +183,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Printf("registered %s as %s (node %d)", node.Name, node.Address.Addr(), node.ID)
 	s.reply(w, env.MachineKey, &RegisterResponse{
-		NodeID:  node.ID,
-		Address: node.Address,
+		NodeID:      node.ID,
+		Address:     node.Address,
+		ControlURLs: s.store.ControlURLs(),
 	})
 }
 

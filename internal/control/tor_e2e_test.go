@@ -2,15 +2,18 @@ package control
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/justin06lee/makima/internal/bypass"
+	"github.com/justin06lee/makima/internal/invite"
 	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/relay"
 	"github.com/justin06lee/makima/internal/tor"
@@ -148,4 +151,64 @@ func TestNodeAwayFromHome(t *testing.T) {
 		t.Fatalf("relay %s never connected", relayURL)
 	}
 	rc.Close()
+
+	// Fifteen words, typed on a machine somewhere else. They carry no onion
+	// address; they lead to one of the invite's own, which the server
+	// publishes the moment the invite is minted.
+	secret, err := invite.NewSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := invite.JoinOnionSeed(secret)
+	if _, err := store.MintInviteKey(invite.AuthKey(secret), invite.Handle(secret), invite.MACKey(secret), seed[:], time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetExtra(store.JoinOnions())
+	words, err := invite.EncodeWords(home, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := invite.Parse(words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinURL := OnionURL(inv.Onion)
+	handle, macKey, _ := inv.Verifier()
+
+	start = time.Now()
+	var wordsKey key.Public
+	for {
+		wordsKey, err = FetchServerKeyVerified(ctx, b, joinURL, handle, macKey)
+		var de *tor.DialError
+		if err == nil || !errors.As(err, &de) || !de.Unpublished() {
+			break
+		}
+		t.Logf("the invite's onion address is not published yet")
+		time.Sleep(5 * time.Second)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wordsKey != store.ServerKey().Public() {
+		t.Fatal("the invite's onion address vouched for somebody else's key")
+	}
+	t.Logf("server key by the words' own onion address in %s", time.Since(start).Round(time.Millisecond))
+
+	desk, _ := key.NewPrivate()
+	deskNode, _ := key.NewPrivate()
+	wc := NewClient(home, wordsKey, desk)
+	wc.SetBinder(b)
+	wc.SetAlternates([]string{joinURL})
+	resp, err := wc.Register(ctx, &RegisterRequest{
+		Name: "desk", NodeKey: deskNode.Public(), DiscoKey: deskNode.Public(), AuthKey: inv.AuthKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the machine keeps: the server's lasting onion address, not the
+	// invite's, which goes when the invite does.
+	if !slices.Contains(resp.ControlURLs, OnionURL(onionKey.Host())) {
+		t.Errorf("registration named %v, not the server's onion address", resp.ControlURLs)
+	}
+	t.Logf("joined by words, from anywhere, in %s", time.Since(start).Round(time.Millisecond))
 }
