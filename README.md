@@ -57,11 +57,20 @@ network either way. See [Known limits](#known-limits).
 
 ## Install
 
-**There is no published release yet, so today this is built from source.**
-Everything below works from a clone; the packaged routes are written and wired
-into [the release workflow](.github/workflows/release.yml), and go live with
-the first `v*` tag. They are listed further down so it is clear what is coming
-and what is not yet there — not as instructions that quietly fail.
+On macOS or Linux, the latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/install.sh | sh
+```
+
+That downloads the one archive built for this machine, checks it against the
+release's `SHA256SUMS`, and puts the four binaries in `/usr/local/bin`. It
+starts nothing — `makima up` does that. Two things it leaves to you: tor, which
+is how the network is reached from anywhere (`sudo apt install tor`,
+`brew install tor`), and the desktop app, which is not in a release yet and is
+built from source.
+
+### From source
 
 ```sh
 git clone https://github.com/justin06lee/makima && cd makima
@@ -123,22 +132,26 @@ makima away, there is `makima reset` — see [Starting over](#starting-over).
 </details>
 
 <details>
-<summary>The packaged routes, once there is a release</summary>
+<summary>The other packaged routes</summary>
 
-None of these work yet — there is no tag, so there is nothing for them to
-fetch. They are here so the shape of the plan is visible.
+Every `v*` tag publishes a release through
+[the release workflow](.github/workflows/release.yml): the archives and
+`SHA256SUMS` the installer above reads, and the relay's container image.
 
 ```sh
-# the installer: one archive, checked against the release's SHA256SUMS
-curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/install.sh | sh
-
-brew install justin06lee/makima/makima     # macOS and Linux
-yay -S makima                              # Arch
-nix run github:justin06lee/makima          # Nix
 docker run -p 3478:3478 ghcr.io/justin06lee/makima   # a relay
 ```
 
-Two things are worth knowing before any of them is real:
+The rest are written and not live, so they are listed here rather than as
+instructions that quietly fail:
+
+```sh
+brew install justin06lee/makima/makima     # needs the TAP_TOKEN secret, which makes the tap
+yay -S makima                              # the PKGBUILD is on each release; nothing is on the AUR
+nix run github:justin06lee/makima          # flake.nix still has a placeholder vendorHash
+```
+
+Two things are worth knowing about all of them:
 
 **The app is not signed or notarized.** A `.dmg` downloaded from a release
 would be quarantined by Gatekeeper and refuse to open, and this app installs a
