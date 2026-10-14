@@ -217,7 +217,7 @@ release: ensure-go release-clean
 				-o $$dir/$$b$$ext ./cmd/$$b || exit 1; \
 		done; \
 		cp README.md LICENSE $$dir/; \
-		cp -R dist/install-service.sh dist/uninstall.sh dist/*.service dist/*.plist $$dir/ 2>/dev/null || true; \
+		cp -R dist/install-service.sh dist/uninstall.sh dist/update.sh dist/*.service dist/*.plist $$dir/ 2>/dev/null || true; \
 		if [ "$$os" = windows ]; then \
 			(cd $(RELEASE) && zip -qr $$(basename $$dir).zip $$(basename $$dir)); \
 		else \

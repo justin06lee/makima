@@ -5,7 +5,8 @@
 // and this repository is public, so scripts/avatars.ts fetches each from the
 // Chainsaw Man wiki, crops it and takes out any colour into src/avatars/ when
 // the app is built. Without them the picker offers an upload and every
-// device shows its initial instead.
+// device shows its initial instead — which is how a published release's app
+// comes, since a release is a public download too (MAKIMA_NO_AVATARS).
 //
 // crop is [centre x, centre y, side]: the centre as fractions of the image's
 // width and height, the side of the square as a fraction of its height.

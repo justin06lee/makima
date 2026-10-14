@@ -63,12 +63,20 @@ On macOS or Linux, the latest release:
 curl -fsSL https://raw.githubusercontent.com/justin06lee/makima/master/dist/install.sh | sh
 ```
 
-That downloads the one archive built for this machine, checks it against the
-release's `SHA256SUMS`, and puts the four binaries in `/usr/local/bin`. It
-starts nothing — `makima up` does that. Two things it leaves to you: tor, which
-is how the network is reached from anywhere (`sudo apt install tor`,
-`brew install tor`), and the desktop app, which is not in a release yet and is
-built from source.
+That downloads the archive built for this machine and, on a Mac or a Linux
+desktop, the app; checks both against the release's `SHA256SUMS`; and puts the
+four binaries in `/usr/local/bin` and the app in `/Applications` — or, on
+Debian and Ubuntu, in through apt, which brings tor along with it. Then open
+the app, or run `makima up`. Running it again is how to update: what was
+running is stopped for the replacement and started again, as with `make`.
+
+`MAKIMA_APP=0` leaves the app out; `MAKIMA_APP=1` puts it in on a machine with
+no desktop to be seen, which otherwise gets the binaries alone. Intel Macs and
+Linux without apt get the binaries alone too, and build the app from source.
+On a Mac, tor — how the network is reached from anywhere — is
+`brew install tor`. A release's app shows initials where a source build shows
+device faces: those are pages of Chainsaw Man, fine in an app you build
+yourself and not in a public download.
 
 ### From source
 
@@ -135,7 +143,8 @@ makima away, there is `makima reset` — see [Starting over](#starting-over).
 <summary>The other packaged routes</summary>
 
 Every `v*` tag publishes a release through
-[the release workflow](.github/workflows/release.yml): the archives and
+[the release workflow](.github/workflows/release.yml): the archives, the app
+(Apple Silicon Macs; Debian and Ubuntu on amd64 and arm64) and the
 `SHA256SUMS` the installer above reads, and the relay's container image.
 
 ```sh
@@ -153,11 +162,13 @@ nix run github:justin06lee/makima          # flake.nix still has a placeholder v
 
 Two things are worth knowing about all of them:
 
-**The app is not signed or notarized.** A `.dmg` downloaded from a release
-would be quarantined by Gatekeeper and refuse to open, and this app installs a
-sudoers rule — which is exactly the kind of thing signing exists to vouch for.
-Until there is a Developer ID certificate in the release workflow, building it
-yourself is the only honest way to run it.
+**The app is not signed or notarized.** The installer fetches it with curl,
+which marks nothing for Gatekeeper to stop, so it opens — and nothing but the
+release's checksum vouches for an app that installs a sudoers rule, which is
+exactly the kind of thing signing exists for. It is the same trust the
+binaries already ask for, `makimad` running as root; building from source is
+how not to extend it. A Developer ID certificate in the release workflow is the
+fix, and is not there.
 
 **The checksum is not a signature.** `install.sh` refuses to install anything
 it cannot check, which catches a corrupt download and a mismatched build. It
@@ -1392,7 +1403,8 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
   downloaded. See [Install](#install).
 - **`makima update` moves the four programs, not the app's window.** The daemon
   the app runs, and the copies inside its bundle, are updated with everything
-  else; the app's own interface is not, until it is rebuilt with `make`.
+  else; the app's own interface is not, until it is rebuilt with `make` or the
+  installer is run again.
 - **A machine updating restarts its daemon, and with it anything the daemon
   itself serves:** a session on the built-in SSH server (`makima sshd`, which
   `makima possess` prefers when it is on), a file transfer in flight, and
