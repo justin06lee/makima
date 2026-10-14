@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, inTauri, type Check, type Environment, type Status, type Tailscale } from "./api";
+import { api, inTauri, onionOf, shortOnion, viaTor, type Check, type Environment, type Status, type Tailscale } from "./api";
 import type { Act } from "./App";
 import { Button, Card, Code, Dot, PageHeader, Row, Section, Toggle } from "./ui";
 import { Icon } from "./icons";
@@ -60,6 +60,7 @@ export function Settings({
                 }
                 mono={!env.holds_mesh && !status.serverless && !!status.server}
               />
+              <Anywhere status={status} holds={env.holds_mesh} />
               {status.relay.url && (
                 <Row
                   value={status.relay.url}
@@ -231,4 +232,44 @@ function Diagnostics() {
       </Card>
     </Section>
   );
+}
+
+/// How the network is reached from anywhere: the onion address tor publishes
+/// it at, and whether this device is going through it right now.
+function Anywhere({ status, holds }: { status: Status; holds: boolean }) {
+  if (status.serverless) return null;
+  const onion = onionOf(status);
+  if (!onion) {
+    return holds ? (
+      <Row
+        value="Reachable only from here"
+        caption="Install tor on this device, and every device can reach the network from anywhere"
+      />
+    ) : null;
+  }
+
+  const tor = status.tor;
+  let caption: React.ReactNode;
+  if (holds) {
+    caption = "Devices away from home reach the network here, through Tor";
+  } else if (viaTor(status)) {
+    caption =
+      tor && tor.progress < 100 ? (
+        <span className="flex items-center gap-1.5">
+          <Dot tone="grey" size="sm" />
+          Connecting to Tor… {tor.progress}%
+        </span>
+      ) : (
+        <span className="flex items-center gap-1.5">
+          <Dot tone="green" size="sm" />
+          Connected through Tor — you're away from home
+        </span>
+      );
+  } else if (tor?.error) {
+    caption = `Tor: ${tor.error}`;
+  } else {
+    caption = "Used through Tor whenever you're away from home";
+  }
+
+  return <Row value={shortOnion(onion)} caption={caption} mono />;
 }
