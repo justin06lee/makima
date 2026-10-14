@@ -160,6 +160,10 @@ type Node struct {
 	// another one is going, both as it last reported them.
 	Version string               `json:"version,omitempty"`
 	Update  *netmap.UpdateStatus `json:"update,omitempty"`
+
+	// Owner is the account the node says makima belongs to there, as it last
+	// reported one that could be a name.
+	Owner string `json:"owner,omitempty"`
 }
 
 // Online reports whether the node has polled recently enough to be considered
@@ -486,6 +490,9 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		if req.Version != "" {
 			existing.Version = req.Version
 		}
+		if netmap.ValidOwner(req.Owner) {
+			existing.Owner = req.Owner
+		}
 		if req.AdvertiseExit && !existing.ExitRevoked {
 			existing.ExitApproved = true
 		}
@@ -537,6 +544,7 @@ func (s *Store) Register(machineKey key.Public, req *RegisterRequest) (*Node, er
 		AdvertisesExit:   req.AdvertiseExit,
 		Services:         req.Services,
 		Version:          req.Version,
+		Owner:            validOwner(req.Owner),
 		// An exit-node offer is accepted as it arrives. Unlike a subnet route,
 		// which every node installs the moment it is approved, an exit node
 		// changes nothing until a person on another machine chooses it by
@@ -876,6 +884,15 @@ func (s *Store) domainLocked() string {
 	return DefaultDomain
 }
 
+// validOwner is the name when it could be an account's, and nothing when it
+// could not: see netmap.ValidOwner.
+func validOwner(name string) string {
+	if netmap.ValidOwner(name) {
+		return name
+	}
+	return ""
+}
+
 func (s *Store) toNetmapNode(n *Node, relay netmap.Relay) netmap.Node {
 	out := netmap.Node{
 		ID:           n.ID,
@@ -889,6 +906,7 @@ func (s *Store) toNetmapNode(n *Node, relay netmap.Relay) netmap.Node {
 		KeySignature: n.KeySignature,
 		Services:     n.Services,
 		Version:      n.Version,
+		Owner:        n.Owner,
 
 		NetworkSignature: n.NetworkSignature,
 	}

@@ -109,6 +109,33 @@ type Node struct {
 	// Update is how this node's move to another version is going, while one
 	// is under way or after one failed. Nil the rest of the time.
 	Update *UpdateStatus `json:"update,omitempty"`
+
+	// Owner is the account on this machine that makima belongs to, as it
+	// last reported it — the one a shell from another machine logs in as
+	// when nobody names one. Empty for a machine that does not know, and for
+	// one running a makima from before machines said.
+	Owner string `json:"owner,omitempty"`
+}
+
+// ValidOwner reports whether a name is one an account on a machine could
+// have, and so may be carried as an Owner and handed to ssh.
+//
+// Every machine on the network sees every other's Owner, and a shell on one
+// passes it to ssh as the account to log in as. So it is checked rather than
+// trusted: a name that began with a dash would reach ssh as an option, and one
+// with control characters in it would be written to a terminal.
+func ValidOwner(name string) bool {
+	if name == "" || len(name) > 64 || name[0] == '-' || name[0] == '.' {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateStatus is one node's progress towards a version it was asked to run.

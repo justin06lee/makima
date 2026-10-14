@@ -2,6 +2,7 @@ package netmap
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/justin06lee/makima/internal/key"
@@ -121,5 +122,18 @@ func TestAddrErrorsWhenUnset(t *testing.T) {
 	var n Node
 	if _, err := n.Addr(); err == nil {
 		t.Error("Addr() on an address-less node should fail")
+	}
+}
+
+func TestValidOwner(t *testing.T) {
+	for _, ok := range []string{"huiyunlee", "justin06lee", "Jane.Doe", "svc_backup", "a-b"} {
+		if !ValidOwner(ok) {
+			t.Errorf("%q refused", ok)
+		}
+	}
+	for _, bad := range []string{"", "-l", "-oProxyCommand=x", ".x", "a b", "a/b", "a\x1bb", "a@b", "a;b", strings.Repeat("a", 65), "é"} {
+		if ValidOwner(bad) {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }

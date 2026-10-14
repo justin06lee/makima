@@ -241,5 +241,11 @@ func (n *node) SetOwner(name string) error {
 	n.openGUISocket(n.cfgPath)
 	n.applyInbox()
 	logf("owner: %s", o.Name)
+
+	// The rest of the network logs in as the owner by default, so it hears
+	// about a new one now rather than at the next restart.
+	if n.client != nil {
+		go n.reregister()
+	}
 	return nil
 }

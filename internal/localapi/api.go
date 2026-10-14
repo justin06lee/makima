@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/justin06lee/makima/internal/key"
 	"github.com/justin06lee/makima/internal/netcfg"
 	"github.com/justin06lee/makima/internal/netmap"
 	"github.com/justin06lee/makima/internal/serve"
@@ -179,6 +180,15 @@ type PeerInfo struct {
 	// said, and Update how its move to another is going.
 	Version string               `json:"version,omitempty"`
 	Update  *netmap.UpdateStatus `json:"update,omitempty"`
+
+	// Key is the peer's node key: which machine this is, whatever address it
+	// has today. `makima ssh` files the peer's host key under it.
+	Key key.Public `json:"key,omitzero"`
+
+	// Owner is the account the peer says makima belongs to there — the one
+	// `makima ssh` logs in as when nobody names one. Empty when it has not
+	// said, and checked with netmap.ValidOwner before it is used.
+	Owner string `json:"owner,omitempty"`
 }
 
 // SSHInfo is the built-in SSH server's state.
