@@ -35,6 +35,7 @@ func resetTree(t *testing.T) resetPaths {
 		log:      filepath.Join(root, "var", "log", "makima"),
 		resolver: filepath.Join(root, "etc", "resolver"),
 		tmp:      filepath.Join(root, "tmp"),
+		tor:      filepath.Join(root, "var", "lib", "makima-tor"),
 		operator: filepath.Join(root, "home", ".config", "makima"),
 	}
 }
@@ -569,5 +570,29 @@ func TestAHeldNetworkIsCopiedAsideFirst(t *testing.T) {
 	joinedAs(t, member.config, "laptop", "http://192.168.1.253:8081", key.Public{1})
 	if kept, err := runReset(surveyReset(member)); err != nil || kept != "" {
 		t.Errorf("a machine holding nothing kept a copy at %q (%v)", kept, err)
+	}
+}
+
+// Tor's state is a cache of the tor network, nothing of the machine's: a
+// reset deletes it and does not copy it aside — and reaches it through the
+// paths it was given, so that a test never touches the real one.
+func TestResetDeletesTorStateWithoutCopyingIt(t *testing.T) {
+	p := resetTree(t)
+	s := holding(t, p, "laptop")
+	joinedAs(t, p.config, "tenet", "http://192.168.1.253:8081", s.ServerKey().Public())
+	put(t, filepath.Join(p.tor, "node-0011aabb", "cached-consensus"), "x")
+	if err := os.MkdirAll(p.tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	kept, err := runReset(surveyReset(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p.tor); !os.IsNotExist(err) {
+		t.Errorf("tor's state survived the reset: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(kept, p.tor)); !os.IsNotExist(err) {
+		t.Errorf("tor's state was copied aside with the network")
 	}
 }

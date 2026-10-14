@@ -173,6 +173,7 @@ type resetPaths struct {
 	log      string
 	resolver string // macOS's per-domain resolver files
 	tmp      string // where the copy of a held network is kept
+	tor      string // a root tor's state, the daemon's and the server's (tor.RootDir)
 
 	// operator is the person's own makima directory, where the network
 	// lock's signing key lives. It is not deleted: the key may be trusted by
@@ -190,6 +191,7 @@ func defaultResetPaths(config string) resetPaths {
 		log:      logDir,
 		resolver: "/etc/resolver",
 		tmp:      "/tmp",
+		tor:      tor.RootDir,
 		operator: operatorDir(),
 	}
 }
@@ -357,7 +359,7 @@ func (r *resetState) list() {
 	r.state = slices.Concat(nodeFiles, runFiles)
 	// Tor's state, the daemon's and the server's both, is a cache of the tor
 	// network and nothing of the machine's: deleted, never copied aside.
-	r.doomed = slices.Concat(r.state, existing(p.log), p.resolverFiles(), existing(tor.RootDir))
+	r.doomed = slices.Concat(r.state, existing(p.log), p.resolverFiles(), existing(p.tor))
 	r.backup = nil
 	if r.held != nil {
 		r.backup = r.state
