@@ -314,7 +314,7 @@ func run(opts options, upd *update.Installer) error {
 		stopRun:   stopRun,
 		binder:    &bypass.Binder{},
 	}
-	n.tor = &tor.Dialer{DataDir: filepath.Join(filepath.Dir(n.cfgPath), "tor"), Logger: log.Default()}
+	n.tor = &tor.Dialer{DataDir: tor.DataDir(n.cfgPath), Logger: log.Default()}
 	n.binder.SetOnion(n.tor.DialContext)
 	defer n.tor.Close()
 	n.loadUpdateFailure()

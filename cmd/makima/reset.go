@@ -210,8 +210,7 @@ func operatorDir() string {
 const inboxName = "inbox"
 
 // nodeFiles is what makima keeps of this machine's own: its config and the
-// copies of it an upgrade left, the daemon's sockets, the update record, and
-// its tor's directory.
+// copies of it an upgrade left, the daemon's sockets, and the update record.
 func (p resetPaths) nodeFiles() []string {
 	if p.wholeDir {
 		return existing(filepath.Dir(p.config))
@@ -230,9 +229,6 @@ func (p resetPaths) nodeFiles() []string {
 		if fi, err := os.Lstat(sock); err == nil && fi.Mode()&fs.ModeSocket != 0 {
 			out = append(out, sock)
 		}
-	}
-	if fi, err := os.Lstat(nodeTorDir(p.config)); err == nil && fi.IsDir() {
-		out = append(out, nodeTorDir(p.config))
 	}
 	return out
 }
@@ -359,7 +355,9 @@ func (r *resetState) list() {
 		nodeFiles = p.nodeFiles()
 	}
 	r.state = slices.Concat(nodeFiles, runFiles)
-	r.doomed = slices.Concat(r.state, existing(p.log), p.resolverFiles())
+	// Tor's state, the daemon's and the server's both, is a cache of the tor
+	// network and nothing of the machine's: deleted, never copied aside.
+	r.doomed = slices.Concat(r.state, existing(p.log), p.resolverFiles(), existing(tor.RootDir))
 	r.backup = nil
 	if r.held != nil {
 		r.backup = r.state

@@ -26,6 +26,7 @@ package tor
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -82,6 +83,31 @@ func isExecutable(p string) bool {
 	return err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0o111 != 0
 }
 
+// RootDir is where a tor started by root keeps its state: one directory per
+// owner, under one of makima's own. See DataDir.
+const RootDir = "/var/lib/makima-tor"
+
+// DataDir is where the tor kept for owner — a node's config file or a
+// server's state file, by path — keeps its state between runs.
+//
+// Beside owner, for a process that is not root. Under root, tor runs as an
+// unprivileged user, and makima's state directories are root's alone —
+// rightly, since a directory only root may enter is what protects the
+// server's admin socket — so tor's state goes under RootDir instead, which
+// that user may pass through.
+func DataDir(owner string) string {
+	if os.Geteuid() != 0 {
+		return filepath.Join(filepath.Dir(owner), "tor")
+	}
+	abs, err := filepath.Abs(owner)
+	if err != nil {
+		abs = owner
+	}
+	sum := sha256.Sum256([]byte(abs))
+	name := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
+	return filepath.Join(RootDir, fmt.Sprintf("%s-%x", name, sum[:4]))
+}
+
 // Tor is one running tor process and the control connection that owns it.
 type Tor struct {
 	cmd   *exec.Cmd
@@ -112,7 +138,16 @@ func Start(dataDir string, logger *log.Logger) (*Tor, error) {
 	// An empty torrc of its own: tor will not take /dev/null for one, and
 	// without -f it would read the system's.
 	torrc := filepath.Join(dataDir, "torrc")
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+	// Under root, the directories on the way have to let tor's own user
+	// through; see DataDir.
+	parentMode := os.FileMode(0o700)
+	if os.Geteuid() == 0 {
+		parentMode = 0o755
+	}
+	if err := os.MkdirAll(filepath.Dir(dataDir), parentMode); err != nil {
+		return nil, fmt.Errorf("create tor data directory: %w", err)
+	}
+	if err := os.Mkdir(dataDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, fmt.Errorf("create tor data directory: %w", err)
 	}
 	if err := os.WriteFile(torrc, []byte("# makima configures this tor from its command line.\n"), 0o600); err != nil {
@@ -135,11 +170,15 @@ func Start(dataDir string, logger *log.Logger) (*Tor, error) {
 		"--ControlPort", "auto",
 		"--ControlPortWriteToFile", portFile,
 		"--CookieAuthentication", "1",
-		// Tor watches this process and exits when it does, so a daemon that
-		// is killed outright does not leave a tor behind.
-		"--__OwningControllerProcess", strconv.Itoa(os.Getpid()),
 		"--AvoidDiskWrites", "1",
 		"--Log", "notice stdout",
+	}
+	if cred == nil {
+		// Tor watches this process and exits when it does, which covers the
+		// moment before it is owned by the control connection (see attach).
+		// Only as the same user: tor run as another one may not be allowed to
+		// look, and would take that for this process being gone.
+		args = append(args, "--__OwningControllerProcess", strconv.Itoa(os.Getpid()))
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dataDir

@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,12 +23,10 @@ import (
 // its own for this; a command starts one only if it actually has to dial an
 // onion address, and stops it when it is done.
 
-// nodeTorDir is where the daemon's tor keeps its state, beside the node's
-// configuration. A command that joins uses it too — the daemon is not running
-// yet — so the daemon starts with tor's state already warm.
-func nodeTorDir(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), "tor")
-}
+// nodeTorDir is where the daemon's tor keeps its state. A command that joins
+// uses it too — the daemon is not running yet — so the daemon starts with
+// tor's state already warm.
+func nodeTorDir(configPath string) string { return tor.DataDir(configPath) }
 
 // onionBinder dials the way the daemon does, an onion address included. The
 // returned function stops the tor, if one was started.

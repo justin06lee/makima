@@ -33,6 +33,14 @@ func prepareDataDir(dir string) (*syscall.Credential, error) {
 		return nil, nil
 	}
 
+	// Every directory on the way has to let that user through, or tor cannot
+	// reach its own state; makima's own state directories do not, on purpose.
+	if closed, err := closedAncestor(dir); err != nil {
+		return nil, err
+	} else if closed != "" {
+		return nil, fmt.Errorf("tor runs as %s, who cannot reach %s: %s is closed to it", unprivileged, dir, closed)
+	}
+
 	u, err := user.Lookup(unprivileged)
 	if err != nil {
 		return nil, fmt.Errorf("find the %s user to run tor as: %w", unprivileged, err)
@@ -72,4 +80,21 @@ func setCredential(cmd *exec.Cmd, cred *syscall.Credential) {
 		return
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+}
+
+// closedAncestor is the first directory above dir that a user other than its
+// owner and group cannot pass through, or "" when there is none.
+func closedAncestor(dir string) (string, error) {
+	for a := filepath.Dir(dir); ; a = filepath.Dir(a) {
+		st, err := os.Stat(a)
+		if err != nil {
+			return "", err
+		}
+		if st.Mode().Perm()&0o001 == 0 {
+			return a, nil
+		}
+		if a == filepath.Dir(a) {
+			return "", nil
+		}
+	}
 }

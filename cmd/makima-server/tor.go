@@ -27,9 +27,7 @@ func onionKeyPath(statePath string) string {
 }
 
 // torDataDir is where the server's tor keeps its state between runs.
-func torDataDir(statePath string) string {
-	return filepath.Join(filepath.Dir(statePath), "tor")
-}
+func torDataDir(statePath string) string { return tor.DataDir(statePath) }
 
 // startOnion publishes the server as an onion service until ctx ends, and
 // returns the listener tor forwards to — which the caller serves the control
