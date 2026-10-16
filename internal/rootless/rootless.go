@@ -199,15 +199,12 @@ func (n *Node) currentRelayKey() key.Public {
 // reads. This package used to keep a copy of it rather than import netcfg,
 // and the copy drifted: it advertised Tailscale's 100.64.0.0/10 addresses,
 // container and VM bridges that lead only into this host, and IPv6 paths
-// disco cannot rank yet — every one of which the daemon had learned not to.
+// before disco could rank them — every one of which the daemon had learned
+// not to.
 func (n *Node) endpoints() []netip.AddrPort {
 	port := n.sock.LocalPort()
 
-	out := hostaddr.LocalEndpoints(port)
-	for _, e := range n.sock.SelfEndpoints() {
-		out = appendUnique(out, e)
-	}
-	return out
+	return hostaddr.Endpoints(hostaddr.LocalEndpoints(port), n.sock.SelfEndpoints()...)
 }
 
 // Listen opens a pairing window and blocks until somebody knocks or ctx ends.
@@ -472,13 +469,4 @@ func splice(a, b net.Conn) {
 	go func() { io.Copy(a, b); done <- struct{}{} }()
 	go func() { io.Copy(b, a); done <- struct{}{} }()
 	<-done
-}
-
-func appendUnique(s []netip.AddrPort, a netip.AddrPort) []netip.AddrPort {
-	for _, x := range s {
-		if x == a {
-			return s
-		}
-	}
-	return append(s, a)
 }
