@@ -249,6 +249,11 @@ type Store struct {
 	// serverVersion is the release this server runs, handed to every node.
 	serverVersion string
 
+	// local are the addresses this server's machine is reached at directly,
+	// named to every node ahead of ControlURLs. Not persisted. See
+	// SetLocalURLs.
+	local []string
+
 	// online is whether each node was online when presence was last
 	// checked, so going offline or coming back can be published. Not
 	// persisted. See RunPresence.
@@ -758,7 +763,7 @@ func (s *Store) NetMapFor(machineKey key.Public) (*MapResponse, error) {
 		Self:        s.toNetmapNode(self, relay),
 		Peers:       make([]netmap.Node, 0, len(s.state.Nodes)-1),
 		HomeRelay:   relay,
-		ControlURLs: append([]string(nil), s.state.ControlURLs...),
+		ControlURLs: s.advertisedURLsLocked(),
 		Domain:      s.domainLocked(),
 		DNS: netmap.DNSConfig{
 			Enabled: s.state.DNSEnabled,

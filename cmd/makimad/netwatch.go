@@ -92,7 +92,7 @@ func (n *node) networkChanged(ctx context.Context) {
 	}
 	// The address the control plane answered at on the old network — its
 	// onion address, away from home — may not be the best one on this; the
-	// one the node joined through is tried first again.
+	// client chooses again from the best one down.
 	if n.client != nil {
 		n.client.Rehome()
 	}

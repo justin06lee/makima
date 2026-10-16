@@ -15,8 +15,8 @@ import (
 )
 
 // Reaching this network from anywhere: an onion service for the server's own
-// port, published by a tor this server runs. Nodes use the address they
-// joined through while it answers, and the onion address when it does not —
+// port, published by a tor this server runs. Nodes reach the server directly
+// whenever they can, and at the onion address when nothing direct answers —
 // the laptop has left the house — with nothing forwarded on any router and
 // nothing to keep pointed at a home connection whose address changes.
 

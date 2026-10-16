@@ -185,7 +185,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, env.MachineKey, &RegisterResponse{
 		NodeID:      node.ID,
 		Address:     node.Address,
-		ControlURLs: s.store.ControlURLs(),
+		ControlURLs: s.store.AdvertisedURLs(),
 	})
 }
 
