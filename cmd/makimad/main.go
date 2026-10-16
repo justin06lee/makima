@@ -92,8 +92,12 @@ func main() {
 		inbox:       *inbox,
 		maxFile:     *maxFile,
 	}
-	// Before anything else: whether an update is waiting to be proven, and
-	// whether the version now here has had its chances.
+	// Before anything reads or writes state, the update record above all:
+	// this is the only makimad here, or it waits until it is.
+	holdInstance(filepath.Dir(*configPath))
+
+	// Then whether an update is waiting to be proven, and whether the
+	// version now here has had its chances.
 	self := update.Self()
 	upd := &update.Installer{Running: version, Self: self, StateDir: filepath.Dir(*configPath)}
 	// Which network's orders the update record is about, before anything

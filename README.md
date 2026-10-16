@@ -835,7 +835,10 @@ What can go wrong is contained to the machine it goes wrong on. A release
 that will not run there is caught by the dry run and nothing is replaced. One
 that runs but will not stay up — dies on the way up three times — has the
 previous version put back automatically, and the machine reports why. A
-failed machine is not retried on every netmap; running `makima update` again
+second `makimad` started beside one already running — by hand, or by a
+launchd that lost track of the first — does not count as a start: it waits
+for the running one to exit, saying so once in the log, and takes over then.
+A failed machine is not retried on every netmap; running `makima update` again
 is what asks it to try again.
 
 An order names a release and nothing else, and a machine refuses anything
