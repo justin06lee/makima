@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -225,16 +226,35 @@ func hostAddrs(fn func(ifAddr)) {
 // told to try 172.17.0.1 reaches its own Docker bridge, not this machine. They
 // also come and go as containers start, which is not this machine changing
 // networks.
+//
+// A Jetson's l4tbr0 is the same thing for a computer plugged into its USB
+// port, at 192.168.55.1 on every Jetson. usb0 is not on the list: on a
+// laptop it is USB tethering to a phone, which is the way out.
 func hostOnly(name string) bool {
 	for _, prefix := range []string{
 		"docker", "br-", "veth", "virbr", "vnet", "lxcbr", "lxdbr", "incusbr",
 		"cni", "flannel", "cali", "cilium", "weave", "podman", "vmnet", "vboxnet",
+		"l4tbr", "vnic", "mpqemubr", "kube-bridge", "kube-ipvs", "waydroid",
 	} {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}
 	}
-	return false
+	return vmnetBridge(name)
+}
+
+// vmnetBridge reports whether name is one of the bridges macOS makes for
+// virtual machines and Internet Sharing — bridge100 and up, 192.168.64.1 on
+// every Mac running UTM, Docker Desktop, OrbStack or Lima. bridge0 is the
+// Thunderbolt Bridge, and the low numbers are bridges somebody made: cables
+// to other machines.
+func vmnetBridge(name string) bool {
+	n, ok := strings.CutPrefix(name, "bridge")
+	if !ok {
+		return false
+	}
+	i, err := strconv.Atoi(n)
+	return err == nil && i >= 100
 }
 
 // usableEndpoint reports whether an address is worth advertising to peers.
