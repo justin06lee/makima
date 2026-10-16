@@ -785,6 +785,9 @@ Any other address the server answers at can be handed out the same way:
 makima-server urls add -url https://makima.example.dev
 ```
 
+A server started with `-addr` names only the address it listens on, and none
+at all when that is loopback behind a reverse proxy.
+
 The relay holds no WireGuard key and decrypts nothing, so relaying costs
 nothing in confidentiality. What it costs is the holding machine's upload
 bandwidth, which on a home connection is the slow direction. If many machines

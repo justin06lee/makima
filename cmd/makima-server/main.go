@@ -237,6 +237,12 @@ func serve(args []string) error {
 
 	go control.RunPresence(ctx, store)
 
+	// Its own addresses, named to every node ahead of the onion address and
+	// kept current as the machine's change, so that nodes beside it reach it
+	// directly and one that saved an address before a DHCP lease moved finds
+	// it again.
+	go control.AdvertiseLocal(ctx, store, ln.Addr())
+
 	// The onion service: this server reached from anywhere, through tor.
 	var onionSrv *http.Server
 	if *noTor {

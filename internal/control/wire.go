@@ -121,10 +121,12 @@ type MapResponse struct {
 	HomeRelay netmap.Relay `json:"home_relay,omitzero"`
 
 	// ControlURLs are other addresses this control plane answers at, beyond
-	// the one the node joined through — typically a public name for a server
-	// that was joined on its LAN address. A node keeps them and falls back to
-	// them when the one it is using stops answering, which is what a laptop
-	// leaving the house needs to still find its way back.
+	// the one the node joined through: the server's own LAN addresses first,
+	// as its machine holds them now, then any its operator added, and its
+	// onion address. A node keeps them and picks among them — directly when
+	// it can, tor only when nothing direct answers — which is what a laptop
+	// leaving the house needs to still find its way back, and what a node
+	// whose saved address went stale needs to find the server again.
 	ControlURLs []string `json:"control_urls,omitempty"`
 
 	// Filter is the compiled access policy this node enforces on ingress. Nil

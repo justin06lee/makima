@@ -252,7 +252,8 @@ func listURLs(args []string) error {
 		return err
 	}
 	if len(urls) == 0 {
-		fmt.Print("nodes know this server only by the address they joined through.\n\n")
+		fmt.Print("nodes know this server by the address they joined through, and by the\n")
+		fmt.Print("addresses this machine holds, which it tells them as they change.\n\n")
 		fmt.Print("with tor installed, the server publishes an onion address every node uses away\n")
 		fmt.Print("from here (see makima-server tor). An address of your own works too:\n")
 		fmt.Printf("  makima-server urls add -url http://HOST:%d\n", t.port(*af.state))
