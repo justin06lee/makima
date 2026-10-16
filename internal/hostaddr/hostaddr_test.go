@@ -3,6 +3,7 @@ package hostaddr
 import (
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -22,8 +23,12 @@ func TestUsableEndpointFilters(t *testing.T) {
 		{"100.98.21.63", false, "another VPN's mesh address"},
 		{"0.0.0.0", false, "unspecified"},
 		{"224.0.0.1", false, "multicast"},
-		{"2001:db8::1", false, "IPv6, deferred until disco can rank paths"},
+		{"2001:db8::1", true, "global IPv6: no NAT in the way"},
+		{"2600:1702:891b:aa00::39", true, "global IPv6"},
 		{"fe80::1", false, "IPv6 link-local"},
+		{"fd12:3456::1", false, "a router's unique-local address"},
+		{"fd7a:115c:a1e0::1a:2b3c", false, "Tailscale's unique-local range"},
+		{"ff02::1", false, "IPv6 multicast"},
 	}
 
 	for _, c := range cases {
@@ -106,5 +111,62 @@ func TestAVPNsAddressesDoNotSayWhereWeAre(t *testing.T) {
 		if got := saysWhereWeAre(netip.MustParseAddr(c.addr), c.flags); got != c.want {
 			t.Errorf("%s on %v: %v, want %v", c.addr, c.flags, got, c.want)
 		}
+	}
+}
+
+// IPv4 goes first, and what this machine was observed at before its own
+// IPv6 addresses: a peer probes ten candidates at most, and the public IPv4
+// address that gets through most NATs must not be crowded out by a handful
+// of IPv6 ones.
+func TestEndpointsPutIPv4First(t *testing.T) {
+	ap := netip.MustParseAddrPort
+	local := []netip.AddrPort{ap("192.168.1.213:51820"), ap("[2600:1702:891b:aa00::39]:51820"), ap("[2600:1702:891b:aa00:16d:4d00:2c8f:b723]:51820")}
+	got := Endpoints(local, ap("107.214.144.123:6505"), ap("[2600:1702:891b:aa00:7ad3:ffe1:1b5b:ee6f]:51820"), ap("192.168.1.213:51820"))
+	want := []netip.AddrPort{
+		ap("192.168.1.213:51820"),
+		ap("107.214.144.123:6505"),
+		ap("[2600:1702:891b:aa00::39]:51820"),
+		ap("[2600:1702:891b:aa00:16d:4d00:2c8f:b723]:51820"),
+		ap("[2600:1702:891b:aa00:7ad3:ffe1:1b5b:ee6f]:51820"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// An address the OS no longer offers for new traffic — a temporary address
+// past its preferred lifetime, one still being checked for duplicates, or a
+// duplicate — is not one to send peers to.
+func TestIfInet6Flags(t *testing.T) {
+	const table = `not an address line at all
+26001702891baa00016d4d002c8fb723 03 40 00 00 wlP1p1s0
+26001702891baa007ad3ffe11b5bee6f 03 40 00 01 wlP1p1s0
+26001702891baa00aaaabbbbccccdddd 03 40 00 21 wlP1p1s0
+26001702891baa000000000000000042 03 40 00 40 wlP1p1s0
+fe80000000000000521e91fffe9599f5 03 40 20 80 wlP1p1s0
+`
+	flags := parseIfInet6(strings.NewReader(table))
+	for addr, want := range map[string]bool{
+		"2600:1702:891b:aa00:16d:4d00:2c8f:b723":  false, // stable
+		"2600:1702:891b:aa00:7ad3:ffe1:1b5b:ee6f": false, // temporary, preferred: what outbound traffic leaves from
+		"2600:1702:891b:aa00:aaaa:bbbb:cccc:dddd": true,  // temporary, deprecated
+		"2600:1702:891b:aa00::42":                 true,  // tentative
+	} {
+		f, ok := flags[netip.MustParseAddr(addr)]
+		if !ok {
+			t.Errorf("%s not parsed", addr)
+			continue
+		}
+		if got := f&linuxV6Unusable != 0; got != want {
+			t.Errorf("%s (flags %#x) unusable = %v, want %v", addr, f, got, want)
+		}
+	}
+	if len(flags) != 5 {
+		t.Errorf("parsed %d addresses, want the 5 well-formed ones: %v", len(flags), flags)
 	}
 }

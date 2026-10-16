@@ -601,18 +601,16 @@ func (n *node) endpoints() []netip.AddrPort {
 		port = n.sock.LocalPort()
 	}
 
-	out := hostaddr.LocalEndpoints(port)
+	var seen []netip.AddrPort
 	if n.sock != nil {
-		for _, e := range n.sock.SelfEndpoints() {
-			out = appendUniqueAddrPort(out, e)
-		}
+		seen = n.sock.SelfEndpoints()
 	}
 	if n.pm != nil {
 		if e, ok := n.pm.External(); ok {
-			out = appendUniqueAddrPort(out, e)
+			seen = append(seen, e)
 		}
 	}
-	return out
+	return hostaddr.Endpoints(hostaddr.LocalEndpoints(port), seen...)
 }
 
 // poll keeps the local netmap in step with the control server.
@@ -1058,15 +1056,6 @@ func describePending(routes []netip.Prefix, exit bool) string {
 		parts = append(parts, "exit node")
 	}
 	return strings.Join(parts, ", ")
-}
-
-func appendUniqueAddrPort(s []netip.AddrPort, a netip.AddrPort) []netip.AddrPort {
-	for _, x := range s {
-		if x == a {
-			return s
-		}
-	}
-	return append(s, a)
 }
 
 // uiPort extracts the port from a -ui address, or 0 when the UI is off.

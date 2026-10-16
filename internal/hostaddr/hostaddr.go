@@ -74,10 +74,11 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 	var out []netip.AddrPort
 	seen := make(map[netip.AddrPort]bool)
 	hostAddrs(func(a ifAddr) {
-		if !usableEndpoint(a.prefix.Addr()) {
+		addr := a.prefix.Addr()
+		if !usableEndpoint(addr) || (addr.Is6() && v6Unusable(a.iface, addr)) {
 			return
 		}
-		ap := netip.AddrPortFrom(a.prefix.Addr(), port)
+		ap := netip.AddrPortFrom(addr, port)
 		if !seen[ap] {
 			seen[ap] = true
 			out = append(out, ap)
@@ -90,10 +91,39 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 	return out
 }
 
+// Endpoints is what a node advertises: its own addresses, local, and what
+// it was observed at or mapped to, observed — IPv4 first, its own then the
+// observed, then IPv6 the same way. Each once.
+//
+// A peer probes ten candidates at most. The public IPv4 address, which gets
+// through most NATs, must not be crowded out by a machine's handful of IPv6
+// addresses.
+func Endpoints(local []netip.AddrPort, observed ...netip.AddrPort) []netip.AddrPort {
+	var v4, v6 []netip.AddrPort
+	for _, e := range append(append([]netip.AddrPort(nil), local...), observed...) {
+		e = netip.AddrPortFrom(e.Addr().Unmap(), e.Port())
+		if e.Addr().Is4() {
+			v4 = appendNew(v4, e)
+		} else {
+			v6 = appendNew(v6, e)
+		}
+	}
+	return append(v4, v6...)
+}
+
+func appendNew(s []netip.AddrPort, e netip.AddrPort) []netip.AddrPort {
+	for _, x := range s {
+		if x == e {
+			return s
+		}
+	}
+	return append(s, e)
+}
+
 // NetworkAddrs lists the addresses that say which networks this host is on:
-// every address LocalEndpoints would advertise, and its global IPv6 ones too,
-// which are not advertised yet but tell one network from another where two
-// hand out the same IPv4 address. Sorted.
+// the ones LocalEndpoints would advertise — its global IPv6 ones among them,
+// which tell one network from another where two hand out the same IPv4
+// address. Sorted.
 //
 // Not the addresses a VPN hands out. Those come and go when the VPN does,
 // and the machine has not moved: treating Tailscale starting as a network
@@ -130,10 +160,7 @@ func NetworkPrefixes() []netip.Prefix {
 // saysWhereWeAre is NetworkAddrs' test for one address on an interface with
 // the given flags.
 func saysWhereWeAre(addr netip.Addr, flags net.Flags) bool {
-	if !usableEndpoint(addr) && !(addr.Is6() && addr.IsGlobalUnicast() && !IsMeshAddr(addr)) {
-		return false
-	}
-	if ula.Contains(addr) {
+	if !usableEndpoint(addr) {
 		return false
 	}
 	if flags&net.FlagPointToPoint != 0 && (addr.IsPrivate() || IsMeshAddr(addr)) {
@@ -225,11 +252,18 @@ func usableEndpoint(addr netip.Addr) bool {
 		// A mesh address, ours or another VPN's. Advertising it would tell
 		// peers to reach us through a tunnel to reach a tunnel.
 		return false
-	case addr.Is6():
-		// IPv6 endpoints are deferred until disco can rank paths properly;
-		// advertising them now would have peers pick an untested path with no
-		// way to fall back.
+	case ula.Contains(addr):
+		// IPv6's private range: a router's LAN-only addresses, and what VPNs
+		// hand out — Tailscale's fd7a:115c:a1e0::/48 among them, which Go
+		// counts as global unicast. The LAN is reached over IPv4 anyway.
+		return false
+	case addr.Is6() && !addr.IsGlobalUnicast():
 		return false
 	}
+	// A global IPv6 address has no NAT in front of it, so it is a direct
+	// path without any hole to punch beyond a stateful firewall's, which a
+	// probe from each side opens. Disco only ever moves traffic onto a path
+	// a pong has proven, and only onto a materially faster one than it has,
+	// so advertising one costs a peer some probes when it does not work.
 	return true
 }

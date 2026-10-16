@@ -385,11 +385,13 @@ func (c *Conn) handlePong(ps *peerState, p *disco.Pong, src netip.AddrPort) {
 
 	// Report where the peer saw our probe coming from. Over a relayed probe
 	// this is our public address as observed by a peer — free STUN, from a
-	// party that already has reason to talk to us.
+	// party that already has reason to talk to us. Only an IPv4 sighting
+	// stands in for STUN: what STUN is asked about is the IPv4 NAT, and an
+	// IPv6 address has none in front of it to learn about.
 	if p.Src.IsValid() {
 		seen := normalise(p.Src)
 		c.noteSelfObservation(seen)
-		if isPublic(seen.Addr()) {
+		if seen.Addr().Is4() && isPublic(seen.Addr()) {
 			c.selfMu.Lock()
 			c.peerSawPublic = time.Now()
 			c.selfMu.Unlock()

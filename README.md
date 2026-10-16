@@ -1272,7 +1272,8 @@ is fully untrusted.
 
 **Discovery.** Each node gathers candidate addresses for itself three ways,
 each blind where the others are not: its own interface addresses (right on a
-LAN, useless behind NAT), addresses observed by STUN servers and by peers
+LAN and for global IPv6, useless behind an IPv4 NAT), addresses observed by
+STUN servers and by peers
 (right on the internet, absent until something answers), and a port mapping
 requested from the router (right when the router cooperates). Peers then probe
 every candidate from both ends at once and keep the lowest-latency path that
@@ -1380,8 +1381,12 @@ with a bare `invalid argument`. If the state file lives somewhere deep, pass
 - **Mesh DNS on Linux needs systemd-resolved.** Without it there is no
   per-interface resolver, and pointing the system at the mesh resolver would
   capture every lookup on the machine rather than just `*.makima`.
-- **IPv4 only inside the tunnel.** The socket is dual-stack and IPv6 endpoints
-  work as paths; mesh addresses themselves are v4.
+- **IPv4 only inside the tunnel.** Mesh addresses are v4. Underneath, the
+  socket is dual-stack and every machine advertises its global IPv6 addresses
+  beside its IPv4 ones — temporary ones included, since outbound traffic
+  leaves from those and a stateful IPv6 firewall only lets in what it saw
+  leave — so two machines with IPv6 get a direct path with no NAT to punch
+  through. A path is only used once a probe has proven it.
 - **Published services are TCP only.** A UDP service — a game server, a DNS
   resolver on a peer — is reachable at the peer's mesh address directly, but
   `makima allow` does not forward it, and it is not published automatically.
