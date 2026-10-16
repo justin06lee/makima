@@ -73,11 +73,11 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 
 	var out []netip.AddrPort
 	seen := make(map[netip.AddrPort]bool)
-	hostAddrs(func(addr netip.Addr, _ net.Flags) {
-		if !usableEndpoint(addr) {
+	hostAddrs(func(a ifAddr) {
+		if !usableEndpoint(a.prefix.Addr()) {
 			return
 		}
-		ap := netip.AddrPortFrom(addr, port)
+		ap := netip.AddrPortFrom(a.prefix.Addr(), port)
 		if !seen[ap] {
 			seen[ap] = true
 			out = append(out, ap)
@@ -104,13 +104,26 @@ func LocalEndpoints(port uint16) []netip.AddrPort {
 // A public address on one does: that is a PPP link carrying the machine's
 // own connection.
 func NetworkAddrs() []netip.Addr {
-	var out []netip.Addr
-	hostAddrs(func(addr netip.Addr, flags net.Flags) {
-		if saysWhereWeAre(addr, flags) {
-			out = append(out, addr)
+	pfxs := NetworkPrefixes()
+	out := make([]netip.Addr, 0, len(pfxs))
+	for _, p := range pfxs {
+		out = append(out, p.Addr())
+	}
+	return out
+}
+
+// NetworkPrefixes is NetworkAddrs with each address's prefix length on its
+// interface, which says which network it is on — 192.168.1.213/24 is on
+// 192.168.1.0/24 — so a new address on the same network can be told from a
+// new network. Sorted by address.
+func NetworkPrefixes() []netip.Prefix {
+	var out []netip.Prefix
+	hostAddrs(func(a ifAddr) {
+		if saysWhereWeAre(a.prefix.Addr(), a.flags) {
+			out = append(out, a.prefix)
 		}
 	})
-	sort.Slice(out, func(i, j int) bool { return out[i].Less(out[j]) })
+	sort.Slice(out, func(i, j int) bool { return out[i].Addr().Less(out[j].Addr()) })
 	return out
 }
 
@@ -132,10 +145,18 @@ func saysWhereWeAre(addr netip.Addr, flags net.Flags) bool {
 // ula is IPv6's private range, fc00::/7.
 var ula = netip.MustParsePrefix("fc00::/7")
 
+// ifAddr is one address on one of this host's interfaces.
+type ifAddr struct {
+	// prefix is the address with its interface's prefix length: the address
+	// is prefix.Addr(), and the network it is on prefix.Masked().
+	prefix netip.Prefix
+	flags  net.Flags
+	iface  string
+}
+
 // hostAddrs calls fn with every address on an interface that is up, is not
-// loopback, and leads somewhere other than this host, and the interface's
-// flags.
-func hostAddrs(fn func(netip.Addr, net.Flags)) {
+// loopback, and leads somewhere other than this host.
+func hostAddrs(fn func(ifAddr)) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return
@@ -153,9 +174,16 @@ func hostAddrs(fn func(netip.Addr, net.Flags)) {
 			if !ok {
 				continue
 			}
-			if addr, ok := netip.AddrFromSlice(ipnet.IP); ok {
-				fn(addr.Unmap(), iface.Flags)
+			addr, ok := netip.AddrFromSlice(ipnet.IP)
+			if !ok {
+				continue
 			}
+			addr = addr.Unmap()
+			ones, _ := ipnet.Mask.Size()
+			if addr.Is4() && ones > 32 {
+				ones -= 96 // a v4 address with a v4-in-v6 mask
+			}
+			fn(ifAddr{prefix: netip.PrefixFrom(addr, ones), flags: iface.Flags, iface: iface.Name})
 		}
 	}
 }

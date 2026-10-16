@@ -75,3 +75,87 @@ func TestNetworkChangeRedialsTheRelay(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// pathed is a Conn with a confirmed LAN path to one peer, a public address
+// it was observed at, and a connected relay.
+func pathed(t *testing.T) (c *Conn, ps *peerState, lan netip.AddrPort, before any) {
+	t.Helper()
+	addr, relayKey := testRelay(t)
+	c, _, _ = newConn(t)
+	peer, _ := key.NewPrivate()
+	lan = netip.MustParseAddrPort("192.168.1.253:51820")
+
+	c.SetNetwork([]PeerConfig{{NodeKey: peer.Public(), Endpoints: []netip.AddrPort{lan}}}, addr, relayKey)
+	ps = c.peerFor(peer.Public())
+	ps.noteDirectRecv(lan)
+	c.noteSelfObservation(netip.MustParseAddrPort("203.0.113.7:51820"))
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !c.RelayConnected() {
+		if time.Now().After(deadline) {
+			t.Fatal("relay never connected")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	c.mu.RLock()
+	before = c.relayClient
+	c.mu.RUnlock()
+	return c, ps, lan, before
+}
+
+// A Wi-Fi drop that comes back to the same network leaves everything as it
+// was: the path, what the machine knows about its public address, and the
+// relay connection. Each of the Jetson's drops used to throw all three away
+// and dial the relay again over tor — twelve times one afternoon.
+func TestLinkBackKeepsPathsAndRelay(t *testing.T) {
+	c, ps, lan, before := pathed(t)
+
+	c.LinkBack()
+
+	if addr, ok := ps.directPath(); !ok || addr != lan {
+		t.Errorf("direct path = %v %v after the link came back, want %s", addr, ok, lan)
+	}
+	if got := c.SelfEndpoints(); len(got) != 1 {
+		t.Errorf("observed addresses = %v, want the one it had", got)
+	}
+	c.mu.RLock()
+	after := c.relayClient
+	c.mu.RUnlock()
+	if after != before {
+		t.Error("the relay was dialled again")
+	}
+}
+
+// A new address on the same network keeps each path — the peer is where it
+// was — but makes it prove itself again, since this end now sends from
+// somewhere else. The public address it was observed at belonged to the old
+// one, and so did the relay connection.
+func TestRenumberedKeepsPathsUntilReproven(t *testing.T) {
+	c, ps, lan, before := pathed(t)
+
+	c.Renumbered()
+
+	if addr, ok := ps.directPath(); ok {
+		t.Errorf("still trusting %s without fresh evidence", addr)
+	}
+	ps.mu.Lock()
+	kept := ps.best
+	ps.mu.Unlock()
+	if kept != lan {
+		t.Errorf("path = %v, want %s kept for the next probe to re-prove", kept, lan)
+	}
+	if got := c.SelfEndpoints(); len(got) != 0 {
+		t.Errorf("still advertising the old address's public mapping: %v", got)
+	}
+	c.mu.RLock()
+	after := c.relayClient
+	c.mu.RUnlock()
+	if after == before {
+		t.Error("the relay connection from the old address was kept")
+	}
+
+	ps.noteDirectRecv(lan)
+	if _, ok := ps.directPath(); !ok {
+		t.Error("a pong did not restore the path")
+	}
+}

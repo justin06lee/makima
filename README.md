@@ -749,7 +749,11 @@ makima-server tor
 Every node is told the address. A node uses the address it joined through
 while that answers — the home network, at home — and the onion address when
 it does not, because the laptop has left the house; the relay follows it
-there. After every network change it tries home first again. A node that will
+there. After every move to another network it tries home first again. A
+Wi-Fi drop that comes back to the same network is not a move: every path,
+the relay connection and the long poll are kept, and the peers are asked at
+once whether the paths still work. A new address on the same network keeps
+the paths too, and proves them again. A node that will
 need tor starts it ahead of time, so leaving the house costs a few seconds of
 failover rather than tor's whole start.
 
