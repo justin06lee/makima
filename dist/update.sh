@@ -23,7 +23,8 @@
 set -u
 [ "$(id -u)" -eq 0 ] || exec sudo sh "$0" "$@"
 
-STATE=/var/tmp/makima-update
+# MAKIMA_UPDATE_STATE is for update_test.go; sudo drops it from the environment.
+STATE=${MAKIMA_UPDATE_STATE:-/var/tmp/makima-update}
 LABELS="sh.makima.makimad sh.makima.server sh.makima.relay"
 UNITS="makimad makima-server makima-relay"
 BINS="makimad makima-server makima-relay"
@@ -45,6 +46,30 @@ as_user() {
 }
 
 gone() { ! pgrep -x "$1" >/dev/null 2>&1; }
+alive() { ps -p "$1" >/dev/null 2>&1; }
+
+# A launchd job's process id, while it has one, and the command line it runs —
+# one line, the way ps prints it.
+job_pid() {
+	launchctl print "system/$1" 2>/dev/null | awk '$1 == "pid" && $2 == "=" { print $3; exit }'
+}
+job_args() {
+	launchctl print "system/$1" 2>/dev/null | awk '
+		/^\targuments = \{/ { on = 1; next }
+		on && /^\t\}/ { exit }
+		on { gsub(/^[ \t]+|[ \t]+$/, ""); a = a (a == "" ? "" : " ") $0 }
+		END { print a }'
+}
+
+# Waits for one process to exit, up to 20 seconds, then KILLs it.
+wait_pid() {
+	i=0
+	while alive "$1" && [ $i -lt 80 ]; do sleep 0.25; i=$((i + 1)); done
+	if alive "$1"; then
+		kill -KILL "$1" 2>/dev/null
+		sleep 0.5
+	fi
+}
 
 # TERM, up to 20 seconds — the node puts routes and the resolver back on its
 # way out — then KILL for anything still there.
@@ -92,7 +117,16 @@ stop() {
 			if launchctl print "system/$l" >/dev/null 2>&1; then
 				say stop "$l"
 				echo "$l" >> "$STATE/launchd"
+				job_args "$l" >> "$STATE/jobs"
+				pid=$(job_pid "$l")
 				launchctl bootout "system/$l" >/dev/null 2>&1
+				# bootout returns as soon as it has sent SIGTERM, with the
+				# node still on its way out. Left running, the sweep below
+				# took it for one started by hand, and it came back twice —
+				# under launchd and by hand — the loser failing to bind its
+				# UDP port. When the loser was launchd's, KeepAlive retried it
+				# every ten seconds for as long as the other one ran.
+				[ -n "$pid" ] && wait_pid "$pid"
 			fi
 		done
 	elif command -v systemctl >/dev/null 2>&1; then
@@ -106,12 +140,19 @@ stop() {
 	fi
 
 	# Whatever is left was started by hand. Its command line is kept so it can
-	# be started the same way.
+	# be started the same way — unless it is exactly what a launchd job
+	# stopped above runs: a stray second copy of that job, left by an older
+	# update.sh, which comes back under launchd and only there.
 	for b in $BINS; do
 		gone "$b" && continue
 		for pid in $(pgrep -x "$b"); do
+			args=$(ps -o args= -p "$pid")
+			if [ -f "$STATE/jobs" ] && grep -qxF -- "$args" "$STATE/jobs"; then
+				say stop "$b (pid $pid, a stray copy of its launchd job)"
+				continue
+			fi
 			say stop "$b (pid $pid)"
-			printf '%s\n' "$(ps -o args= -p "$pid")" >> "$STATE/spawned"
+			printf '%s\n' "$args" >> "$STATE/spawned"
 		done
 		stop_proc "$b"
 	done
