@@ -76,12 +76,25 @@ func TestLocalEndpointsExcludeMeshAddresses(t *testing.T) {
 // on every host that runs the same software, and appear whenever a container
 // starts. None of that is a path to this machine, or a change of network.
 func TestHostOnlyBridgesAreNotPaths(t *testing.T) {
-	for _, name := range []string{"docker0", "br-3f2a9c1d7e10", "veth9a1b2c3", "virbr0", "vnet3", "lxdbr0", "cni0", "cali12ab", "podman1", "vmnet8", "vboxnet0"} {
+	for _, name := range []string{
+		"docker0", "br-3f2a9c1d7e10", "veth9a1b2c3", "virbr0", "vnet3", "lxdbr0", "cni0", "cali12ab", "podman1", "vmnet8", "vboxnet0",
+		"l4tbr0",                 // a Jetson's USB-gadget bridge: 192.168.55.1 on every Jetson
+		"bridge100", "bridge101", // macOS vmnet: UTM, Docker Desktop, OrbStack, Lima, Internet Sharing
+		"vnic0", "vnic1", // Parallels on macOS
+		"mpqemubr0",                 // Multipass on Linux
+		"kube-bridge", "kube-ipvs0", // kube-router's pod bridge, kube-proxy's service addresses
+		"waydroid0", // Waydroid's container bridge
+	} {
 		if !hostOnly(name) {
 			t.Errorf("%s is treated as a way to reach this machine", name)
 		}
 	}
-	for _, name := range []string{"en0", "eth0", "wlan0", "enp2s0", "wlp3s0", "bridge0", "utun4", "makima0"} {
+	for _, name := range []string{
+		"en0", "eth0", "wlan0", "enp2s0", "wlp3s0", "utun4", "makima0",
+		"bridge0", "bridge1", // macOS Thunderbolt Bridge and bridges of the owner's own: a cable to another machine
+		"usb0", // USB tethering to a phone: the machine's way out
+		"wlP1p1s0", "enx00e04c680001",
+	} {
 		if hostOnly(name) {
 			t.Errorf("%s is treated as a host-only bridge", name)
 		}
