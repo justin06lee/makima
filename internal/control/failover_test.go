@@ -98,13 +98,15 @@ func TestEveryAddressFailingIsReported(t *testing.T) {
 	}
 }
 
-// Learning about new addresses must not move a client off one that works,
-// and the address it joined through always stays first.
+// Learning about new addresses does not move a client off one that works —
+// only a better one seen to answer does — and the address it joined through
+// stays ahead of names it was told later.
 func TestSetAlternatesKeepsTheAddressInUse(t *testing.T) {
+	ownOnly(t)
 	k, _ := key.NewPrivate()
 	c := NewClient("http://192.168.1.20:8080", k.Public(), k)
 	c.SetAlternates([]string{"http://home.example.net:8080"})
-	c.cur = 1
+	c.cur = "http://home.example.net:8080"
 
 	c.SetAlternates([]string{"https://makima.example.dev", "http://home.example.net:8080/"})
 	if got := c.BaseURL(); got != "http://home.example.net:8080" {
@@ -115,8 +117,8 @@ func TestSetAlternatesKeepsTheAddressInUse(t *testing.T) {
 		t.Errorf("urls = %v, want %v", c.urls, want)
 	}
 
-	// Dropping the one in use falls back to the first, rather than to an
-	// index that now points somewhere else.
+	// Dropping the one in use falls back to the best, rather than to an
+	// address that now means something else.
 	c.SetAlternates(nil)
 	if got := c.BaseURL(); got != "http://192.168.1.20:8080" {
 		t.Errorf("after its address was dropped the client uses %s", got)
@@ -174,14 +176,15 @@ func TestNormalizeControlURL(t *testing.T) {
 	}
 }
 
-// After a network change the client goes back to the address it joined
-// through, which on the home network answers again — and far faster than the
+// After a network change the client chooses again from the best address
+// down: on the home network that one answers again — and far faster than the
 // onion address it fell back to while away.
-func TestRehomeTriesTheFirstAddressAgain(t *testing.T) {
+func TestRehomeTriesTheBestAddressAgain(t *testing.T) {
+	ownOnly(t)
 	k, _ := key.NewPrivate()
 	c := NewClient("http://192.168.1.20:8080", k.Public(), k)
 	c.SetAlternates([]string{"http://aoqqpp7tzyil4hlq3umoos6atft6jvrqtosq2xy53sdgiesvgg4bqead.onion"})
-	c.cur = 1
+	c.cur = "http://aoqqpp7tzyil4hlq3umoos6atft6jvrqtosq2xy53sdgiesvgg4bqead.onion"
 	c.Rehome()
 	if got := c.BaseURL(); got != "http://192.168.1.20:8080" {
 		t.Errorf("after Rehome the client uses %s", got)

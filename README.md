@@ -746,16 +746,23 @@ makima-server tor
 #   status     reachable from anywhere, through tor (for 3m12s)
 ```
 
-Every node is told the address. A node uses the address it joined through
-while that answers — the home network, at home — and the onion address when
-it does not, because the laptop has left the house; the relay follows it
-there. After every move to another network it tries home first again. A
-Wi-Fi drop that comes back to the same network is not a move: every path,
-the relay connection and the long poll are kept, and the peers are asked at
-once whether the paths still work. A new address on the same network keeps
-the paths too, and proves them again. A node that will
-need tor starts it ahead of time, so leaving the house costs a few seconds of
-failover rather than tor's whole start.
+Every node is told the address, and the server's own addresses ahead of it:
+the ones its machine holds on its networks, found on the machine and kept
+current, so a DHCP lease that moves leaves no node knocking where the server
+used to be. A node reaches the server directly whenever it can — at its LAN
+address at home, at the address it joined through, at any added below — and
+through the onion address only when nothing direct answers, because the
+laptop has left the house; the relay follows it there. A node on tor keeps
+looking for a direct address in the background and moves back the moment one
+answers, check-in held open and relay included, and after every move to
+another network it chooses again from the best address down. A Wi-Fi drop
+that comes back to the same network is not a move: every path, the relay
+connection and the long poll are kept, and the peers are asked at once
+whether the paths still work. A new address on the same network keeps the
+paths too, and proves them again. The machine holding the network reaches its
+own server over loopback and never through tor, not even while that server
+restarts. A node that will need tor starts it ahead of time, so leaving the
+house costs a few seconds of failover rather than tor's whole start.
 
 Invites carry it as well, so a machine can join from anywhere. The pasted
 `mk1_` string carries the onion address outright. Fifteen words have no room
